@@ -15,17 +15,13 @@ from app.models import (
     create_working_branch,
 )
 from app.task_runner import TaskRunner, TaskRunnerError
+from app.task_store import TaskStore
 
 app = FastAPI(
     title="AgentDock API",
     description="Mobile-first command center for AI coding agents.",
     version="0.1.0",
 )
-
-# In-memory task store for the MVP bootstrap.
-# Later this will move to a real database.
-TASKS: dict[str, TaskSummary] = {}
-TASK_DIFFS: dict[str, str] = {}
 
 
 @app.get("/health")
@@ -40,6 +36,14 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, str | bool]:
         "env": settings.app_env,
         "debug": settings.app_debug,
     }
+
+
+def get_task_store(settings: Settings = Depends(get_settings)) -> TaskStore:
+    """
+    Return the JSON-backed task store.
+    """
+
+    return TaskStore(settings)
 
 
 @app.get("/")
@@ -63,6 +67,7 @@ def root() -> dict[str, str]:
 def create_task(
     payload: TaskCreateRequest,
     settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
 ) -> TaskCreateResponse:
     """
     Create and run a new agent task.
@@ -92,7 +97,7 @@ def create_task(
         updated_at=now,
     )
 
-    TASKS[task_id] = task
+    task_store.save_task(task)
 
     try:
         runner = TaskRunner(settings)
@@ -110,8 +115,8 @@ def create_task(
         task.changed_files = result.changed_files
         task.updated_at = datetime.now(timezone.utc)
 
-        TASKS[task_id] = task
-        TASK_DIFFS[task_id] = result.diff
+        task_store.save_task(task)
+        task_store.save_diff(task_id, result.diff)
 
         return TaskCreateResponse(
             task_id=task_id,
@@ -124,8 +129,8 @@ def create_task(
         task.error = str(exc)
         task.updated_at = datetime.now(timezone.utc)
 
-        TASKS[task_id] = task
-        TASK_DIFFS[task_id] = ""
+        task_store.save_task(task)
+        task_store.save_diff(task_id, "")
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -137,21 +142,26 @@ def create_task(
 
 
 @app.get("/tasks", response_model=list[TaskSummary])
-def list_tasks() -> list[TaskSummary]:
+def list_tasks(
+    task_store: TaskStore = Depends(get_task_store),
+) -> list[TaskSummary]:
     """
-    List all tasks currently stored in memory.
+    List all stored tasks.
     """
 
-    return list(TASKS.values())
+    return task_store.list_tasks()
 
 
 @app.get("/tasks/{task_id}", response_model=TaskSummary)
-def get_task(task_id: str) -> TaskSummary:
+def get_task(
+    task_id: str,
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskSummary:
     """
     Get a task by id.
     """
 
-    task = TASKS.get(task_id)
+    task = task_store.get_task(task_id)
 
     if task is None:
         raise HTTPException(
@@ -163,12 +173,15 @@ def get_task(task_id: str) -> TaskSummary:
 
 
 @app.get("/tasks/{task_id}/diff", response_model=TaskDiffResponse)
-def get_task_diff(task_id: str) -> TaskDiffResponse:
+def get_task_diff(
+    task_id: str,
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskDiffResponse:
     """
     Get the generated diff for a task.
     """
 
-    task = TASKS.get(task_id)
+    task = task_store.get_task(task_id)
 
     if task is None:
         raise HTTPException(
@@ -179,7 +192,7 @@ def get_task_diff(task_id: str) -> TaskDiffResponse:
     return TaskDiffResponse(
         task_id=task_id,
         status=task.status,
-        diff=TASK_DIFFS.get(task_id, ""),
+        diff=task_store.get_diff(task_id),
         changed_files=task.changed_files,
     )
 
@@ -188,15 +201,16 @@ def get_task_diff(task_id: str) -> TaskDiffResponse:
 def approve_or_reject_task(
     task_id: str,
     payload: TaskApprovalRequest,
+    task_store: TaskStore = Depends(get_task_store),
 ) -> TaskApprovalResponse:
     """
     Approve or reject a task.
 
-    For now this only changes the task status in memory.
+    For now this only changes the task status.
     Commit, push, and PR creation will be added later.
     """
 
-    task = TASKS.get(task_id)
+    task = task_store.get_task(task_id)
 
     if task is None:
         raise HTTPException(
@@ -214,7 +228,7 @@ def approve_or_reject_task(
         message = payload.message or "Task rejected."
 
     task.updated_at = now
-    TASKS[task_id] = task
+    task_store.save_task(task)
 
     return TaskApprovalResponse(
         task_id=task_id,
