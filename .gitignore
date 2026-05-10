@@ -134,3 +134,6 @@ docker-data/
 workspaces/
 task-runs/
 artifacts/
+
+# VS Code settings
+.vscode/
