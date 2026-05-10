@@ -1,0 +1,136 @@
+# =========================================
+# AgentDock .gitignore
+# Python / FastAPI / Node / Expo / macOS
+# =========================================
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+secrets/
+credentials/
+tokens/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# FastAPI / backend local files
+backend/.env
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+backend/app/__pycache__/
+backend/data/
+backend/tmp/
+backend/workspaces/
+backend/logs/
+
+# Node / Expo / React Native
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.expo/
+.expo-shared/
+dist/
+web-build/
+build/
+coverage/
+
+# Mobile app local files
+mobile/node_modules/
+mobile/.expo/
+mobile/.expo-shared/
+mobile/dist/
+mobile/web-build/
+mobile/coverage/
+
+# Expo / Metro
+.metro-cache/
+.expo-cache/
+
+# React Native / native build artifacts
+android/
+ios/
+
+# Keep placeholders if needed
+!mobile/android/.gitkeep
+!mobile/ios/.gitkeep
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+.cache/
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE / editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
+docker-data/
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite-journal
+
+# AgentDock runtime artifacts
+.agentdock/
+workspaces/
+task-runs/
+artifacts/
