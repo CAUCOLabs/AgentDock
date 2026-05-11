@@ -67,6 +67,13 @@ web-build/
 build/
 coverage/
 
+# Frontend local files
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
 # Mobile app local files
 mobile/node_modules/
 mobile/.expo/
