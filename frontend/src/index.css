@@ -1,14 +1,20 @@
+@import "tailwindcss";
+
 :root {
-  --bg: #f5f7fb;
-  --surface: #ffffff;
-  --panel: #f9fafb;
-  --border: #d9e0ea;
-  --text: #344054;
-  --text-strong: #101828;
-  --muted: #667085;
-  --accent: #2563eb;
-  --code-bg: #0f172a;
+  --bg: #020617;
+  --surface: rgba(15, 23, 42, 0.76);
+  --panel: rgba(2, 6, 23, 0.56);
+  --border: rgba(148, 163, 184, 0.16);
+  --border-strong: rgba(148, 163, 184, 0.24);
+  --text: #cbd5e1;
+  --text-strong: #f8fafc;
+  --muted: #94a3b8;
+  --accent: #22d3ee;
+  --accent-soft: #7dd3fc;
+  --success: #86efac;
+  --code-bg: #020617;
   --code-text: #dbeafe;
+  --shadow: 0 30px 100px rgba(0, 0, 0, 0.42);
   --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 
   color: var(--text);
@@ -26,10 +32,31 @@
   box-sizing: border-box;
 }
 
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(37, 99, 235, 0.24), transparent 32%),
+    radial-gradient(circle at 86% 6%, rgba(20, 184, 166, 0.18), transparent 30%),
+    linear-gradient(180deg, #020617 0%, #060815 48%, #020617 100%);
+}
+
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), transparent 72%);
 }
 
 h1,
@@ -40,15 +67,18 @@ p {
 }
 
 h1 {
+  max-width: 720px;
   color: var(--text-strong);
-  font-size: 44px;
-  line-height: 1;
+  font-size: 46px;
+  line-height: 0.98;
+  letter-spacing: 0;
 }
 
 h2 {
   color: var(--text-strong);
   font-size: 18px;
   line-height: 1.2;
+  letter-spacing: 0;
 }
 
 a {
@@ -66,12 +96,17 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid rgba(37, 99, 235, 0.25);
-  outline-offset: 1px;
+  outline: 3px solid rgba(34, 211, 238, 0.22);
+  outline-offset: 2px;
 }
 
-@media (max-width: 960px) {
+::selection {
+  color: #020617;
+  background: #67e8f9;
+}
+
+@media (min-width: 760px) {
   h1 {
-    font-size: 34px;
+    font-size: 64px;
   }
 }
