@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import { motion } from 'framer-motion'
+import {
+  Activity,
+  Bot,
+  CheckCircle2,
+  Code2,
+  FileText,
+  GitBranch,
+  RefreshCw,
+  Rocket,
+  ShieldCheck,
+  Terminal,
+  Trash2,
+  XCircle,
+} from 'lucide-react'
 import './App.css'
 
 type TaskStatus =
@@ -247,6 +262,30 @@ function App() {
     }
   }
 
+  async function loadTaskDiff(taskId: string) {
+    setError(null)
+
+    try {
+      setTaskDiff(await request<TaskDiffResponse>(`/tasks/${taskId}/diff`))
+    } catch (err) {
+      setError(formatError(err))
+    }
+  }
+
+  async function loadWorkspaceStatus(taskId: string) {
+    setError(null)
+
+    try {
+      setWorkspaceStatus(
+        await request<WorkspaceStatusResponse>(
+          `/tasks/${taskId}/workspace-status`,
+        ),
+      )
+    } catch (err) {
+      setError(formatError(err))
+    }
+  }
+
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setIsCreating(true)
@@ -336,18 +375,72 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">AgentDock</p>
+      <motion.header
+        className="app-header"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45 }}
+      >
+        <div className="hero-actions">
+          <button
+            type="button"
+            className="refresh-button"
+            onClick={() => void loadTasks()}
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
+        <div className="hero-copy">
+          <p className="eyebrow">
+            <Bot size={15} />
+            AgentDock
+          </p>
           <h1>AgentDock</h1>
           <p className="subtitle">
             Mobile-first command center for AI coding agents
           </p>
+          <p className="hero-description">
+            Launch coding agents into safe branches, review diffs, approve
+            commits, and optionally push or open PRs - all from a lightweight
+            control layer.
+          </p>
+          <div className="hero-pills" aria-label="AgentDock capabilities">
+            <span>
+              <Terminal size={14} />
+              Local-first
+            </span>
+            <span>
+              <GitBranch size={14} />
+              Safe branches
+            </span>
+            <span>
+              <ShieldCheck size={14} />
+              Human approval
+            </span>
+            <span>
+              <Code2 size={14} />
+              GitHub provider
+            </span>
+          </div>
         </div>
-        <button type="button" onClick={() => void loadTasks()}>
-          Refresh
-        </button>
-      </header>
+        <div className="hero-console" aria-hidden="true">
+          <div className="console-bar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>agentdock/run</strong>
+          </div>
+          <div className="console-body">
+            <p>
+              <span>$</span> launch agent --branch safe
+            </p>
+            <p className="console-ok">workspace cloned</p>
+            <p className="console-ok">diff ready for approval</p>
+            <p className="console-muted">awaiting human review...</p>
+          </div>
+        </div>
+      </motion.header>
 
       {(notice || error) && (
         <section className="messages" aria-live="polite">
@@ -357,9 +450,12 @@ function App() {
       )}
 
       <section className="dashboard-grid">
-        <aside className="task-dashboard" aria-label="Task dashboard">
+        <aside className="task-dashboard glass-card" aria-label="Task dashboard">
           <div className="section-heading">
-            <h2>Task Dashboard</h2>
+            <h2>
+              <Activity size={17} />
+              Task Dashboard
+            </h2>
             <span>{isLoading ? 'Loading' : `${tasks.length} tasks`}</span>
           </div>
 
@@ -380,8 +476,8 @@ function App() {
                 onClick={() => setSelectedTaskId(task.task_id)}
               >
                 <span className="task-row-main">
-                  <strong>{task.task_id}</strong>
-                  <small>{task.repo_url}</small>
+                  <strong>{shortRepoName(task.repo_url)}</strong>
+                  <small>{task.task_id}</small>
                 </span>
                 <span className={`status-pill ${task.status}`}>
                   {task.status.replaceAll('_', ' ')}
@@ -391,10 +487,13 @@ function App() {
           </div>
         </aside>
 
-        <section className="task-create prompt-launcher" aria-labelledby="create-task-title">
+        <section className="task-create prompt-launcher glass-card" aria-labelledby="create-task-title">
           <div className="launcher-heading">
             <div>
-              <h2 id="create-task-title">Prompt Launcher</h2>
+              <h2 id="create-task-title">
+                <Rocket size={20} />
+                Prompt Launcher
+              </h2>
               <p>
                 Paste a prompt from ChatGPT, Claude, Codex, or your own
                 workflow. AgentDock will run it in a safe branch and wait for
@@ -490,6 +589,7 @@ function App() {
             </div>
 
             <button type="submit" disabled={isCreating}>
+              <Rocket size={17} />
               {isCreating ? 'Launching Agent Task' : 'Launch Agent Task'}
             </button>
           </form>
@@ -497,9 +597,12 @@ function App() {
       </section>
 
       <section className="detail-grid">
-        <section className="task-details" aria-labelledby="task-details-title">
+        <section className="task-details glass-card" aria-labelledby="task-details-title">
           <div className="section-heading">
-            <h2 id="task-details-title">Task Details</h2>
+            <h2 id="task-details-title">
+              <Code2 size={17} />
+              Task Details
+            </h2>
             {activeTask && (
               <span className={`status-pill ${activeTask.status}`}>
                 {activeTask.status.replaceAll('_', ' ')}
@@ -522,13 +625,17 @@ function App() {
                 </div>
                 <div>
                   <dt>Commit</dt>
-                  <dd>{shortSha(activeTask.commit_sha)}</dd>
+                  <dd className="metric-value">{shortSha(activeTask.commit_sha)}</dd>
                 </div>
                 <div>
                   <dt>Delivery</dt>
-                  <dd>
-                    {activeTask.pushed ? 'Pushed' : 'Local only'}
-                    {activeTask.pr_url ? `, PR opened` : ''}
+                  <dd className="badge-row">
+                    <span className={activeTask.pushed ? 'meta-badge ok' : 'meta-badge'}>
+                      {activeTask.pushed ? 'Pushed' : 'Local only'}
+                    </span>
+                    <span className={activeTask.pr_url ? 'meta-badge ok' : 'meta-badge'}>
+                      {activeTask.pr_url ? 'PR opened' : 'No PR'}
+                    </span>
                   </dd>
                 </div>
               </dl>
@@ -544,6 +651,7 @@ function App() {
                   disabled={activeTask.status !== 'waiting_for_approval'}
                   onClick={() => void approveTask(true)}
                 >
+                  <CheckCircle2 size={16} />
                   Approve
                 </button>
                 <button
@@ -552,6 +660,7 @@ function App() {
                   disabled={activeTask.status !== 'waiting_for_approval'}
                   onClick={() => void approveTask(false)}
                 >
+                  <XCircle size={16} />
                   Reject
                 </button>
                 <button
@@ -559,6 +668,7 @@ function App() {
                   className="secondary danger"
                   onClick={() => void deleteTask()}
                 >
+                  <Trash2 size={16} />
                   Delete
                 </button>
               </div>
@@ -567,11 +677,23 @@ function App() {
         </section>
 
         <section
-          className="workspace-status"
+          className="workspace-status glass-card"
           aria-labelledby="workspace-status-title"
         >
           <div className="section-heading">
-            <h2 id="workspace-status-title">Workspace Status</h2>
+            <h2 id="workspace-status-title">
+              <GitBranch size={17} />
+              Workspace Status
+            </h2>
+            {activeTask && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void loadWorkspaceStatus(activeTask.task_id)}
+              >
+                View workspace status
+              </button>
+            )}
           </div>
 
           {!workspaceStatus && (
@@ -601,9 +723,12 @@ function App() {
         </section>
       </section>
 
-      <section className="agent-log" aria-labelledby="agent-log-title">
+      <section className="agent-log glass-card" aria-labelledby="agent-log-title">
         <div className="section-heading">
-          <h2 id="agent-log-title">Agent Log</h2>
+          <h2 id="agent-log-title">
+            <Terminal size={17} />
+            Agent Log
+          </h2>
           <span>{taskLogs.length} events</span>
         </div>
 
@@ -624,10 +749,24 @@ function App() {
         )}
       </section>
 
-      <section className="diff-viewer" aria-labelledby="diff-viewer-title">
+      <section className="diff-viewer glass-card" aria-labelledby="diff-viewer-title">
         <div className="section-heading">
-          <h2 id="diff-viewer-title">Diff Viewer</h2>
-          <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
+          <h2 id="diff-viewer-title">
+            <FileText size={17} />
+            Diff Viewer
+          </h2>
+          <div className="section-actions">
+            <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
+            {activeTask && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void loadTaskDiff(activeTask.task_id)}
+              >
+                View diff
+              </button>
+            )}
+          </div>
         </div>
 
         {taskDiff?.changed_files.length ? (
@@ -653,6 +792,15 @@ function App() {
 
 function shortSha(value: string | null) {
   return value ? value.slice(0, 10) : 'None'
+}
+
+function shortRepoName(repoUrl: string) {
+  try {
+    const url = new URL(repoUrl)
+    return url.pathname.replace(/^\/|\.git$/g, '') || repoUrl
+  } catch {
+    return repoUrl
+  }
 }
 
 function formatTimestamp(value: string) {
