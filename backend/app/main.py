@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, status
 
 from app.config import Settings, get_settings
+from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
 from app.models import (
     TaskApprovalRequest,
@@ -13,6 +14,7 @@ from app.models import (
     TaskDiffResponse,
     TaskStatus,
     TaskSummary,
+    WorkspaceStatusResponse,
     create_task_id,
     create_working_branch,
 )
@@ -235,6 +237,90 @@ def get_task_diff(
         status=task.status,
         diff=task_store.get_diff(task_id),
         changed_files=task.changed_files,
+    )
+
+
+@app.get(
+    "/tasks/{task_id}/workspace-status",
+    response_model=WorkspaceStatusResponse,
+)
+def get_workspace_status(
+    task_id: str,
+    settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
+) -> WorkspaceStatusResponse:
+    """
+    Return read-only Git workspace status for a task repository.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    try:
+        workspace_manager = WorkspaceManager(settings)
+        workspace_path = workspace_manager.get_workspace(task_id)
+
+        if not workspace_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace repository not found for task: {task_id}",
+            )
+
+        repo_path = workspace_manager.repo_path(task_id)
+    except WorkspaceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workspace repository not found for task: {task_id}",
+        )
+
+    try:
+        repo = GitHubClient(settings).open_repository(repo_path)
+        diff_service = DiffService(repo_path)
+        changed_files = diff_service.get_changed_files()
+    except (GitHubClientError, DiffServiceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    try:
+        branch = repo.active_branch.name
+    except TypeError:
+        branch = None
+
+    try:
+        head_commit = repo.head.commit.hexsha
+    except ValueError:
+        head_commit = None
+
+    return WorkspaceStatusResponse(
+        task_id=task_id,
+        repo_path=str(repo_path),
+        branch=branch,
+        head_commit=head_commit,
+        is_dirty=repo.is_dirty(untracked_files=True),
+        has_untracked_files=bool(repo.untracked_files),
+        changed_files=changed_files,
+        commit_sha=task.commit_sha,
+        pushed=task.pushed,
+        pr_url=task.pr_url,
     )
 
 

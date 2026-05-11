@@ -116,6 +116,23 @@ class TaskDiffResponse(BaseModel):
     changed_files: list[ChangedFile] = Field(default_factory=list)
 
 
+class WorkspaceStatusResponse(BaseModel):
+    """
+    Current Git workspace status for a task repository.
+    """
+
+    task_id: str
+    repo_path: str
+    branch: str | None = None
+    head_commit: str | None = None
+    is_dirty: bool
+    has_untracked_files: bool
+    changed_files: list[ChangedFile] = Field(default_factory=list)
+    commit_sha: str | None = None
+    pushed: bool = False
+    pr_url: str | None = None
+
+
 class TaskDeleteResponse(BaseModel):
     """
     Response returned after deleting a task and its workspace.
