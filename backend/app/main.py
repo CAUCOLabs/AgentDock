@@ -259,6 +259,7 @@ def approve_or_reject_task(
         ) from exc
 
     task.status = TaskStatus.completed
+    task.commit_sha = commit_sha
     task.updated_at = now
     task_store.save_task(task)
 

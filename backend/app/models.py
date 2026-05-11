@@ -97,9 +97,11 @@ class TaskSummary(BaseModel):
     agent: AgentProvider
     status: TaskStatus
     changed_files: list[ChangedFile] = Field(default_factory=list)
+    commit_sha: str | None = None
     created_at: datetime
     updated_at: datetime
     error: str | None = None
+    
 
 
 class TaskDiffResponse(BaseModel):
