@@ -311,6 +311,8 @@ async def approve_or_reject_task(
 
     task.status = TaskStatus.completed
     task.commit_sha = commit_sha
+    task.pushed = False
+    task.pr_url = None
     task.updated_at = now
 
     if not settings.allow_push:
@@ -336,7 +338,9 @@ async def approve_or_reject_task(
 
     try:
         github_client.push_branch(repo, task.working_branch)
+        task.pushed = True
     except GitHubClientError as exc:
+        task.pushed = False
         task.error = str(exc)
         task_store.save_task(task)
 
@@ -384,6 +388,7 @@ async def approve_or_reject_task(
             },
         ) from exc
 
+    task.pr_url = pr_url
     task_store.save_task(task)
 
     return TaskApprovalResponse(
