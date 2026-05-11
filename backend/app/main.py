@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, status
 
 from app.config import Settings, get_settings
+from app.github_client import GitHubClient, GitHubClientError
 from app.models import (
     TaskApprovalRequest,
     TaskApprovalResponse,
@@ -16,6 +17,7 @@ from app.models import (
 )
 from app.task_runner import TaskRunner, TaskRunnerError
 from app.task_store import TaskStore
+from app.workspace import WorkspaceError, WorkspaceManager
 
 app = FastAPI(
     title="AgentDock API",
@@ -201,13 +203,14 @@ def get_task_diff(
 def approve_or_reject_task(
     task_id: str,
     payload: TaskApprovalRequest,
+    settings: Settings = Depends(get_settings),
     task_store: TaskStore = Depends(get_task_store),
 ) -> TaskApprovalResponse:
     """
     Approve or reject a task.
 
-    For now this only changes the task status.
-    Commit, push, and PR creation will be added later.
+    Approval creates a local commit in the task workspace repository.
+    Push and PR creation remain disabled.
     """
 
     task = task_store.get_task(task_id)
@@ -218,20 +221,49 @@ def approve_or_reject_task(
             detail=f"Task not found: {task_id}",
         )
 
+    if task.status != TaskStatus.waiting_for_approval:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Task {task_id} is not waiting for approval. "
+                f"Current status: {task.status}."
+            ),
+        )
+
     now = datetime.now(timezone.utc)
 
-    if payload.approve:
-        task.status = TaskStatus.approved
-        message = payload.message or "Task approved."
-    else:
+    if not payload.approve:
         task.status = TaskStatus.rejected
-        message = payload.message or "Task rejected."
+        task.updated_at = now
+        task_store.save_task(task)
 
+        return TaskApprovalResponse(
+            task_id=task_id,
+            status=task.status,
+            message=payload.message or "Task rejected.",
+        )
+
+    try:
+        workspace_manager = WorkspaceManager(settings)
+        repo_path = workspace_manager.repo_path(task_id)
+        github_client = GitHubClient(settings)
+        repo = github_client.open_repository(repo_path)
+        commit_sha = github_client.commit_all(repo, f"AgentDock task: {task_id}")
+    except (GitHubClientError, WorkspaceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    task.status = TaskStatus.completed
     task.updated_at = now
     task_store.save_task(task)
 
     return TaskApprovalResponse(
         task_id=task_id,
         status=task.status,
-        message=message,
+        message=f"Task approved and committed locally: {commit_sha}",
     )
