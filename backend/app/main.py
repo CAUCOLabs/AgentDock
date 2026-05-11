@@ -249,7 +249,7 @@ def approve_or_reject_task(
     Approve or reject a task.
 
     Approval creates a local commit in the task workspace repository.
-    Push and PR creation remain disabled.
+    Push is optional and only runs when explicitly enabled.
     """
 
     task = task_store.get_task(task_id)
@@ -300,10 +300,49 @@ def approve_or_reject_task(
     task.status = TaskStatus.completed
     task.commit_sha = commit_sha
     task.updated_at = now
+
+    if not settings.allow_push:
+        task_store.save_task(task)
+
+        return TaskApprovalResponse(
+            task_id=task_id,
+            status=task.status,
+            message=f"Task approved and committed locally: {commit_sha}. Push is disabled.",
+        )
+
+    if not task.working_branch:
+        task.error = "Push is enabled, but the task working branch is missing."
+        task_store.save_task(task)
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": task.error,
+            },
+        )
+
+    try:
+        github_client.push_branch(repo, task.working_branch)
+    except GitHubClientError as exc:
+        task.error = str(exc)
+        task_store.save_task(task)
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
     task_store.save_task(task)
 
     return TaskApprovalResponse(
         task_id=task_id,
         status=task.status,
-        message=f"Task approved and committed locally: {commit_sha}",
+        message=(
+            "Task approved, committed locally, and pushed branch "
+            f"{task.working_branch}: {commit_sha}."
+        ),
     )
