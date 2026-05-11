@@ -105,6 +105,34 @@ const initialForm: CreateTaskForm = {
   agent: 'mock',
 }
 
+const promptTemplates = [
+  {
+    label: 'Fix bug',
+    prompt:
+      'Investigate and fix the reported bug. Keep the change minimal, avoid unrelated refactors, and explain the changed files.',
+  },
+  {
+    label: 'Refactor',
+    prompt:
+      'Refactor the selected area for clarity and maintainability. Preserve behavior, avoid broad rewrites, and show the diff before approval.',
+  },
+  {
+    label: 'Add feature',
+    prompt:
+      'Implement the requested feature with minimal changes. Keep the existing architecture, update related types if needed, and show the diff before approval.',
+  },
+  {
+    label: 'Review code',
+    prompt:
+      'Review the repository area related to this task. Identify likely issues, make only safe improvements, and leave notes in the generated task summary.',
+  },
+  {
+    label: 'Write tests',
+    prompt:
+      'Add or improve tests for the requested behavior. Keep production code changes minimal unless required.',
+  },
+]
+
 function App() {
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
@@ -297,6 +325,13 @@ function App() {
     }
   }
 
+  function applyPromptTemplate(prompt: string) {
+    setForm((current) => ({
+      ...current,
+      instruction: prompt,
+    }))
+  }
+
   const activeTask = selectedTask ?? selectedTaskFromList
 
   return (
@@ -356,9 +391,16 @@ function App() {
           </div>
         </aside>
 
-        <section className="task-create" aria-labelledby="create-task-title">
-          <div className="section-heading">
-            <h2 id="create-task-title">Create Task</h2>
+        <section className="task-create prompt-launcher" aria-labelledby="create-task-title">
+          <div className="launcher-heading">
+            <div>
+              <h2 id="create-task-title">Prompt Launcher</h2>
+              <p>
+                Paste a prompt from ChatGPT, Claude, Codex, or your own
+                workflow. AgentDock will run it in a safe branch and wait for
+                approval.
+              </p>
+            </div>
           </div>
 
           <form onSubmit={(event) => void createTask(event)}>
@@ -399,26 +441,56 @@ function App() {
                   }
                 >
                   <option value="mock">Mock</option>
+                  <option value="codex-cli" disabled>
+                    Codex CLI - coming soon
+                  </option>
+                  <option value="claude-cli" disabled>
+                    Claude CLI - coming soon
+                  </option>
+                  <option value="openai-api" disabled>
+                    OpenAI API - coming soon
+                  </option>
                 </select>
               </label>
             </div>
 
-            <label>
-              Instruction
+            <div className="template-strip" aria-label="Quick prompt templates">
+              {promptTemplates.map((template) => (
+                <button
+                  type="button"
+                  className="template-button"
+                  key={template.label}
+                  onClick={() => applyPromptTemplate(template.prompt)}
+                >
+                  {template.label}
+                </button>
+              ))}
+            </div>
+
+            <label className="prompt-field">
+              Agent Prompt
               <textarea
                 required
                 minLength={10}
-                rows={5}
-                placeholder="Describe the coding task for the agent."
+                rows={7}
+                placeholder="Paste your coding prompt here. Example: Fix the indexing issue, keep the change minimal, run tests, and show the diff before approval."
                 value={form.instruction}
                 onChange={(event) =>
                   setForm({ ...form, instruction: event.target.value })
                 }
               />
+              <span className="character-count">
+                {form.instruction.length} characters
+              </span>
             </label>
 
+            <div className="safety-note">
+              Safety: AgentDock creates an isolated workspace and branch.
+              Nothing is pushed or opened as a PR unless explicitly enabled.
+            </div>
+
             <button type="submit" disabled={isCreating}>
-              {isCreating ? 'Creating Task' : 'Create Task'}
+              {isCreating ? 'Launching Agent Task' : 'Launch Agent Task'}
             </button>
           </form>
         </section>
