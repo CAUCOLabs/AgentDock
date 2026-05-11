@@ -9,6 +9,7 @@ from app.models import (
     TaskApprovalResponse,
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskDeleteResponse,
     TaskDiffResponse,
     TaskStatus,
     TaskSummary,
@@ -172,6 +173,44 @@ def get_task(
         )
 
     return task
+
+
+@app.delete("/tasks/{task_id}", response_model=TaskDeleteResponse)
+def delete_task(
+    task_id: str,
+    settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskDeleteResponse:
+    """
+    Delete a task, its stored diff, and its local workspace.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    task_store.delete_task(task_id)
+
+    try:
+        WorkspaceManager(settings).delete_workspace(task_id)
+    except WorkspaceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    return TaskDeleteResponse(
+        task_id=task_id,
+        status="deleted",
+        message="Task and workspace deleted.",
+    )
 
 
 @app.get("/tasks/{task_id}/diff", response_model=TaskDiffResponse)

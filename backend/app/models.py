@@ -115,6 +115,16 @@ class TaskDiffResponse(BaseModel):
     changed_files: list[ChangedFile] = Field(default_factory=list)
 
 
+class TaskDeleteResponse(BaseModel):
+    """
+    Response returned after deleting a task and its workspace.
+    """
+
+    task_id: str
+    status: str
+    message: str
+
+
 class TaskApprovalRequest(BaseModel):
     """
     Request used to approve or reject a task.
