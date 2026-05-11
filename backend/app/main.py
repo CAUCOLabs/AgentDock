@@ -239,7 +239,7 @@ def get_task_diff(
 
 
 @app.post("/tasks/{task_id}/approval", response_model=TaskApprovalResponse)
-def approve_or_reject_task(
+async def approve_or_reject_task(
     task_id: str,
     payload: TaskApprovalRequest,
     settings: Settings = Depends(get_settings),
@@ -249,7 +249,7 @@ def approve_or_reject_task(
     Approve or reject a task.
 
     Approval creates a local commit in the task workspace repository.
-    Push is optional and only runs when explicitly enabled.
+    Push and PR creation are optional and only run when explicitly enabled.
     """
 
     task = task_store.get_task(task_id)
@@ -280,6 +280,18 @@ def approve_or_reject_task(
             task_id=task_id,
             status=task.status,
             message=payload.message or "Task rejected.",
+        )
+
+    if settings.allow_pr_creation and not settings.allow_push:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": (
+                    "PR creation requires ALLOW_PUSH=true because the branch "
+                    "must exist on remote."
+                ),
+            },
         )
 
     try:
@@ -336,13 +348,49 @@ def approve_or_reject_task(
             },
         ) from exc
 
+    if not settings.allow_pr_creation:
+        task_store.save_task(task)
+
+        return TaskApprovalResponse(
+            task_id=task_id,
+            status=task.status,
+            message=(
+                "Task approved, committed locally, and pushed branch "
+                f"{task.working_branch}: {commit_sha}. PR creation is disabled."
+            ),
+        )
+
+    try:
+        pr_url = await github_client.create_pull_request(
+            repo_url=task.repo_url,
+            head_branch=task.working_branch,
+            base_branch=task.base_branch,
+            title=f"AgentDock task: {task_id}",
+            body=(
+                "Automated AgentDock task.\n\n"
+                f"Instruction:\n{task.instruction}\n\n"
+                f"Commit:\n{commit_sha}"
+            ),
+        )
+    except GitHubClientError as exc:
+        task.error = str(exc)
+        task_store.save_task(task)
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
     task_store.save_task(task)
 
     return TaskApprovalResponse(
         task_id=task_id,
         status=task.status,
         message=(
-            "Task approved, committed locally, and pushed branch "
-            f"{task.working_branch}: {commit_sha}."
+            "Task approved, committed locally, pushed branch "
+            f"{task.working_branch}, and opened PR: {pr_url}"
         ),
     )
