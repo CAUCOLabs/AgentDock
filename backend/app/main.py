@@ -13,6 +13,7 @@ from app.models import (
     TaskCreateResponse,
     TaskDeleteResponse,
     TaskDiffResponse,
+    TaskLogsResponse,
     TaskStatus,
     TaskSummary,
     WorkspaceStatusResponse,
@@ -115,6 +116,8 @@ def create_task(
     )
 
     task_store.save_task(task)
+    task_store.append_log(task_id, "info", "Task created.")
+    task_store.append_log(task_id, "info", "Task running.")
 
     try:
         runner = TaskRunner(settings)
@@ -133,7 +136,9 @@ def create_task(
         task.updated_at = datetime.now(timezone.utc)
 
         task_store.save_task(task)
+        task_store.append_log(task_id, "info", "Task completed by runner.")
         task_store.save_diff(task_id, result.diff)
+        task_store.append_log(task_id, "info", "Diff ready for approval.")
 
         return TaskCreateResponse(
             task_id=task_id,
@@ -148,6 +153,7 @@ def create_task(
 
         task_store.save_task(task)
         task_store.save_diff(task_id, "")
+        task_store.append_log(task_id, "error", f"Task runner failed: {exc}")
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -207,6 +213,7 @@ def delete_task(
             detail=f"Task not found: {task_id}",
         )
 
+    task_store.append_log(task_id, "info", "Task deleted.")
     task_store.delete_task(task_id)
 
     try:
@@ -224,6 +231,29 @@ def delete_task(
         task_id=task_id,
         status="deleted",
         message="Task and workspace deleted.",
+    )
+
+
+@app.get("/tasks/{task_id}/logs", response_model=TaskLogsResponse)
+def get_task_logs(
+    task_id: str,
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskLogsResponse:
+    """
+    Get lifecycle events for a task.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    return TaskLogsResponse(
+        task_id=task_id,
+        events=task_store.get_logs(task_id),
     )
 
 
@@ -373,6 +403,7 @@ async def approve_or_reject_task(
         task.status = TaskStatus.rejected
         task.updated_at = now
         task_store.save_task(task)
+        task_store.append_log(task_id, "info", "Task rejected.")
 
         return TaskApprovalResponse(
             task_id=task_id,
@@ -412,9 +443,11 @@ async def approve_or_reject_task(
     task.pushed = False
     task.pr_url = None
     task.updated_at = now
+    task_store.append_log(task_id, "info", f"Task locally committed: {commit_sha}.")
 
     if not settings.allow_push:
         task_store.save_task(task)
+        task_store.append_log(task_id, "info", "Push skipped because disabled.")
 
         return TaskApprovalResponse(
             task_id=task_id,
@@ -437,10 +470,16 @@ async def approve_or_reject_task(
     try:
         github_client.push_branch(repo, task.working_branch)
         task.pushed = True
+        task_store.append_log(
+            task_id,
+            "info",
+            f"Push completed for branch {task.working_branch}.",
+        )
     except GitHubClientError as exc:
         task.pushed = False
         task.error = str(exc)
         task_store.save_task(task)
+        task_store.append_log(task_id, "error", f"Push failed: {exc}")
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -452,6 +491,7 @@ async def approve_or_reject_task(
 
     if not settings.allow_pr_creation:
         task_store.save_task(task)
+        task_store.append_log(task_id, "info", "PR skipped because disabled.")
 
         return TaskApprovalResponse(
             task_id=task_id,
@@ -477,6 +517,7 @@ async def approve_or_reject_task(
     except GitHubClientError as exc:
         task.error = str(exc)
         task_store.save_task(task)
+        task_store.append_log(task_id, "error", f"PR creation failed: {exc}")
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -488,6 +529,7 @@ async def approve_or_reject_task(
 
     task.pr_url = pr_url
     task_store.save_task(task)
+    task_store.append_log(task_id, "info", f"PR created: {pr_url}")
 
     return TaskApprovalResponse(
         task_id=task_id,

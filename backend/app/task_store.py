@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -6,7 +7,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from app.config import Settings
-from app.models import TaskSummary
+from app.models import TaskLogEvent, TaskSummary
 
 
 class TaskStoreError(Exception):
@@ -28,12 +29,15 @@ class TaskStore:
         self.data_dir = settings.logs_root / "task_store"
         self.tasks_file = self.data_dir / "tasks.json"
         self.diffs_file = self.data_dir / "diffs.json"
+        self.logs_file = self.data_dir / "logs.json"
         self._lock = Lock()
         self._task_list_adapter = TypeAdapter(list[TaskSummary])
+        self._task_log_list_adapter = TypeAdapter(list[TaskLogEvent])
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_file(self.tasks_file, [])
         self._ensure_file(self.diffs_file, {})
+        self._ensure_file(self.logs_file, {})
 
     def list_tasks(self) -> list[TaskSummary]:
         """
@@ -109,6 +113,13 @@ class TaskStore:
 
             self._write_json(self.diffs_file, diffs)
 
+            logs = self._read_json(self.logs_file)
+
+            if task_id in logs:
+                del logs[task_id]
+
+            self._write_json(self.logs_file, logs)
+
     def get_diff(self, task_id: str) -> str:
         """
         Return the stored diff for a task.
@@ -128,6 +139,35 @@ class TaskStore:
             diffs = self._read_json(self.diffs_file)
             diffs[task_id] = diff
             self._write_json(self.diffs_file, diffs)
+
+    def append_log(self, task_id: str, level: str, message: str) -> None:
+        """
+        Append a timestamped task log event.
+        """
+
+        event = TaskLogEvent(
+            timestamp=datetime.now(timezone.utc),
+            level=level,
+            message=message,
+        )
+
+        with self._lock:
+            raw_logs = self._read_json(self.logs_file)
+            existing_events = raw_logs.get(task_id, [])
+            events = self._task_log_list_adapter.validate_python(existing_events)
+            events.append(event)
+            raw_logs[task_id] = [item.model_dump(mode="json") for item in events]
+            self._write_json(self.logs_file, raw_logs)
+
+    def get_logs(self, task_id: str) -> list[TaskLogEvent]:
+        """
+        Return stored task log events.
+        """
+
+        with self._lock:
+            raw_logs = self._read_json(self.logs_file)
+
+        return self._task_log_list_adapter.validate_python(raw_logs.get(task_id, []))
 
     def _ensure_file(self, path: Path, default_value: Any) -> None:
         """

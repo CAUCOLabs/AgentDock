@@ -70,6 +70,23 @@ type WorkspaceStatusResponse = {
   pr_url: string | null
 }
 
+type TaskLogEvent = {
+  timestamp: string
+  level: string
+  message: string
+}
+
+type TaskLogsResponse = {
+  task_id: string
+  events: TaskLogEvent[]
+}
+
+type TaskDeleteResponse = {
+  task_id: string
+  status: string
+  message: string
+}
+
 type CreateTaskForm = {
   repoUrl: string
   baseBranch: string
@@ -95,6 +112,7 @@ function App() {
   const [taskDiff, setTaskDiff] = useState<TaskDiffResponse | null>(null)
   const [workspaceStatus, setWorkspaceStatus] =
     useState<WorkspaceStatusResponse | null>(null)
+  const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
   const [form, setForm] = useState<CreateTaskForm>(initialForm)
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -115,6 +133,7 @@ function App() {
       setSelectedTask(null)
       setTaskDiff(null)
       setWorkspaceStatus(null)
+      setTaskLogs([])
       return
     }
 
@@ -168,20 +187,35 @@ function App() {
     setError(null)
 
     try {
-      const [task, diff, status] = await Promise.all([
-        request<TaskSummary>(`/tasks/${taskId}`),
+      const task = await request<TaskSummary>(`/tasks/${taskId}`)
+      const [diffResult, statusResult, logsResult] = await Promise.allSettled([
         request<TaskDiffResponse>(`/tasks/${taskId}/diff`),
         request<WorkspaceStatusResponse>(`/tasks/${taskId}/workspace-status`),
+        request<TaskLogsResponse>(`/tasks/${taskId}/logs`),
       ])
 
       setSelectedTask(task)
-      setTaskDiff(diff)
-      setWorkspaceStatus(status)
+      setTaskDiff(diffResult.status === 'fulfilled' ? diffResult.value : null)
+      setWorkspaceStatus(
+        statusResult.status === 'fulfilled' ? statusResult.value : null,
+      )
+      setTaskLogs(
+        logsResult.status === 'fulfilled' ? logsResult.value.events : [],
+      )
+
+      const failedResult = [diffResult, statusResult, logsResult].find(
+        (result) => result.status === 'rejected',
+      )
+
+      if (failedResult?.status === 'rejected') {
+        setError(formatError(failedResult.reason))
+      }
     } catch (err) {
       setError(formatError(err))
       setSelectedTask(selectedTaskFromList)
       setTaskDiff(null)
       setWorkspaceStatus(null)
+      setTaskLogs([])
     }
   }
 
@@ -206,6 +240,7 @@ function App() {
       setForm(initialForm)
       await loadTasks()
       setSelectedTaskId(created.task_id)
+      await loadTaskBundle(created.task_id)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -231,6 +266,32 @@ function App() {
       setNotice(result.message)
       await loadTasks()
       await loadTaskBundle(selectedTaskId)
+    } catch (err) {
+      setError(formatError(err))
+    }
+  }
+
+  async function deleteTask() {
+    if (!selectedTaskId) return
+
+    setNotice(null)
+    setError(null)
+
+    try {
+      const result = await request<TaskDeleteResponse>(
+        `/tasks/${selectedTaskId}`,
+        {
+          method: 'DELETE',
+        },
+      )
+
+      setNotice(result.message)
+      setSelectedTaskId(null)
+      setSelectedTask(null)
+      setTaskDiff(null)
+      setWorkspaceStatus(null)
+      setTaskLogs([])
+      await loadTasks()
     } catch (err) {
       setError(formatError(err))
     }
@@ -421,6 +482,13 @@ function App() {
                 >
                   Reject
                 </button>
+                <button
+                  type="button"
+                  className="secondary danger"
+                  onClick={() => void deleteTask()}
+                >
+                  Delete
+                </button>
               </div>
             </>
           )}
@@ -461,6 +529,29 @@ function App() {
         </section>
       </section>
 
+      <section className="agent-log" aria-labelledby="agent-log-title">
+        <div className="section-heading">
+          <h2 id="agent-log-title">Agent Log</h2>
+          <span>{taskLogs.length} events</span>
+        </div>
+
+        {taskLogs.length === 0 ? (
+          <p className="empty-state">No task events to show.</p>
+        ) : (
+          <ol className="log-list">
+            {taskLogs.map((event) => (
+              <li key={`${event.timestamp}-${event.message}`}>
+                <time>{formatTimestamp(event.timestamp)}</time>
+                <span className={`log-level ${event.level}`}>
+                  {event.level}
+                </span>
+                <p>{event.message}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+
       <section className="diff-viewer" aria-labelledby="diff-viewer-title">
         <div className="section-heading">
           <h2 id="diff-viewer-title">Diff Viewer</h2>
@@ -490,6 +581,14 @@ function App() {
 
 function shortSha(value: string | null) {
   return value ? value.slice(0, 10) : 'None'
+}
+
+function formatTimestamp(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(value))
 }
 
 function formatError(error: unknown) {

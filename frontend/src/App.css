@@ -74,6 +74,7 @@
 .task-create,
 .task-details,
 .workspace-status,
+.agent-log,
 .diff-viewer {
   min-width: 0;
   padding: 18px;
@@ -219,6 +220,10 @@ button.secondary {
   border-color: var(--border);
 }
 
+button.danger {
+  color: #912018;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -272,6 +277,52 @@ dd {
 
 .diff-viewer {
   margin-top: 16px;
+}
+
+.agent-log {
+  margin-top: 16px;
+}
+
+.log-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.log-list li {
+  display: grid;
+  grid-template-columns: 84px 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.log-list time {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.log-level {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.log-level.error {
+  color: #912018;
+}
+
+.log-list p {
+  overflow-wrap: anywhere;
 }
 
 .changed-files {
@@ -332,5 +383,9 @@ pre {
 
   .changed-files li {
     flex-direction: column;
+  }
+
+  .log-list li {
+    grid-template-columns: 1fr;
   }
 }

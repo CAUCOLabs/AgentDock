@@ -133,6 +133,25 @@ class WorkspaceStatusResponse(BaseModel):
     pr_url: str | None = None
 
 
+class TaskLogEvent(BaseModel):
+    """
+    A timestamped event in a task lifecycle.
+    """
+
+    timestamp: datetime
+    level: str
+    message: str
+
+
+class TaskLogsResponse(BaseModel):
+    """
+    Response returned with task event logs.
+    """
+
+    task_id: str
+    events: list[TaskLogEvent] = Field(default_factory=list)
+
+
 class TaskDeleteResponse(BaseModel):
     """
     Response returned after deleting a task and its workspace.
