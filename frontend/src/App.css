@@ -217,6 +217,80 @@
   margin-bottom: 18px;
 }
 
+.file-picker {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+}
+
+.file-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.file-picker-header div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.file-picker-header span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-list {
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+}
+
+.file-option {
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.file-option span {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.file-option small {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.file-option.selected {
+  background: rgba(45, 212, 191, 0.14);
+}
+
+.file-preview {
+  max-height: 260px;
+}
+
+.target-match {
+  margin-left: 8px;
+  color: var(--success);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
 .launcher-heading h2,
 .section-heading h2 {
   display: inline-flex;

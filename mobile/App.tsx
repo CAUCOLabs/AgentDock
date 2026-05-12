@@ -28,6 +28,8 @@ import {
   createTask,
   deleteTask,
   getHealth,
+  getRepositoryFilePreview,
+  getRepositoryFiles,
   getTask,
   getTaskDiff,
   getTaskLogs,
@@ -39,6 +41,8 @@ import type {
   TaskDiffResponse,
   TaskLogEvent,
   TaskLogsResponse,
+  RepositoryFileEntry,
+  RepositoryFilePreviewResponse,
   TaskStatus,
   TaskSummary,
   WorkspaceStatusResponse,
@@ -105,6 +109,10 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
+  const [targetFile, setTargetFile] = useState("");
+  const [fileFilter, setFileFilter] = useState("");
+  const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
+  const [filePreview, setFilePreview] = useState<RepositoryFilePreviewResponse | null>(null);
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
@@ -116,9 +124,18 @@ export default function App() {
   const [isLaunching, setIsLaunching] = useState(false);
   const [isLoadingTask, setIsLoadingTask] = useState(false);
   const [isActing, setIsActing] = useState(false);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
+  const filteredRepoFiles = useMemo(
+    () =>
+      repoFiles
+        .filter((entry) => entry.type === "file")
+        .filter((entry) => entry.path.toLowerCase().includes(fileFilter.trim().toLowerCase()))
+        .slice(0, 50),
+    [fileFilter, repoFiles]
+  );
 
   const latestTasks = useMemo(
     () =>
@@ -199,14 +216,56 @@ export default function App() {
         base_branch: baseBranch.trim() || "main",
         instruction: instruction.trim(),
         agent: "mock",
+        target_file: targetFile || null,
       });
       await refreshTasks();
       await loadTaskDetail(created.task_id);
       setInstruction("");
+      setTargetFile("");
+      setFilePreview(null);
     } catch (launchError) {
       setError(launchError instanceof Error ? launchError.message : "Unable to launch task.");
     } finally {
       setIsLaunching(false);
+    }
+  }
+
+  async function handleLoadFiles() {
+    if (!repoUrl.trim()) {
+      setError("Enter a repository URL before loading files.");
+      return;
+    }
+
+    setIsLoadingFiles(true);
+    setError(null);
+    setFilePreview(null);
+    try {
+      const result = await getRepositoryFiles({
+        repo_url: repoUrl.trim(),
+        base_branch: baseBranch.trim() || "main",
+      });
+      setRepoFiles(result.files);
+    } catch (filesError) {
+      setError(filesError instanceof Error ? filesError.message : "Unable to load repository files.");
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  }
+
+  async function handleSelectFile(path: string) {
+    setTargetFile(path);
+    setError(null);
+    try {
+      setFilePreview(
+        await getRepositoryFilePreview({
+          repo_url: repoUrl.trim(),
+          base_branch: baseBranch.trim() || "main",
+          path,
+        })
+      );
+    } catch (previewError) {
+      setFilePreview(null);
+      setError(previewError instanceof Error ? previewError.message : "Unable to preview file.");
     }
   }
 
@@ -334,6 +393,58 @@ export default function App() {
               <Text style={styles.agentValue}>mock</Text>
             </View>
           </View>
+          <View style={styles.filePicker}>
+            <View style={styles.filePickerHeader}>
+              <View style={styles.flex}>
+                <Text style={styles.label}>Target file</Text>
+                <Text style={styles.filePath}>{targetFile || "No file selected"}</Text>
+              </View>
+              <Pressable
+                onPress={() => void handleLoadFiles()}
+                disabled={isLoadingFiles}
+                style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.smallButtonText}>{isLoadingFiles ? "Loading" : "Load files"}</Text>
+              </Pressable>
+            </View>
+            {repoFiles.length > 0 ? (
+              <>
+                <TextInput
+                  value={fileFilter}
+                  onChangeText={setFileFilter}
+                  placeholder="Filter files"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <View style={styles.fileList}>
+                  {filteredRepoFiles.map((entry) => (
+                    <Pressable
+                      key={entry.path}
+                      onPress={() => void handleSelectFile(entry.path)}
+                      style={({ pressed }) => [
+                        styles.fileOption,
+                        targetFile === entry.path && styles.fileOptionSelected,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.fileOptionPath}>{entry.path}</Text>
+                      <Text style={styles.fileOptionMeta}>
+                        {entry.extension ?? "file"}
+                        {typeof entry.size === "number" ? ` · ${entry.size} bytes` : ""}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : null}
+            {filePreview ? (
+              <ScrollView horizontal style={styles.previewScroller}>
+                <Text style={styles.previewText}>{filePreview.content}</Text>
+              </ScrollView>
+            ) : null}
+          </View>
           <Field label="Prompt">
             <TextInput
               value={instruction}
@@ -415,6 +526,7 @@ export default function App() {
                 <StatusBadge status={selectedTask.status} />
               </View>
               <InfoRow label="Branch" value={selectedTask.working_branch ?? workspace?.branch ?? "None"} />
+              <InfoRow label="Target file" value={selectedTask.target_file ?? "None"} />
               <InfoRow label="Commit sha" value={shortSha(selectedTask.commit_sha ?? workspace?.commit_sha)} />
               <InfoRow label="Pushed" value={selectedTask.pushed ? "Yes" : "No"} />
               <InfoRow label="PR URL" value={selectedTask.pr_url ?? "None"} link={selectedTask.pr_url} />
@@ -451,7 +563,7 @@ export default function App() {
         <Section title="Diff viewer">
           {selectedTask ? (
             <>
-              <ChangedFiles files={diff.changed_files} />
+              <ChangedFiles files={diff.changed_files} targetFile={selectedTask.target_file ?? null} />
               <ScrollView horizontal style={styles.diffScroller}>
                 <Text style={styles.diffText}>{diff.diff || "No diff available."}</Text>
               </ScrollView>
@@ -482,7 +594,7 @@ export default function App() {
               <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
               <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />
               <InfoRow label="Path" value={workspace.repo_path} />
-              <ChangedFiles files={workspace.changed_files} />
+              <ChangedFiles files={workspace.changed_files} targetFile={selectedTask.target_file ?? null} />
             </View>
           ) : (
             <Text style={styles.emptyText}>Workspace status appears after selecting a task.</Text>
@@ -584,7 +696,13 @@ function Loader({ label }: { label: string }) {
   );
 }
 
-function ChangedFiles({ files }: { files: { path: string; status: string; additions: number; deletions: number }[] }) {
+function ChangedFiles({
+  files,
+  targetFile,
+}: {
+  files: { path: string; status: string; additions: number; deletions: number }[];
+  targetFile?: string | null;
+}) {
   if (files.length === 0) {
     return <Text style={styles.emptyText}>No changed files.</Text>;
   }
@@ -596,6 +714,7 @@ function ChangedFiles({ files }: { files: { path: string; status: string; additi
           <GitBranch size={14} color="#8bdcff" />
           <Text style={styles.fileText} numberOfLines={1}>
             {file.status} {file.path}
+            {targetFile === file.path ? " · target" : ""}
           </Text>
           <Text style={styles.fileStats}>
             +{file.additions} -{file.deletions}
@@ -977,6 +1096,75 @@ const styles = StyleSheet.create({
   },
   fileList: {
     gap: 8,
+  },
+  filePicker: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  filePickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  filePath: {
+    color: "#cfe9f9",
+    fontSize: 12,
+  },
+  smallButton: {
+    minHeight: 36,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(88, 223, 255, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(88, 223, 255, 0.26)",
+  },
+  smallButtonText: {
+    color: "#dcecf7",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  fileOption: {
+    gap: 3,
+    minHeight: 44,
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  fileOptionSelected: {
+    backgroundColor: "rgba(65, 230, 189, 0.18)",
+    borderColor: "rgba(65, 230, 189, 0.38)",
+  },
+  fileOptionPath: {
+    color: "#cfe9f9",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  fileOptionMeta: {
+    color: "#8299ae",
+    fontSize: 11,
+  },
+  previewScroller: {
+    maxHeight: 180,
+    borderRadius: 8,
+    backgroundColor: "#02060b",
+    borderWidth: 1,
+    borderColor: "rgba(91, 129, 161, 0.22)",
+  },
+  previewText: {
+    minWidth: 520,
+    color: "#c8e4f4",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
+    padding: 12,
   },
   filePill: {
     minHeight: 38,

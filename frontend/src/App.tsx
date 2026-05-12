@@ -36,11 +36,34 @@ type ChangedFile = {
   deletions: number
 }
 
+type RepositoryFileEntry = {
+  path: string
+  type: 'file' | 'directory'
+  size?: number | null
+  extension?: string | null
+}
+
+type RepositoryFilesResponse = {
+  repo_url: string
+  base_branch: string
+  files: RepositoryFileEntry[]
+}
+
+type RepositoryFilePreviewResponse = {
+  repo_url: string
+  base_branch: string
+  path: string
+  size: number
+  truncated: boolean
+  content: string
+}
+
 type TaskSummary = {
   task_id: string
   repo_url: string
   base_branch: string
   working_branch: string | null
+  target_file?: string | null
   instruction: string
   agent: AgentProvider
   status: TaskStatus
@@ -118,6 +141,7 @@ type CreateTaskForm = {
   baseBranch: string
   instruction: string
   agent: AgentProvider
+  targetFile: string
 }
 
 const API_URL =
@@ -129,6 +153,7 @@ const initialForm: CreateTaskForm = {
   baseBranch: 'main',
   instruction: '',
   agent: 'mock',
+  targetFile: '',
 }
 
 const promptTemplates = [
@@ -168,6 +193,12 @@ function App() {
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
   const [form, setForm] = useState<CreateTaskForm>(initialForm)
+  const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
+  const [fileFilter, setFileFilter] = useState('')
+  const [filePreview, setFilePreview] =
+    useState<RepositoryFilePreviewResponse | null>(null)
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false)
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -176,6 +207,17 @@ function App() {
   const selectedTaskFromList = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
     [selectedTaskId, tasks],
+  )
+
+  const filteredRepoFiles = useMemo(
+    () =>
+      repoFiles
+        .filter((entry) => entry.type === 'file')
+        .filter((entry) =>
+          entry.path.toLowerCase().includes(fileFilter.trim().toLowerCase()),
+        )
+        .slice(0, 80),
+    [fileFilter, repoFiles],
   )
 
   useEffect(() => {
@@ -311,6 +353,7 @@ function App() {
           base_branch: form.baseBranch,
           instruction: form.instruction,
           agent: form.agent,
+          target_file: form.targetFile || null,
         }),
       })
 
@@ -323,6 +366,60 @@ function App() {
       setError(formatError(err))
     } finally {
       setIsCreating(false)
+    }
+  }
+
+  async function loadRepositoryFiles() {
+    if (!form.repoUrl.trim()) {
+      setError('Enter a repository URL before loading files.')
+      return
+    }
+
+    setIsLoadingFiles(true)
+    setError(null)
+    setFilePreview(null)
+
+    try {
+      const result = await request<RepositoryFilesResponse>('/repositories/files', {
+        method: 'POST',
+        body: JSON.stringify({
+          repo_url: form.repoUrl,
+          base_branch: form.baseBranch || 'main',
+        }),
+      })
+
+      setRepoFiles(result.files)
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setIsLoadingFiles(false)
+    }
+  }
+
+  async function selectTargetFile(path: string) {
+    setForm((current) => ({ ...current, targetFile: path }))
+    setIsLoadingPreview(true)
+    setError(null)
+
+    try {
+      setFilePreview(
+        await request<RepositoryFilePreviewResponse>(
+          '/repositories/file-preview',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              repo_url: form.repoUrl,
+              base_branch: form.baseBranch || 'main',
+              path,
+            }),
+          },
+        ),
+      )
+    } catch (err) {
+      setFilePreview(null)
+      setError(formatError(err))
+    } finally {
+      setIsLoadingPreview(false)
     }
   }
 
@@ -565,6 +662,60 @@ function App() {
               </label>
             </div>
 
+            <div className="file-picker">
+              <div className="file-picker-header">
+                <div>
+                  <strong>Target file</strong>
+                  <span>{form.targetFile || 'No file selected'}</span>
+                </div>
+                <button
+                  type="button"
+                  className="mini-action"
+                  disabled={isLoadingFiles || !form.repoUrl}
+                  onClick={() => void loadRepositoryFiles()}
+                >
+                  {isLoadingFiles ? 'Loading files' : 'Load files'}
+                </button>
+              </div>
+
+              {repoFiles.length > 0 && (
+                <>
+                  <input
+                    value={fileFilter}
+                    onChange={(event) => setFileFilter(event.target.value)}
+                    placeholder="Filter files by path"
+                  />
+                  <div className="file-list">
+                    {filteredRepoFiles.map((entry) => (
+                      <button
+                        type="button"
+                        key={entry.path}
+                        className={
+                          form.targetFile === entry.path
+                            ? 'file-option selected'
+                            : 'file-option'
+                        }
+                        onClick={() => void selectTargetFile(entry.path)}
+                      >
+                        <span>{entry.path}</span>
+                        <small>
+                          {entry.extension ?? 'file'}
+                          {typeof entry.size === 'number'
+                            ? ` · ${entry.size} bytes`
+                            : ''}
+                        </small>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
+              {filePreview && (
+                <pre className="file-preview">{filePreview.content}</pre>
+              )}
+            </div>
+
             <div className="template-strip" aria-label="Quick prompt templates">
               {promptTemplates.map((template) => (
                 <button
@@ -638,6 +789,10 @@ function App() {
                 <div>
                   <dt>Commit</dt>
                   <dd className="metric-value">{shortSha(activeTask.commit_sha)}</dd>
+                </div>
+                <div>
+                  <dt>Target File</dt>
+                  <dd>{activeTask.target_file ?? 'None'}</dd>
                 </div>
                 <div>
                   <dt>Delivery</dt>
@@ -821,7 +976,12 @@ function App() {
           <ul className="changed-files">
             {taskDiff.changed_files.map((file) => (
               <li key={`${file.status}-${file.path}`}>
-                <span>{file.path}</span>
+                <span>
+                  {file.path}
+                  {activeTask?.target_file === file.path ? (
+                    <strong className="target-match">Target</strong>
+                  ) : null}
+                </span>
                 <small>
                   {file.status} +{file.additions} -{file.deletions}
                 </small>

@@ -7,6 +7,8 @@ import type {
   TaskDiffResponse,
   TaskLogsResponse,
   TaskSummary,
+  RepositoryFilePreviewResponse,
+  RepositoryFilesResponse,
   WorkspaceStatusResponse,
 } from "./types";
 
@@ -63,6 +65,24 @@ export function getTasks() {
 
 export function createTask(payload: TaskCreateRequest) {
   return request<TaskCreateResponse>("/tasks", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getRepositoryFiles(payload: { repo_url: string; base_branch: string }) {
+  return request<RepositoryFilesResponse>("/repositories/files", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getRepositoryFilePreview(payload: {
+  repo_url: string;
+  base_branch: string;
+  path: string;
+}) {
+  return request<RepositoryFilePreviewResponse>("/repositories/file-preview", {
     method: "POST",
     body: JSON.stringify(payload),
   });

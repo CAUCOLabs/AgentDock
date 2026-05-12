@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
@@ -38,8 +38,9 @@ class TaskCreateRequest(BaseModel):
     Request body for creating a new coding task.
     """
 
-    repo_url: HttpUrl = Field(
+    repo_url: str = Field(
         ...,
+        min_length=1,
         description="GitHub repository URL.",
         examples=["https://github.com/example/project"],
     )
@@ -59,6 +60,10 @@ class TaskCreateRequest(BaseModel):
     agent: AgentProvider = Field(
         default=AgentProvider.mock,
         description="AI agent provider to use for this task.",
+    )
+    target_file: str | None = Field(
+        default=None,
+        description="Optional selected repository file path for task context.",
     )
 
 
@@ -97,6 +102,7 @@ class TaskSummary(BaseModel):
     base_branch: str
     working_branch: str | None = None
     workspace_path: str | None = None
+    target_file: str | None = None
     instruction: str
     agent: AgentProvider
     status: TaskStatus
@@ -124,6 +130,57 @@ class TaskDiffResponse(BaseModel):
     status: TaskStatus
     diff: str
     changed_files: list[ChangedFile] = Field(default_factory=list)
+
+
+class RepositoryFileEntry(BaseModel):
+    """
+    Read-only repository file tree entry.
+    """
+
+    path: str
+    type: str
+    size: int | None = None
+    extension: str | None = None
+
+
+class RepositoryFilesRequest(BaseModel):
+    """
+    Request used to inspect repository files.
+    """
+
+    repo_url: str = Field(..., min_length=1)
+    base_branch: str = "main"
+
+
+class RepositoryFilesResponse(BaseModel):
+    """
+    Repository file listing response.
+    """
+
+    repo_url: str
+    base_branch: str
+    files: list[RepositoryFileEntry] = Field(default_factory=list)
+
+
+class RepositoryFilePreviewRequest(RepositoryFilesRequest):
+    """
+    Request used to preview a single repository file.
+    """
+
+    path: str = Field(..., min_length=1)
+
+
+class RepositoryFilePreviewResponse(BaseModel):
+    """
+    Read-only bounded text preview for a repository file.
+    """
+
+    repo_url: str
+    base_branch: str
+    path: str
+    size: int
+    truncated: bool = False
+    content: str
 
 
 class WorkspaceStatusResponse(BaseModel):

@@ -7,6 +7,10 @@ from app.config import Settings, get_settings
 from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
 from app.models import (
+    RepositoryFilePreviewRequest,
+    RepositoryFilePreviewResponse,
+    RepositoryFilesRequest,
+    RepositoryFilesResponse,
     TaskApprovalRequest,
     TaskApprovalResponse,
     TaskCreateRequest,
@@ -20,6 +24,7 @@ from app.models import (
     create_task_id,
     create_working_branch,
 )
+from app.repo_browser import RepoBrowserError, RepoBrowserService
 from app.task_runner import TaskRunner, TaskRunnerError
 from app.task_store import TaskStore
 from app.workspace import WorkspaceError, WorkspaceManager
@@ -87,6 +92,70 @@ def root() -> dict[str, str]:
 
 
 @app.post(
+    "/repositories/files",
+    response_model=RepositoryFilesResponse,
+)
+def list_repository_files(
+    payload: RepositoryFilesRequest,
+    settings: Settings = Depends(get_settings),
+) -> RepositoryFilesResponse:
+    """
+    Return a read-only repository file tree for target file selection.
+    """
+
+    try:
+        files = RepoBrowserService(settings).list_files(
+            repo_url=payload.repo_url,
+            base_branch=payload.base_branch,
+        )
+    except RepoBrowserError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return RepositoryFilesResponse(
+        repo_url=payload.repo_url,
+        base_branch=payload.base_branch,
+        files=files,
+    )
+
+
+@app.post(
+    "/repositories/file-preview",
+    response_model=RepositoryFilePreviewResponse,
+)
+def preview_repository_file(
+    payload: RepositoryFilePreviewRequest,
+    settings: Settings = Depends(get_settings),
+) -> RepositoryFilePreviewResponse:
+    """
+    Return a bounded, read-only text preview for one repository file.
+    """
+
+    try:
+        content, size, truncated = RepoBrowserService(settings).preview_file(
+            repo_url=payload.repo_url,
+            base_branch=payload.base_branch,
+            file_path=payload.path,
+        )
+    except RepoBrowserError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return RepositoryFilePreviewResponse(
+        repo_url=payload.repo_url,
+        base_branch=payload.base_branch,
+        path=payload.path,
+        size=size,
+        truncated=truncated,
+        content=content,
+    )
+
+
+@app.post(
     "/tasks",
     response_model=TaskCreateResponse,
     status_code=status.HTTP_201_CREATED,
@@ -111,12 +180,29 @@ def create_task(
     task_id = create_task_id()
     working_branch = create_working_branch(task_id)
 
+    try:
+        target_file = payload.target_file.strip() if payload.target_file else None
+
+        if target_file:
+            RepoBrowserService.validate_relative_path(target_file)
+
+        runner_instruction = RepoBrowserService(settings).task_instruction(
+            payload.instruction,
+            target_file,
+        )
+    except RepoBrowserError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
     task = TaskSummary(
         task_id=task_id,
         repo_url=str(payload.repo_url),
         base_branch=payload.base_branch,
         working_branch=working_branch,
         workspace_path=str(settings.workspace_root / task_id / "repo"),
+        target_file=target_file,
         instruction=payload.instruction,
         agent=payload.agent,
         status=TaskStatus.running,
@@ -127,6 +213,8 @@ def create_task(
 
     task_store.save_task(task)
     task_store.append_log(task_id, "info", "Task created.")
+    if target_file:
+        task_store.append_log(task_id, "info", f"Target file selected: {target_file}")
     task_store.append_log(task_id, "info", "Task running.")
 
     try:
@@ -137,7 +225,7 @@ def create_task(
             repo_url=str(payload.repo_url),
             base_branch=payload.base_branch,
             working_branch=working_branch,
-            instruction=payload.instruction,
+            instruction=runner_instruction,
             agent=payload.agent,
         )
 

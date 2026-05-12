@@ -22,6 +22,7 @@ export type TaskSummary = {
   repo_url: string;
   base_branch: string;
   working_branch: string | null;
+  target_file?: string | null;
   instruction: string;
   agent: AgentProvider;
   status: TaskStatus;
@@ -81,6 +82,29 @@ export type TaskCreateRequest = {
   base_branch: string;
   instruction: string;
   agent: AgentProvider;
+  target_file?: string | null;
+};
+
+export type RepositoryFileEntry = {
+  path: string;
+  type: "file" | "directory";
+  size?: number | null;
+  extension?: string | null;
+};
+
+export type RepositoryFilesResponse = {
+  repo_url: string;
+  base_branch: string;
+  files: RepositoryFileEntry[];
+};
+
+export type RepositoryFilePreviewResponse = {
+  repo_url: string;
+  base_branch: string;
+  path: string;
+  size: number;
+  truncated: boolean;
+  content: string;
 };
 
 export type TaskCreateResponse = {

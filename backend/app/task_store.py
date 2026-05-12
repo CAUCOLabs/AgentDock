@@ -97,6 +97,7 @@ class TaskStore:
                         base_branch,
                         working_branch,
                         workspace_path,
+                        target_file,
                         instruction,
                         agent,
                         status,
@@ -114,7 +115,7 @@ class TaskStore:
                         deleted_at,
                         error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_url = excluded.repo_url,
                         repo_owner = excluded.repo_owner,
@@ -122,6 +123,7 @@ class TaskStore:
                         base_branch = excluded.base_branch,
                         working_branch = excluded.working_branch,
                         workspace_path = excluded.workspace_path,
+                        target_file = excluded.target_file,
                         instruction = excluded.instruction,
                         agent = excluded.agent,
                         status = excluded.status,
@@ -147,6 +149,7 @@ class TaskStore:
                         task.base_branch,
                         task.working_branch,
                         workspace_path,
+                        task.target_file,
                         task.instruction,
                         task.agent.value,
                         task.status.value,
@@ -436,6 +439,7 @@ class TaskStore:
                             base_branch TEXT NOT NULL,
                             working_branch TEXT,
                             workspace_path TEXT,
+                            target_file TEXT,
                             instruction TEXT NOT NULL,
                             agent TEXT NOT NULL,
                             status TEXT NOT NULL,
@@ -630,6 +634,7 @@ class TaskStore:
             "base_branch": row["base_branch"],
             "working_branch": row["working_branch"],
             "workspace_path": row["workspace_path"],
+            "target_file": row["target_file"],
             "instruction": row["instruction"],
             "agent": row["agent"],
             "status": row["status"],
@@ -677,6 +682,7 @@ class TaskStore:
             "pushed_at": "TEXT",
             "remote_branch": "TEXT",
             "last_push_result": "TEXT",
+            "target_file": "TEXT",
         }
 
         for column_name, column_type in desired_columns.items():
