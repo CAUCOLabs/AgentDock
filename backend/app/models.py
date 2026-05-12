@@ -103,6 +103,9 @@ class TaskSummary(BaseModel):
     changed_files: list[ChangedFile] = Field(default_factory=list)
     commit_sha: str | None = None
     pushed: bool = False
+    pushed_at: datetime | None = None
+    remote_branch: str | None = None
+    last_push_result: str | None = None
     pr_url: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -142,6 +145,9 @@ class WorkspaceStatusResponse(BaseModel):
     changed_files: list[ChangedFile] = Field(default_factory=list)
     commit_sha: str | None = None
     pushed: bool = False
+    pushed_at: datetime | None = None
+    remote_branch: str | None = None
+    last_push_result: str | None = None
     pr_url: str | None = None
 
 

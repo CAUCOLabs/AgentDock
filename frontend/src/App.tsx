@@ -47,6 +47,9 @@ type TaskSummary = {
   changed_files: ChangedFile[]
   commit_sha: string | null
   pushed: boolean
+  pushed_at?: string | null
+  remote_branch?: string | null
+  last_push_result?: string | null
   pr_url: string | null
   created_at: string
   updated_at: string
@@ -87,6 +90,9 @@ type WorkspaceStatusResponse = {
   changed_files: ChangedFile[]
   commit_sha: string | null
   pushed: boolean
+  pushed_at?: string | null
+  remote_branch?: string | null
+  last_push_result?: string | null
   pr_url: string | null
 }
 
@@ -731,6 +737,22 @@ function App() {
               <div>
                 <dt>Push</dt>
                 <dd>{workspaceStatus.push_enabled ? 'Enabled' : 'Disabled'}</dd>
+              </div>
+              <div>
+                <dt>Pushed</dt>
+                <dd>{workspaceStatus.pushed ? 'Yes' : 'No'}</dd>
+              </div>
+              <div>
+                <dt>Remote branch</dt>
+                <dd>{workspaceStatus.remote_branch ?? 'None'}</dd>
+              </div>
+              <div>
+                <dt>Pushed at</dt>
+                <dd>{workspaceStatus.pushed_at ? formatTimestamp(workspaceStatus.pushed_at) : 'None'}</dd>
+              </div>
+              <div>
+                <dt>Last push</dt>
+                <dd>{workspaceStatus.last_push_result ?? 'None'}</dd>
               </div>
               <div>
                 <dt>PRs</dt>

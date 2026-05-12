@@ -103,6 +103,9 @@ class TaskStore:
                         changed_files_json,
                         commit_sha,
                         pushed,
+                        pushed_at,
+                        remote_branch,
+                        last_push_result,
                         pr_url,
                         created_at,
                         updated_at,
@@ -111,7 +114,7 @@ class TaskStore:
                         deleted_at,
                         error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_url = excluded.repo_url,
                         repo_owner = excluded.repo_owner,
@@ -125,6 +128,9 @@ class TaskStore:
                         changed_files_json = excluded.changed_files_json,
                         commit_sha = excluded.commit_sha,
                         pushed = excluded.pushed,
+                        pushed_at = excluded.pushed_at,
+                        remote_branch = excluded.remote_branch,
+                        last_push_result = excluded.last_push_result,
                         pr_url = excluded.pr_url,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
@@ -147,6 +153,9 @@ class TaskStore:
                         self._changed_files_json(task.changed_files),
                         task.commit_sha,
                         int(task.pushed),
+                        self._datetime_to_text(task.pushed_at),
+                        task.remote_branch,
+                        task.last_push_result,
                         task.pr_url,
                         self._datetime_to_text(task.created_at),
                         self._datetime_to_text(task.updated_at),
@@ -289,6 +298,9 @@ class TaskStore:
         pr_creation_enabled: bool = False,
         commit_sha: str | None = None,
         pushed: bool = False,
+        pushed_at: datetime | None = None,
+        remote_branch: str | None = None,
+        last_push_result: str | None = None,
         pr_url: str | None = None,
     ) -> None:
         """
@@ -314,10 +326,13 @@ class TaskStore:
                         changed_files_json,
                         commit_sha,
                         pushed,
+                        pushed_at,
+                        remote_branch,
+                        last_push_result,
                         pr_url,
                         captured_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_path = excluded.repo_path,
                         branch = excluded.branch,
@@ -332,6 +347,9 @@ class TaskStore:
                         changed_files_json = excluded.changed_files_json,
                         commit_sha = excluded.commit_sha,
                         pushed = excluded.pushed,
+                        pushed_at = excluded.pushed_at,
+                        remote_branch = excluded.remote_branch,
+                        last_push_result = excluded.last_push_result,
                         pr_url = excluded.pr_url,
                         captured_at = excluded.captured_at
                     """,
@@ -350,6 +368,9 @@ class TaskStore:
                         self._changed_files_json(changed_files),
                         commit_sha,
                         int(pushed),
+                        self._datetime_to_text(pushed_at),
+                        remote_branch,
+                        last_push_result,
                         pr_url,
                         self._datetime_to_text(datetime.now(timezone.utc)),
                     ),
@@ -394,6 +415,9 @@ class TaskStore:
             changed_files=self._changed_files_from_json(snapshot["changed_files_json"]),
             commit_sha=snapshot["commit_sha"],
             pushed=bool(snapshot["pushed"]),
+            pushed_at=snapshot["pushed_at"],
+            remote_branch=snapshot["remote_branch"],
+            last_push_result=snapshot["last_push_result"],
             pr_url=snapshot["pr_url"],
         )
 
@@ -418,6 +442,9 @@ class TaskStore:
                             changed_files_json TEXT NOT NULL DEFAULT '[]',
                             commit_sha TEXT,
                             pushed INTEGER NOT NULL DEFAULT 0,
+                            pushed_at TEXT,
+                            remote_branch TEXT,
+                            last_push_result TEXT,
                             pr_url TEXT,
                             created_at TEXT NOT NULL,
                             updated_at TEXT NOT NULL,
@@ -464,6 +491,9 @@ class TaskStore:
                             changed_files_json TEXT NOT NULL DEFAULT '[]',
                             commit_sha TEXT,
                             pushed INTEGER NOT NULL DEFAULT 0,
+                            pushed_at TEXT,
+                            remote_branch TEXT,
+                            last_push_result TEXT,
                             pr_url TEXT,
                             captured_at TEXT NOT NULL,
                             FOREIGN KEY(task_id) REFERENCES tasks(task_id)
@@ -472,6 +502,7 @@ class TaskStore:
                         """
                     )
                     self._ensure_workspace_snapshot_columns(connection)
+                    self._ensure_task_columns(connection)
 
     def _recover_interrupted_tasks(self) -> None:
         """
@@ -605,6 +636,9 @@ class TaskStore:
             "changed_files": self._changed_files_from_json(row["changed_files_json"]),
             "commit_sha": row["commit_sha"],
             "pushed": bool(row["pushed"]),
+            "pushed_at": row["pushed_at"],
+            "remote_branch": row["remote_branch"],
+            "last_push_result": row["last_push_result"],
             "pr_url": row["pr_url"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -640,6 +674,9 @@ class TaskStore:
             "default_branch": "TEXT",
             "push_enabled": "INTEGER NOT NULL DEFAULT 0",
             "pr_creation_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "pushed_at": "TEXT",
+            "remote_branch": "TEXT",
+            "last_push_result": "TEXT",
         }
 
         for column_name, column_type in desired_columns.items():
@@ -648,6 +685,28 @@ class TaskStore:
 
             connection.execute(
                 f"ALTER TABLE workspace_snapshots ADD COLUMN {column_name} {column_type}"
+            )
+
+    def _ensure_task_columns(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+        desired_columns = {
+            "pushed_at": "TEXT",
+            "remote_branch": "TEXT",
+            "last_push_result": "TEXT",
+        }
+
+        for column_name, column_type in desired_columns.items():
+            if column_name in columns:
+                continue
+
+            connection.execute(
+                f"ALTER TABLE tasks ADD COLUMN {column_name} {column_type}"
             )
 
     def _repo_owner_and_name(self, task: TaskSummary) -> tuple[str | None, str | None]:

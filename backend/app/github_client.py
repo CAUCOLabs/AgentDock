@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
+from time import perf_counter
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -27,6 +29,39 @@ class GitRemoteInfo:
     default_branch: str
     push_enabled: bool
     pr_creation_enabled: bool
+
+
+@dataclass(frozen=True)
+class GitPushResult:
+    """
+    Captured result from an attempted branch push.
+    """
+
+    success: bool
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    duration_seconds: float
+    remote_branch: str
+    message: str
+
+    def log_messages(self) -> list[tuple[str, str]]:
+        messages: list[tuple[str, str]] = [
+            ("info", f"Push duration: {self.duration_seconds:.2f}s."),
+        ]
+
+        if self.exit_code is not None:
+            level = "info" if self.success else "error"
+            messages.append((level, f"Push exit code: {self.exit_code}."))
+
+        if self.stdout.strip():
+            messages.append(("info", f"Push stdout:\n{self.stdout.strip()}"))
+
+        if self.stderr.strip():
+            level = "info" if self.success else "error"
+            messages.append((level, f"Push stderr:\n{self.stderr.strip()}"))
+
+        return messages
 
 
 class GitHubClient:
@@ -178,7 +213,8 @@ class GitHubClient:
         self,
         repo: Repo,
         branch: str,
-    ) -> None:
+        default_branch: str | None = None,
+    ) -> GitPushResult:
         """
         Push a branch to origin.
 
@@ -190,10 +226,47 @@ class GitHubClient:
                 "Push is disabled. Set ALLOW_PUSH=true to enable it."
             )
 
+        remote_info = self.get_remote_info(repo, default_branch)
+        self._validate_push_target(repo, branch, remote_info)
+
+        started_at = perf_counter()
+
         try:
-            repo.git.push("--set-upstream", "origin", branch)
-        except GitCommandError as exc:
-            raise GitHubClientError(f"Failed to push branch: {branch}") from exc
+            completed = subprocess.run(
+                ["git", "push", "-u", "origin", branch],
+                cwd=repo.working_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            duration_seconds = perf_counter() - started_at
+            return GitPushResult(
+                success=False,
+                stdout="",
+                stderr=str(exc),
+                exit_code=None,
+                duration_seconds=duration_seconds,
+                remote_branch=f"origin/{branch}",
+                message=f"Push failed to start: {exc}",
+            )
+
+        duration_seconds = perf_counter() - started_at
+        success = completed.returncode == 0
+
+        return GitPushResult(
+            success=success,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            exit_code=completed.returncode,
+            duration_seconds=duration_seconds,
+            remote_branch=f"origin/{branch}",
+            message=(
+                f"Push completed for branch {branch}."
+                if success
+                else f"Push failed for branch {branch}."
+            ),
+        )
 
     async def create_pull_request(
         self,
@@ -291,6 +364,44 @@ class GitHubClient:
             return urls[0]
 
         return None
+
+    def _validate_push_target(
+        self,
+        repo: Repo,
+        branch: str,
+        remote_info: GitRemoteInfo,
+    ) -> None:
+        if not remote_info.has_valid_origin:
+            raise GitHubClientError("Cannot push because origin remote is missing.")
+
+        if not branch:
+            raise GitHubClientError("Cannot push because branch is missing.")
+
+        protected_branches = {
+            "main",
+            "master",
+            self.settings.github_default_branch,
+            remote_info.default_branch,
+        }
+
+        if branch in protected_branches:
+            raise GitHubClientError(f"Refusing to push protected branch: {branch}")
+
+        if not branch.startswith("agentdock/"):
+            raise GitHubClientError(
+                f"Refusing to push non-AgentDock task branch: {branch}"
+            )
+
+        if self._current_branch(repo) != branch:
+            raise GitHubClientError(
+                f"Refusing to push branch {branch}; current branch is "
+                f"{self._current_branch(repo) or 'detached'}."
+            )
+
+        try:
+            repo.git.check_ref_format("--branch", branch)
+        except GitCommandError as exc:
+            raise GitHubClientError(f"Invalid branch name for push: {branch}") from exc
 
     def _current_branch(self, repo: Repo) -> str | None:
         try:

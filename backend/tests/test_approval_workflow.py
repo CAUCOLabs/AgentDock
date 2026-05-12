@@ -145,13 +145,151 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertFalse((settings.workspace_root / task_id).exists())
             self.assertIsNone(TaskStore(settings).get_task(task_id))
 
-    def _settings(self, temp_path: Path) -> Settings:
+    def test_approve_pushes_task_branch_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True)
+            task_id = "task_pushtest"
+            branch = f"agentdock/{task_id}"
+            remote_path = Path(temp_dir) / "origin.git"
+            Repo.init(remote_path, bare=True)
+            repo_path = settings.workspace_root / task_id / "repo"
+            repo = self._create_repo(repo_path)
+            repo.create_remote("origin", str(remote_path))
+            repo.git.checkout("-b", branch)
+            (repo_path / "pushed.txt").write_text("pushed\n", encoding="utf-8")
+            store = self._save_waiting_task(settings, task_id)
+            store.save_diff(task_id, "diff snapshot")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertTrue(task.pushed)
+            self.assertIsNotNone(task.pushed_at)
+            self.assertEqual(task.remote_branch, f"origin/{branch}")
+            self.assertIn("Push completed", task.last_push_result or "")
+
+            remote_repo = Repo(remote_path)
+            self.assertIn(branch, [head.name for head in remote_repo.heads])
+
+    def test_push_enabled_rejects_protected_branch_without_undoing_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True)
+            task_id = "task_mainpush"
+            remote_path = Path(temp_dir) / "origin.git"
+            Repo.init(remote_path, bare=True)
+            repo_path = settings.workspace_root / task_id / "repo"
+            repo = self._create_repo(repo_path)
+            repo.create_remote("origin", str(remote_path))
+            (repo_path / "protected.txt").write_text("commit only\n", encoding="utf-8")
+            store = self._save_waiting_task(settings, task_id, branch="main")
+            store.save_diff(task_id, "diff snapshot")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 500)
+            repo = Repo(repo_path)
+            self.assertIn("AgentDock task: task_mainpush", repo.head.commit.message)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertFalse(task.pushed)
+            self.assertIn("protected branch", task.last_push_result or "")
+
+    def test_push_enabled_missing_origin_fails_without_undoing_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True)
+            task_id = "task_noorigin"
+            branch = f"agentdock/{task_id}"
+            repo_path = settings.workspace_root / task_id / "repo"
+            repo = self._create_repo(repo_path)
+            repo.git.checkout("-b", branch)
+            (repo_path / "missing-origin.txt").write_text("commit only\n", encoding="utf-8")
+            store = self._save_waiting_task(settings, task_id)
+            store.save_diff(task_id, "diff snapshot")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 500)
+            repo = Repo(repo_path)
+            self.assertIn("AgentDock task: task_noorigin", repo.head.commit.message)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertFalse(task.pushed)
+            self.assertIn("origin remote is missing", task.last_push_result or "")
+
+    def test_push_failure_persists_result_without_undoing_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True)
+            task_id = "task_pushfail"
+            branch = f"agentdock/{task_id}"
+            repo_path = settings.workspace_root / task_id / "repo"
+            repo = self._create_repo(repo_path)
+            repo.create_remote("origin", str(Path(temp_dir) / "missing.git"))
+            repo.git.checkout("-b", branch)
+            (repo_path / "push-fail.txt").write_text("commit only\n", encoding="utf-8")
+            store = self._save_waiting_task(settings, task_id)
+            store.save_diff(task_id, "diff snapshot")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 500)
+            repo = Repo(repo_path)
+            self.assertIn("AgentDock task: task_pushfail", repo.head.commit.message)
+            restarted_store = TaskStore(settings)
+            task = restarted_store.get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertFalse(task.pushed)
+            self.assertEqual(task.remote_branch, f"origin/{branch}")
+            self.assertIn("Push failed", task.last_push_result or "")
+            self.assertIsNone(task.pushed_at)
+
+    def _settings(self, temp_path: Path, allow_push: bool = False) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",
             LOGS_DIR=temp_path / "logs",
+            AGENTDOCK_DB_PATH=temp_path / "data" / "agentdock.sqlite3",
+            ALLOW_PUSH=allow_push,
         )
 
-    def _save_waiting_task(self, settings: Settings, task_id: str) -> TaskStore:
+    def _save_waiting_task(
+        self,
+        settings: Settings,
+        task_id: str,
+        branch: str | None = None,
+    ) -> TaskStore:
         store = TaskStore(settings)
         now = datetime.now(timezone.utc)
         store.save_task(
@@ -159,7 +297,8 @@ class ApprovalWorkflowTests(unittest.TestCase):
                 task_id=task_id,
                 repo_url="https://github.com/example/repo",
                 base_branch="main",
-                working_branch=f"agentdock/{task_id}",
+                working_branch=branch or f"agentdock/{task_id}",
+                workspace_path=str(settings.workspace_root / task_id / "repo"),
                 instruction="Modify the repository for testing.",
                 agent=AgentProvider.mock,
                 status=TaskStatus.waiting_for_approval,
@@ -172,7 +311,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
 
     def _create_repo(self, repo_path: Path) -> Repo:
         repo_path.mkdir(parents=True, exist_ok=True)
-        repo = Repo.init(repo_path)
+        repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
             config.set_value("user", "name", "AgentDock Tests")
             config.set_value("user", "email", "agentdock-tests@example.local")

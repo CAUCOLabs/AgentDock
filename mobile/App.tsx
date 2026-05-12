@@ -474,6 +474,10 @@ export default function App() {
               <InfoRow label="Remote" value={workspace.remote_url ?? "None"} />
               <InfoRow label="Default branch" value={workspace.default_branch ?? "Unknown"} />
               <InfoRow label="Push" value={workspace.push_enabled ? "Enabled" : "Disabled"} />
+              <InfoRow label="Pushed" value={workspace.pushed ? "Yes" : "No"} />
+              <InfoRow label="Remote branch" value={workspace.remote_branch ?? "None"} />
+              <InfoRow label="Pushed at" value={workspace.pushed_at ? formatDate(workspace.pushed_at) : "None"} />
+              <InfoRow label="Last push" value={workspace.last_push_result ?? "None"} />
               <InfoRow label="PRs" value={workspace.pr_creation_enabled ? "Enabled" : "Disabled"} />
               <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
               <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />

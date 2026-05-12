@@ -28,6 +28,9 @@ export type TaskSummary = {
   changed_files: ChangedFile[];
   commit_sha: string | null;
   pushed: boolean;
+  pushed_at?: string | null;
+  remote_branch?: string | null;
+  last_push_result?: string | null;
   pr_url: string | null;
   created_at: string;
   updated_at: string;
@@ -56,6 +59,9 @@ export type WorkspaceStatusResponse = {
   changed_files: ChangedFile[];
   commit_sha: string | null;
   pushed: boolean;
+  pushed_at?: string | null;
+  remote_branch?: string | null;
+  last_push_result?: string | null;
   pr_url: string | null;
 };
 

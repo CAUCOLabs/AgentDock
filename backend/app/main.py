@@ -393,6 +393,9 @@ def get_workspace_status(
         changed_files=changed_files,
         commit_sha=task.commit_sha,
         pushed=task.pushed,
+        pushed_at=task.pushed_at,
+        remote_branch=task.remote_branch,
+        last_push_result=task.last_push_result,
         pr_url=task.pr_url,
     )
     task_store.save_workspace_snapshot(
@@ -410,6 +413,9 @@ def get_workspace_status(
         pr_creation_enabled=response.pr_creation_enabled,
         commit_sha=response.commit_sha,
         pushed=response.pushed,
+        pushed_at=response.pushed_at,
+        remote_branch=response.remote_branch,
+        last_push_result=response.last_push_result,
         pr_url=response.pr_url,
     )
 
@@ -475,6 +481,9 @@ async def approve_or_reject_task(
                 pr_creation_enabled=remote_info.pr_creation_enabled,
                 commit_sha=task.commit_sha,
                 pushed=task.pushed,
+                pushed_at=task.pushed_at,
+                remote_branch=task.remote_branch,
+                last_push_result=task.last_push_result,
                 pr_url=task.pr_url,
             )
         except (DiffServiceError, GitHubClientError, WorkspaceError) as exc:
@@ -536,6 +545,9 @@ async def approve_or_reject_task(
     task.status = TaskStatus.completed
     task.commit_sha = commit_sha
     task.pushed = False
+    task.pushed_at = None
+    task.remote_branch = None
+    task.last_push_result = "Push not attempted."
     task.pr_url = None
     task.updated_at = now
     task.completed_at = now
@@ -558,6 +570,9 @@ async def approve_or_reject_task(
             pr_creation_enabled=remote_info.pr_creation_enabled,
             commit_sha=commit_sha,
             pushed=False,
+            pushed_at=None,
+            remote_branch=None,
+            last_push_result=task.last_push_result,
             pr_url=None,
         )
     except DiffServiceError as exc:
@@ -590,8 +605,38 @@ async def approve_or_reject_task(
         )
 
     try:
-        github_client.push_branch(repo, task.working_branch)
+        push_result = github_client.push_branch(
+            repo,
+            task.working_branch,
+            default_branch=task.base_branch,
+        )
+
+        for level, message in push_result.log_messages():
+            task_store.append_log(task_id, level, message)
+
+        task.last_push_result = push_result.message
+        task.remote_branch = push_result.remote_branch
+
+        if not push_result.success:
+            task.pushed = False
+            task.error = push_result.message
+            task_store.save_task(task)
+            task_store.append_log(
+                task_id,
+                "error",
+                f"Push failed: {push_result.message}",
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "task_id": task_id,
+                    "error": push_result.message,
+                },
+            )
+
         task.pushed = True
+        task.pushed_at = datetime.now(timezone.utc)
         task_store.append_log(
             task_id,
             "info",
@@ -600,6 +645,7 @@ async def approve_or_reject_task(
     except GitHubClientError as exc:
         task.pushed = False
         task.error = str(exc)
+        task.last_push_result = str(exc)
         task_store.save_task(task)
         task_store.append_log(task_id, "error", f"Push failed: {exc}")
 
@@ -610,6 +656,35 @@ async def approve_or_reject_task(
                 "error": str(exc),
             },
         ) from exc
+
+    try:
+        diff_service = DiffService(repo_path)
+        task_store.save_workspace_snapshot(
+            task_id=task_id,
+            repo_path=str(repo_path),
+            branch=repo.active_branch.name,
+            head_commit=repo.head.commit.hexsha,
+            is_dirty=repo.is_dirty(untracked_files=True),
+            has_untracked_files=bool(repo.untracked_files),
+            changed_files=diff_service.get_changed_files(),
+            remote_url=remote_info.remote_url,
+            has_valid_origin=remote_info.has_valid_origin,
+            default_branch=remote_info.default_branch,
+            push_enabled=remote_info.push_enabled,
+            pr_creation_enabled=remote_info.pr_creation_enabled,
+            commit_sha=commit_sha,
+            pushed=task.pushed,
+            pushed_at=task.pushed_at,
+            remote_branch=task.remote_branch,
+            last_push_result=task.last_push_result,
+            pr_url=task.pr_url,
+        )
+    except DiffServiceError as exc:
+        task_store.append_log(
+            task_id,
+            "warning",
+            f"Workspace snapshot failed after push: {exc}",
+        )
 
     if not settings.allow_pr_creation:
         task_store.save_task(task)

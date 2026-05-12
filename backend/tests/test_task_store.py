@@ -55,6 +55,10 @@ class TaskStorePersistenceTests(unittest.TestCase):
             task.status = TaskStatus.completed
             task.commit_sha = "abc123"
             task.completed_at = datetime.now(timezone.utc)
+            task.pushed = True
+            task.pushed_at = datetime.now(timezone.utc)
+            task.remote_branch = "origin/agentdock/task_completed"
+            task.last_push_result = "Push completed for branch agentdock/task_completed."
 
             TaskStore(settings).save_task(task)
             persisted_task = TaskStore(settings).get_task(task.task_id)
@@ -63,6 +67,13 @@ class TaskStorePersistenceTests(unittest.TestCase):
             self.assertEqual(persisted_task.status, TaskStatus.completed)
             self.assertEqual(persisted_task.commit_sha, "abc123")
             self.assertIsNotNone(persisted_task.completed_at)
+            self.assertTrue(persisted_task.pushed)
+            self.assertIsNotNone(persisted_task.pushed_at)
+            self.assertEqual(
+                persisted_task.remote_branch,
+                "origin/agentdock/task_completed",
+            )
+            self.assertIn("Push completed", persisted_task.last_push_result or "")
 
     def test_rejected_task_audit_data_and_clean_snapshot_persist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
