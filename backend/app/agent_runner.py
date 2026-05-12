@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import shlex
+import subprocess
+from time import perf_counter
 
+from app.config import Settings
 from app.models import AgentProvider
 
 
@@ -20,10 +24,41 @@ class AgentRunResult:
         success: bool,
         message: str,
         modified_files: list[str] | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        exit_code: int | None = None,
+        duration_seconds: float | None = None,
     ) -> None:
         self.success = success
         self.message = message
         self.modified_files = modified_files or []
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+        self.duration_seconds = duration_seconds
+
+    def log_messages(self) -> list[tuple[str, str]]:
+        """
+        Return concise task log entries for runner diagnostics.
+        """
+
+        messages: list[tuple[str, str]] = []
+
+        if self.duration_seconds is not None:
+            messages.append(("info", f"Runner duration: {self.duration_seconds:.2f}s."))
+
+        if self.exit_code is not None:
+            level = "info" if self.exit_code == 0 else "error"
+            messages.append((level, f"Runner exit code: {self.exit_code}."))
+
+        if self.stdout.strip():
+            messages.append(("info", f"Runner stdout:\n{self.stdout.strip()}"))
+
+        if self.stderr.strip():
+            level = "info" if self.success else "error"
+            messages.append((level, f"Runner stderr:\n{self.stderr.strip()}"))
+
+        return messages
 
 
 class BaseAgentRunner:
@@ -43,7 +78,7 @@ class BaseAgentRunner:
         raise NotImplementedError
 
 
-class MockAgentRunner(BaseAgentRunner):
+class MockRunner(BaseAgentRunner):
     """
     Safe mock agent for MVP development.
 
@@ -82,7 +117,9 @@ class MockAgentRunner(BaseAgentRunner):
         try:
             note_path.write_text(content, encoding="utf-8")
         except OSError as exc:
-            raise AgentRunnerError(f"Failed to write mock agent output: {note_path}") from exc
+            raise AgentRunnerError(
+                f"Failed to write mock agent output: {note_path}"
+            ) from exc
 
         return AgentRunResult(
             success=True,
@@ -135,15 +172,159 @@ class OpenAIAgentRunner(BaseAgentRunner):
         )
 
 
-def get_agent_runner(provider: AgentProvider) -> BaseAgentRunner:
+class LocalRunner(BaseAgentRunner):
+    """
+    Runs a configured local command inside the isolated task repository.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def run(
+        self,
+        repo_path: Path,
+        instruction: str,
+    ) -> AgentRunResult:
+        """
+        Execute the configured command and capture process details.
+        """
+
+        command = (self.settings.local_runner_command or "").strip()
+
+        if not command:
+            raise AgentRunnerError("LOCAL_RUNNER_COMMAND is required for local runner.")
+
+        safe_repo_path = self._validate_repo_path(repo_path)
+        timeout_seconds = (
+            self.settings.local_runner_timeout_seconds
+            or self.settings.max_task_runtime_seconds
+        )
+
+        try:
+            args = shlex.split(command)
+        except ValueError as exc:
+            raise AgentRunnerError(f"Invalid LOCAL_RUNNER_COMMAND: {exc}") from exc
+
+        if not args:
+            raise AgentRunnerError("LOCAL_RUNNER_COMMAND cannot be empty.")
+
+        started_at = perf_counter()
+
+        try:
+            completed = subprocess.run(
+                args,
+                cwd=safe_repo_path,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration_seconds = perf_counter() - started_at
+            stdout = self._process_output(exc.stdout)
+            stderr = self._process_output(exc.stderr)
+
+            return AgentRunResult(
+                success=False,
+                message=f"Local runner timed out after {timeout_seconds}s.",
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=None,
+                duration_seconds=duration_seconds,
+            )
+        except OSError as exc:
+            duration_seconds = perf_counter() - started_at
+
+            return AgentRunResult(
+                success=False,
+                message=f"Local runner failed to start: {exc}",
+                stderr=str(exc),
+                exit_code=None,
+                duration_seconds=duration_seconds,
+            )
+
+        duration_seconds = perf_counter() - started_at
+        success = completed.returncode == 0
+
+        return AgentRunResult(
+            success=success,
+            message=(
+                "Local runner completed successfully."
+                if success
+                else "Local runner failed."
+            ),
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            exit_code=completed.returncode,
+            duration_seconds=duration_seconds,
+        )
+
+    def _validate_repo_path(self, repo_path: Path) -> Path:
+        """
+        Keep local commands constrained to AgentDock task workspaces.
+        """
+
+        workspace_root = self.settings.workspace_root.resolve()
+        resolved_repo_path = repo_path.resolve()
+
+        try:
+            resolved_repo_path.relative_to(workspace_root)
+        except ValueError as exc:
+            raise AgentRunnerError(
+                f"Local runner repository path is outside workspace root: {repo_path}"
+            ) from exc
+
+        if resolved_repo_path.name != "repo":
+            raise AgentRunnerError(
+                f"Local runner must execute in a task repo directory: {repo_path}"
+            )
+
+        if not (resolved_repo_path / ".git").exists():
+            raise AgentRunnerError(f"Local runner path is not a Git repo: {repo_path}")
+
+        return resolved_repo_path
+
+    def _process_output(self, value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, bytes):
+            return value.decode(errors="replace")
+
+        return value
+
+
+def get_agent_runner(provider: AgentProvider, settings: Settings) -> BaseAgentRunner:
     """
     Return the correct runner for the selected provider.
     """
 
+    if _should_use_local_runner(provider, settings):
+        return LocalRunner(settings)
+
     if provider == AgentProvider.mock:
-        return MockAgentRunner()
+        return MockRunner()
 
     if provider == AgentProvider.openai:
         return OpenAIAgentRunner()
 
     raise AgentRunnerError(f"Unsupported agent provider: {provider}")
+
+
+def _should_use_local_runner(provider: AgentProvider, settings: Settings) -> bool:
+    configured_runner = settings.agent_runner.lower().strip()
+    configured_provider = settings.ai_provider.lower().strip()
+    has_local_command = bool(settings.local_runner_command)
+
+    if provider.value == "local":
+        return True
+
+    return (
+        provider == AgentProvider.mock
+        and configured_runner == "local"
+        and has_local_command
+    ) or (configured_provider == "local" and has_local_command)
+
+
+MockAgentRunner = MockRunner
+LocalAgentRunner = LocalRunner

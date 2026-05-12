@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Local storage
     workspaces_dir: Path = Field(default=Path("./workspaces"), alias="WORKSPACES_DIR")
     logs_dir: Path = Field(default=Path("./logs"), alias="LOGS_DIR")
+    agentdock_db_path: Path = Field(
+        default=Path("./data/agentdock.sqlite3"),
+        alias="AGENTDOCK_DB_PATH",
+    )
 
     # GitHub integration
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
@@ -40,6 +44,15 @@ class Settings(BaseSettings):
     # AI provider
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     ai_provider: str = Field(default="mock", alias="AI_PROVIDER")
+    agent_runner: str = Field(default="mock", alias="AGENT_RUNNER")
+    local_runner_command: str | None = Field(
+        default=None,
+        alias="LOCAL_RUNNER_COMMAND",
+    )
+    local_runner_timeout_seconds: int | None = Field(
+        default=None,
+        alias="LOCAL_RUNNER_TIMEOUT_SECONDS",
+    )
 
     # Safety
     allow_push: bool = Field(default=False, alias="ALLOW_PUSH")
@@ -61,6 +74,10 @@ class Settings(BaseSettings):
     def logs_root(self) -> Path:
         return self.logs_dir.resolve()
 
+    @property
+    def db_path(self) -> Path:
+        return self.agentdock_db_path.resolve()
+
     def ensure_local_directories(self) -> None:
         """
         Ensure local runtime directories exist.
@@ -69,6 +86,7 @@ class Settings(BaseSettings):
         """
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

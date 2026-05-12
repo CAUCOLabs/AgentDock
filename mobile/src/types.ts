@@ -8,7 +8,7 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type AgentProvider = "mock" | "openai";
+export type AgentProvider = "mock" | "local" | "openai";
 
 export type ChangedFile = {
   path: string;
@@ -46,6 +46,11 @@ export type WorkspaceStatusResponse = {
   repo_path: string;
   branch: string | null;
   head_commit: string | null;
+  remote_url?: string | null;
+  has_valid_origin?: boolean;
+  default_branch?: string | null;
+  push_enabled?: boolean;
+  pr_creation_enabled?: boolean;
   is_dirty: boolean;
   has_untracked_files: boolean;
   changed_files: ChangedFile[];
@@ -69,7 +74,7 @@ export type TaskCreateRequest = {
   repo_url: string;
   base_branch: string;
   instruction: string;
-  agent: "mock";
+  agent: AgentProvider;
 };
 
 export type TaskCreateResponse = {

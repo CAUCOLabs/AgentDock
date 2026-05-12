@@ -58,10 +58,19 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, str | bool]:
 
 def get_task_store(settings: Settings = Depends(get_settings)) -> TaskStore:
     """
-    Return the JSON-backed task store.
+    Return the SQLite-backed task store.
     """
 
     return TaskStore(settings)
+
+
+@app.on_event("startup")
+def initialize_task_store() -> None:
+    """
+    Initialize SQLite storage and run conservative task recovery at startup.
+    """
+
+    TaskStore(get_settings())
 
 
 @app.get("/")
@@ -107,6 +116,7 @@ def create_task(
         repo_url=str(payload.repo_url),
         base_branch=payload.base_branch,
         working_branch=working_branch,
+        workspace_path=str(settings.workspace_root / task_id / "repo"),
         instruction=payload.instruction,
         agent=payload.agent,
         status=TaskStatus.running,
@@ -136,6 +146,8 @@ def create_task(
         task.updated_at = datetime.now(timezone.utc)
 
         task_store.save_task(task)
+        for level, message in result.log_messages:
+            task_store.append_log(task_id, level, message)
         task_store.append_log(task_id, "info", "Task completed by runner.")
         task_store.save_diff(task_id, result.diff)
         task_store.append_log(task_id, "info", "Diff ready for approval.")
@@ -153,6 +165,8 @@ def create_task(
 
         task_store.save_task(task)
         task_store.save_diff(task_id, "")
+        for level, message in exc.log_messages:
+            task_store.append_log(task_id, level, message)
         task_store.append_log(task_id, "error", f"Task runner failed: {exc}")
 
         raise HTTPException(
@@ -308,6 +322,11 @@ def get_workspace_status(
         workspace_path = workspace_manager.get_workspace(task_id)
 
         if not workspace_path.exists():
+            snapshot = task_store.get_workspace_status_snapshot(task_id)
+
+            if snapshot is not None:
+                return snapshot
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Workspace repository not found for task: {task_id}",
@@ -324,13 +343,20 @@ def get_workspace_status(
         ) from exc
 
     if not repo_path.exists():
+        snapshot = task_store.get_workspace_status_snapshot(task_id)
+
+        if snapshot is not None:
+            return snapshot
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workspace repository not found for task: {task_id}",
         )
 
     try:
-        repo = GitHubClient(settings).open_repository(repo_path)
+        github_client = GitHubClient(settings)
+        repo = github_client.open_repository(repo_path)
+        remote_info = github_client.get_remote_info(repo, task.base_branch)
         diff_service = DiffService(repo_path)
         changed_files = diff_service.get_changed_files()
     except (GitHubClientError, DiffServiceError) as exc:
@@ -352,11 +378,16 @@ def get_workspace_status(
     except ValueError:
         head_commit = None
 
-    return WorkspaceStatusResponse(
+    response = WorkspaceStatusResponse(
         task_id=task_id,
         repo_path=str(repo_path),
         branch=branch,
         head_commit=head_commit,
+        remote_url=remote_info.remote_url,
+        has_valid_origin=remote_info.has_valid_origin,
+        default_branch=remote_info.default_branch,
+        push_enabled=remote_info.push_enabled,
+        pr_creation_enabled=remote_info.pr_creation_enabled,
         is_dirty=repo.is_dirty(untracked_files=True),
         has_untracked_files=bool(repo.untracked_files),
         changed_files=changed_files,
@@ -364,6 +395,25 @@ def get_workspace_status(
         pushed=task.pushed,
         pr_url=task.pr_url,
     )
+    task_store.save_workspace_snapshot(
+        task_id=task_id,
+        repo_path=response.repo_path,
+        branch=response.branch,
+        head_commit=response.head_commit,
+        is_dirty=response.is_dirty,
+        has_untracked_files=response.has_untracked_files,
+        changed_files=response.changed_files,
+        remote_url=response.remote_url,
+        has_valid_origin=response.has_valid_origin,
+        default_branch=response.default_branch,
+        push_enabled=response.push_enabled,
+        pr_creation_enabled=response.pr_creation_enabled,
+        commit_sha=response.commit_sha,
+        pushed=response.pushed,
+        pr_url=response.pr_url,
+    )
+
+    return response
 
 
 @app.post("/tasks/{task_id}/approval", response_model=TaskApprovalResponse)
@@ -400,10 +450,54 @@ async def approve_or_reject_task(
     now = datetime.now(timezone.utc)
 
     if not payload.approve:
+        task_store.append_log(task_id, "info", "Task rejected.")
+
+        try:
+            workspace_manager = WorkspaceManager(settings)
+            repo_path = workspace_manager.repo_path(task_id)
+            github_client = GitHubClient(settings)
+            repo = github_client.open_repository(repo_path)
+            remote_info = github_client.get_remote_info(repo, task.base_branch)
+            github_client.revert_and_clean(repo)
+            diff_service = DiffService(repo_path)
+            task_store.save_workspace_snapshot(
+                task_id=task_id,
+                repo_path=str(repo_path),
+                branch=repo.active_branch.name,
+                head_commit=repo.head.commit.hexsha,
+                is_dirty=repo.is_dirty(untracked_files=True),
+                has_untracked_files=bool(repo.untracked_files),
+                changed_files=diff_service.get_changed_files(),
+                remote_url=remote_info.remote_url,
+                has_valid_origin=remote_info.has_valid_origin,
+                default_branch=remote_info.default_branch,
+                push_enabled=remote_info.push_enabled,
+                pr_creation_enabled=remote_info.pr_creation_enabled,
+                commit_sha=task.commit_sha,
+                pushed=task.pushed,
+                pr_url=task.pr_url,
+            )
+        except (DiffServiceError, GitHubClientError, WorkspaceError) as exc:
+            task.status = TaskStatus.failed
+            task.error = str(exc)
+            task.updated_at = now
+            task_store.save_task(task)
+            task_store.append_log(task_id, "error", f"Workspace cleanup failed: {exc}")
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "task_id": task_id,
+                    "error": str(exc),
+                },
+            ) from exc
+
         task.status = TaskStatus.rejected
         task.updated_at = now
+        task.rejected_at = now
         task_store.save_task(task)
-        task_store.append_log(task_id, "info", "Task rejected.")
+        task_store.append_log(task_id, "info", "Workspace reverted.")
+        task_store.append_log(task_id, "info", "Workspace cleaned.")
 
         return TaskApprovalResponse(
             task_id=task_id,
@@ -428,6 +522,7 @@ async def approve_or_reject_task(
         repo_path = workspace_manager.repo_path(task_id)
         github_client = GitHubClient(settings)
         repo = github_client.open_repository(repo_path)
+        remote_info = github_client.get_remote_info(repo, task.base_branch)
         commit_sha = github_client.commit_all(repo, f"AgentDock task: {task_id}")
     except (GitHubClientError, WorkspaceError) as exc:
         raise HTTPException(
@@ -443,7 +538,34 @@ async def approve_or_reject_task(
     task.pushed = False
     task.pr_url = None
     task.updated_at = now
+    task.completed_at = now
     task_store.append_log(task_id, "info", f"Task locally committed: {commit_sha}.")
+
+    try:
+        diff_service = DiffService(repo_path)
+        task_store.save_workspace_snapshot(
+            task_id=task_id,
+            repo_path=str(repo_path),
+            branch=repo.active_branch.name,
+            head_commit=repo.head.commit.hexsha,
+            is_dirty=repo.is_dirty(untracked_files=True),
+            has_untracked_files=bool(repo.untracked_files),
+            changed_files=diff_service.get_changed_files(),
+            remote_url=remote_info.remote_url,
+            has_valid_origin=remote_info.has_valid_origin,
+            default_branch=remote_info.default_branch,
+            push_enabled=remote_info.push_enabled,
+            pr_creation_enabled=remote_info.pr_creation_enabled,
+            commit_sha=commit_sha,
+            pushed=False,
+            pr_url=None,
+        )
+    except DiffServiceError as exc:
+        task_store.append_log(
+            task_id,
+            "warning",
+            f"Workspace snapshot failed after approval: {exc}",
+        )
 
     if not settings.allow_push:
         task_store.save_task(task)

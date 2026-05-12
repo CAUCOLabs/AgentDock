@@ -13,6 +13,14 @@ class TaskRunnerError(Exception):
     Raised when a task runner operation fails.
     """
 
+    def __init__(
+        self,
+        message: str,
+        log_messages: list[tuple[str, str]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.log_messages = log_messages or []
+
 
 @dataclass
 class TaskRunResult:
@@ -23,6 +31,7 @@ class TaskRunResult:
     diff: str
     changed_files: list[ChangedFile]
     message: str
+    log_messages: list[tuple[str, str]]
 
 
 class TaskRunner:
@@ -71,7 +80,7 @@ class TaskRunner:
                 working_branch=working_branch,
             )
 
-            runner = get_agent_runner(agent)
+            runner = get_agent_runner(agent, self.settings)
 
             agent_result = runner.run(
                 repo_path=repo_path,
@@ -79,7 +88,10 @@ class TaskRunner:
             )
 
             if not agent_result.success:
-                raise TaskRunnerError(agent_result.message)
+                raise TaskRunnerError(
+                    agent_result.message,
+                    log_messages=agent_result.log_messages(),
+                )
 
             diff_service = DiffService(repo_path)
 
@@ -87,12 +99,16 @@ class TaskRunner:
             changed_files = diff_service.get_changed_files()
 
             if not diff_service.has_changes():
-                raise TaskRunnerError("Agent completed but produced no changes.")
+                raise TaskRunnerError(
+                    "Agent completed but produced no changes.",
+                    log_messages=agent_result.log_messages(),
+                )
 
             return TaskRunResult(
                 diff=diff,
                 changed_files=changed_files,
                 message=agent_result.message,
+                log_messages=agent_result.log_messages(),
             )
 
         except (

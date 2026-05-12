@@ -29,6 +29,7 @@ class AgentProvider(str, Enum):
     """
 
     mock = "mock"
+    local = "local"
     openai = "openai"
 
 
@@ -91,8 +92,11 @@ class TaskSummary(BaseModel):
 
     task_id: str
     repo_url: str
+    repo_owner: str | None = None
+    repo_name: str | None = None
     base_branch: str
     working_branch: str | None = None
+    workspace_path: str | None = None
     instruction: str
     agent: AgentProvider
     status: TaskStatus
@@ -102,6 +106,9 @@ class TaskSummary(BaseModel):
     pr_url: str | None = None
     created_at: datetime
     updated_at: datetime
+    completed_at: datetime | None = None
+    rejected_at: datetime | None = None
+    deleted_at: datetime | None = None
     error: str | None = None
 
 
@@ -125,6 +132,11 @@ class WorkspaceStatusResponse(BaseModel):
     repo_path: str
     branch: str | None = None
     head_commit: str | None = None
+    remote_url: str | None = None
+    has_valid_origin: bool = False
+    default_branch: str | None = None
+    push_enabled: bool = False
+    pr_creation_enabled: bool = False
     is_dirty: bool
     has_untracked_files: bool
     changed_files: list[ChangedFile] = Field(default_factory=list)

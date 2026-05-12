@@ -470,6 +470,11 @@ export default function App() {
             <View style={styles.detailStack}>
               <InfoRow label="Branch" value={workspace.branch ?? "Detached"} />
               <InfoRow label="Head" value={shortSha(workspace.head_commit)} />
+              <InfoRow label="Origin" value={workspace.has_valid_origin ? "Valid" : "Missing"} />
+              <InfoRow label="Remote" value={workspace.remote_url ?? "None"} />
+              <InfoRow label="Default branch" value={workspace.default_branch ?? "Unknown"} />
+              <InfoRow label="Push" value={workspace.push_enabled ? "Enabled" : "Disabled"} />
+              <InfoRow label="PRs" value={workspace.pr_creation_enabled ? "Enabled" : "Disabled"} />
               <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
               <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />
               <InfoRow label="Path" value={workspace.repo_path} />

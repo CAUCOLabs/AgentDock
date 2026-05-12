@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -12,6 +13,20 @@ class GitHubClientError(Exception):
     """
     Raised when a GitHub or Git operation fails.
     """
+
+
+@dataclass(frozen=True)
+class GitRemoteInfo:
+    """
+    Read-only remote metadata for workspace readiness checks.
+    """
+
+    remote_url: str | None
+    has_valid_origin: bool
+    current_branch: str | None
+    default_branch: str
+    push_enabled: bool
+    pr_creation_enabled: bool
 
 
 class GitHubClient:
@@ -124,6 +139,41 @@ class GitHubClient:
         except GitCommandError as exc:
             raise GitHubClientError("Failed to create commit.") from exc
 
+    def revert_and_clean(self, repo: Repo) -> None:
+        """
+        Reset tracked changes and remove untracked files from a task repo.
+        """
+
+        try:
+            repo.git.reset("--hard", "HEAD")
+            repo.git.clean("-fd")
+        except GitCommandError as exc:
+            raise GitHubClientError("Failed to revert and clean workspace.") from exc
+
+    def get_remote_info(
+        self,
+        repo: Repo,
+        default_branch: str | None = None,
+    ) -> GitRemoteInfo:
+        """
+        Return safe origin remote metadata for API readiness reporting.
+        """
+
+        origin_url = self._origin_url(repo)
+
+        return GitRemoteInfo(
+            remote_url=self._redact_remote_url(origin_url),
+            has_valid_origin=bool(origin_url),
+            current_branch=self._current_branch(repo),
+            default_branch=(
+                self._origin_default_branch(repo)
+                or default_branch
+                or self.settings.github_default_branch
+            ),
+            push_enabled=self.settings.allow_push,
+            pr_creation_enabled=self.settings.allow_pr_creation,
+        )
+
     def push_branch(
         self,
         repo: Repo,
@@ -216,6 +266,65 @@ class GitHubClient:
             return repo_url
 
         netloc = f"x-access-token:{self.settings.github_token}@{parsed.netloc}"
+
+        return urlunparse(
+            (
+                parsed.scheme,
+                netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+
+    def _origin_url(self, repo: Repo) -> str | None:
+        for remote in repo.remotes:
+            if remote.name != "origin":
+                continue
+
+            urls = list(remote.urls)
+
+            if not urls:
+                return None
+
+            return urls[0]
+
+        return None
+
+    def _current_branch(self, repo: Repo) -> str | None:
+        try:
+            return repo.active_branch.name
+        except TypeError:
+            return None
+
+    def _origin_default_branch(self, repo: Repo) -> str | None:
+        try:
+            ref_name = repo.git.symbolic_ref("--short", "refs/remotes/origin/HEAD")
+        except GitCommandError:
+            return None
+
+        prefix = "origin/"
+
+        if ref_name.startswith(prefix):
+            return ref_name.removeprefix(prefix)
+
+        return ref_name or None
+
+    def _redact_remote_url(self, remote_url: str | None) -> str | None:
+        if not remote_url:
+            return None
+
+        parsed = urlparse(remote_url)
+
+        if not parsed.username and not parsed.password:
+            return remote_url
+
+        hostname = parsed.hostname or ""
+        netloc = hostname
+
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
 
         return urlunparse(
             (

@@ -27,7 +27,7 @@ type TaskStatus =
   | 'failed'
   | 'cancelled'
 
-type AgentProvider = 'mock'
+type AgentProvider = 'mock' | 'local' | 'openai'
 
 type ChangedFile = {
   path: string
@@ -77,6 +77,11 @@ type WorkspaceStatusResponse = {
   repo_path: string
   branch: string | null
   head_commit: string | null
+  remote_url?: string | null
+  has_valid_origin?: boolean
+  default_branch?: string | null
+  push_enabled?: boolean
+  pr_creation_enabled?: boolean
   is_dirty: boolean
   has_untracked_files: boolean
   changed_files: ChangedFile[]
@@ -540,6 +545,7 @@ function App() {
                   }
                 >
                   <option value="mock">Mock</option>
+                  <option value="local">Local command</option>
                   <option value="codex-cli" disabled>
                     Codex CLI - coming soon
                   </option>
@@ -709,6 +715,26 @@ function App() {
               <div>
                 <dt>Head</dt>
                 <dd>{shortSha(workspaceStatus.head_commit)}</dd>
+              </div>
+              <div>
+                <dt>Origin</dt>
+                <dd>{workspaceStatus.has_valid_origin ? 'Valid' : 'Missing'}</dd>
+              </div>
+              <div>
+                <dt>Remote</dt>
+                <dd>{workspaceStatus.remote_url ?? 'None'}</dd>
+              </div>
+              <div>
+                <dt>Default</dt>
+                <dd>{workspaceStatus.default_branch ?? 'Unknown'}</dd>
+              </div>
+              <div>
+                <dt>Push</dt>
+                <dd>{workspaceStatus.push_enabled ? 'Enabled' : 'Disabled'}</dd>
+              </div>
+              <div>
+                <dt>PRs</dt>
+                <dd>{workspaceStatus.pr_creation_enabled ? 'Enabled' : 'Disabled'}</dd>
               </div>
               <div>
                 <dt>Dirty</dt>
