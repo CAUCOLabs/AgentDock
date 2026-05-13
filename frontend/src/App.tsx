@@ -58,6 +58,39 @@ type RepositoryFilePreviewResponse = {
   content: string
 }
 
+type GitHubAccount = {
+  github_user_id: number
+  login: string
+  name?: string | null
+  avatar_url?: string | null
+  html_url?: string | null
+  scopes?: string | null
+  connected_at: string
+}
+
+type GitHubRepository = {
+  id: number
+  name: string
+  full_name: string
+  html_url: string
+  clone_url: string
+  default_branch: string
+  private: boolean
+  visibility: string
+  can_read: boolean
+  can_push: boolean
+}
+
+type GitHubAuthStartResponse = {
+  auth_url: string
+  session_id: string
+  state: string
+}
+
+type GitHubRepositoriesResponse = {
+  repositories: GitHubRepository[]
+}
+
 type TaskSummary = {
   task_id: string
   repo_url: string
@@ -148,6 +181,8 @@ const API_URL =
   import.meta.env.VITE_AGENTDOCK_API_URL?.replace(/\/$/, '') ??
   'http://127.0.0.1:8000'
 
+const GITHUB_SESSION_STORAGE_KEY = 'agentdock.githubSessionId'
+
 const initialForm: CreateTaskForm = {
   repoUrl: '',
   baseBranch: 'main',
@@ -193,11 +228,18 @@ function App() {
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
   const [form, setForm] = useState<CreateTaskForm>(initialForm)
+  const [githubSessionId, setGithubSessionId] = useState<string | null>(() =>
+    localStorage.getItem(GITHUB_SESSION_STORAGE_KEY),
+  )
+  const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null)
+  const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([])
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
     useState<RepositoryFilePreviewResponse | null>(null)
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
+  const [isConnectingGithub, setIsConnectingGithub] = useState(false)
+  const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false)
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
@@ -225,6 +267,17 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (githubSessionId) {
+      localStorage.setItem(GITHUB_SESSION_STORAGE_KEY, githubSessionId)
+      void loadGithubAccount(githubSessionId)
+    } else {
+      localStorage.removeItem(GITHUB_SESSION_STORAGE_KEY)
+      setGithubAccount(null)
+      setGithubRepos([])
+    }
+  }, [githubSessionId])
+
+  useEffect(() => {
     if (!selectedTaskId) {
       setSelectedTask(null)
       setTaskDiff(null)
@@ -240,6 +293,7 @@ function App() {
     const response = await fetch(`${API_URL}${path}`, {
       headers: {
         'Content-Type': 'application/json',
+        ...(githubSessionId ? { 'X-AgentDock-Session': githubSessionId } : {}),
         ...init?.headers,
       },
       ...init,
@@ -367,6 +421,78 @@ function App() {
     } finally {
       setIsCreating(false)
     }
+  }
+
+  async function connectGithub() {
+    setIsConnectingGithub(true)
+    setNotice(null)
+    setError(null)
+
+    try {
+      const result = await request<GitHubAuthStartResponse>(
+        '/auth/github/start',
+        { method: 'POST' },
+      )
+      setGithubSessionId(result.session_id)
+      window.open(result.auth_url, '_blank', 'noopener,noreferrer')
+      setNotice('GitHub login opened. Return here after authorizing.')
+      window.setTimeout(() => void loadGithubAccount(result.session_id), 2500)
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setIsConnectingGithub(false)
+    }
+  }
+
+  async function loadGithubAccount(sessionId = githubSessionId) {
+    if (!sessionId) return
+
+    try {
+      const account = await request<GitHubAccount>('/auth/github/me', {
+        headers: { 'X-AgentDock-Session': sessionId },
+      })
+      setGithubAccount(account)
+      await loadGithubRepos(sessionId)
+    } catch {
+      setGithubAccount(null)
+    }
+  }
+
+  async function loadGithubRepos(sessionId = githubSessionId) {
+    if (!sessionId) return
+
+    setIsLoadingGithubRepos(true)
+
+    try {
+      const result = await request<GitHubRepositoriesResponse>(
+        '/auth/github/repos',
+        { headers: { 'X-AgentDock-Session': sessionId } },
+      )
+      setGithubRepos(result.repositories)
+    } catch (err) {
+      setError(formatError(err))
+    } finally {
+      setIsLoadingGithubRepos(false)
+    }
+  }
+
+  async function logoutGithub() {
+    if (githubSessionId) {
+      await request('/auth/logout', { method: 'POST' }).catch(() => undefined)
+    }
+    setGithubSessionId(null)
+  }
+
+  function selectGithubRepo(repo: GitHubRepository) {
+    setForm((current) => ({
+      ...current,
+      repoUrl: repo.clone_url,
+      baseBranch: repo.default_branch,
+      targetFile: '',
+    }))
+    setRepoFiles([])
+    setFilePreview(null)
+    setNotice(`Selected ${repo.full_name}. Load files to continue.`)
   }
 
   async function loadRepositoryFiles() {
@@ -611,6 +737,73 @@ function App() {
           </div>
 
           <form onSubmit={(event) => void createTask(event)}>
+            <div className="github-connect">
+              <div>
+                <strong>
+                  <GitBranch size={16} />
+                  GitHub
+                </strong>
+                <span>
+                  {githubAccount
+                    ? `Connected as ${githubAccount.login}`
+                    : 'Manual repository URL mode remains available.'}
+                </span>
+              </div>
+              <div className="github-actions">
+                <button
+                  type="button"
+                  className="mini-action"
+                  onClick={() =>
+                    githubAccount
+                      ? void loadGithubRepos()
+                      : void connectGithub()
+                  }
+                  disabled={isConnectingGithub || isLoadingGithubRepos}
+                >
+                  {githubAccount
+                    ? isLoadingGithubRepos
+                      ? 'Loading repos'
+                      : 'Refresh repos'
+                    : isConnectingGithub
+                      ? 'Connecting'
+                      : 'Connect GitHub'}
+                </button>
+                {githubAccount && (
+                  <button
+                    type="button"
+                    className="mini-action"
+                    onClick={() => void logoutGithub()}
+                  >
+                    Logout
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {githubRepos.length > 0 && (
+              <div className="github-repos">
+                {githubRepos.slice(0, 80).map((repo) => (
+                  <button
+                    type="button"
+                    key={repo.id}
+                    className={
+                      form.repoUrl === repo.clone_url
+                        ? 'github-repo selected'
+                        : 'github-repo'
+                    }
+                    onClick={() => selectGithubRepo(repo)}
+                  >
+                    <span>{repo.full_name}</span>
+                    <small>
+                      {repo.private ? 'private' : 'public'} · {repo.default_branch}
+                      {' · '}
+                      {repo.can_push ? 'push' : 'read'}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <label>
               Repository URL
               <input

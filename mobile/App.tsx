@@ -28,6 +28,8 @@ import {
   createTask,
   deleteTask,
   getHealth,
+  getGitHubMe,
+  getGitHubRepos,
   getRepositoryFilePreview,
   getRepositoryFiles,
   getTask,
@@ -35,10 +37,14 @@ import {
   getTaskLogs,
   getTasks,
   getWorkspaceStatus,
+  logout,
+  startGitHubAuth,
 } from "./src/api";
 import { API_BASE_URL } from "./src/config";
 import type {
   TaskDiffResponse,
+  GitHubAccount,
+  GitHubRepository,
   TaskLogEvent,
   TaskLogsResponse,
   RepositoryFileEntry,
@@ -110,6 +116,9 @@ export default function App() {
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
   const [targetFile, setTargetFile] = useState("");
+  const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
+  const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
+  const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
   const [filePreview, setFilePreview] = useState<RepositoryFilePreviewResponse | null>(null);
@@ -125,6 +134,8 @@ export default function App() {
   const [isLoadingTask, setIsLoadingTask] = useState(false);
   const [isActing, setIsActing] = useState(false);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [isConnectingGithub, setIsConnectingGithub] = useState(false);
+  const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
@@ -217,7 +228,7 @@ export default function App() {
         instruction: instruction.trim(),
         agent: "mock",
         target_file: targetFile || null,
-      });
+      }, githubSessionId);
       await refreshTasks();
       await loadTaskDetail(created.task_id);
       setInstruction("");
@@ -243,7 +254,7 @@ export default function App() {
       const result = await getRepositoryFiles({
         repo_url: repoUrl.trim(),
         base_branch: baseBranch.trim() || "main",
-      });
+      }, githubSessionId);
       setRepoFiles(result.files);
     } catch (filesError) {
       setError(filesError instanceof Error ? filesError.message : "Unable to load repository files.");
@@ -261,7 +272,7 @@ export default function App() {
           repo_url: repoUrl.trim(),
           base_branch: baseBranch.trim() || "main",
           path,
-        })
+        }, githubSessionId)
       );
     } catch (previewError) {
       setFilePreview(null);
@@ -326,6 +337,54 @@ export default function App() {
     setInstruction((current) => (current.trim() ? `${current.trim()}\n\n${value}` : value));
   }
 
+  async function handleConnectGitHub() {
+    setIsConnectingGithub(true);
+    setError(null);
+    try {
+      const result = await startGitHubAuth();
+      setGithubSessionId(result.session_id);
+      await Linking.openURL(result.auth_url);
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : "Unable to start GitHub login.");
+    } finally {
+      setIsConnectingGithub(false);
+    }
+  }
+
+  async function handleRefreshGitHub() {
+    if (!githubSessionId) {
+      return;
+    }
+
+    setIsLoadingGithubRepos(true);
+    setError(null);
+    try {
+      const account = await getGitHubMe(githubSessionId);
+      const repos = await getGitHubRepos(githubSessionId);
+      setGithubAccount(account);
+      setGithubRepos(repos.repositories);
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : "Unable to load GitHub account.");
+    } finally {
+      setIsLoadingGithubRepos(false);
+    }
+  }
+
+  async function handleLogoutGitHub() {
+    await logout(githubSessionId).catch(() => undefined);
+    setGithubSessionId(null);
+    setGithubAccount(null);
+    setGithubRepos([]);
+  }
+
+  function handleSelectGitHubRepo(repo: GitHubRepository) {
+    setRepoUrl(repo.clone_url);
+    setBaseBranch(repo.default_branch);
+    setTargetFile("");
+    setRepoFiles([]);
+    setFilePreview(null);
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
@@ -363,6 +422,74 @@ export default function App() {
         ) : null}
 
         <Section title="Prompt Launcher">
+          <View style={styles.githubPanel}>
+            <View style={styles.githubHeader}>
+              <View style={styles.githubTitleRow}>
+                <GitBranch size={18} color="#dcecf7" />
+                <Text style={styles.githubTitle}>GitHub</Text>
+              </View>
+              <Text style={styles.githubSubtitle}>
+                {githubAccount
+                  ? `Connected as ${githubAccount.login}`
+                  : "Manual repository URL mode remains available."}
+              </Text>
+            </View>
+            <View style={styles.githubButtonRow}>
+              <Pressable
+                onPress={() => githubAccount ? void handleRefreshGitHub() : void handleConnectGitHub()}
+                disabled={isConnectingGithub || isLoadingGithubRepos}
+                style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.smallButtonText}>
+                  {githubAccount
+                    ? isLoadingGithubRepos
+                      ? "Loading repos"
+                      : "Refresh repos"
+                    : isConnectingGithub
+                      ? "Connecting"
+                      : "Connect GitHub"}
+                </Text>
+              </Pressable>
+              {githubSessionId ? (
+                <>
+                  <Pressable
+                    onPress={() => void handleRefreshGitHub()}
+                    disabled={isLoadingGithubRepos}
+                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.smallButtonText}>Check status</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void handleLogoutGitHub()}
+                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.smallButtonText}>Logout</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </View>
+            {githubRepos.length > 0 ? (
+              <View style={styles.githubRepoList}>
+                {githubRepos.slice(0, 50).map((repo) => (
+                  <Pressable
+                    key={repo.id}
+                    onPress={() => handleSelectGitHubRepo(repo)}
+                    style={({ pressed }) => [
+                      styles.githubRepoOption,
+                      repoUrl === repo.clone_url && styles.fileOptionSelected,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.fileOptionPath}>{repo.full_name}</Text>
+                    <Text style={styles.fileOptionMeta}>
+                      {repo.private ? "private" : "public"} · {repo.default_branch} · {repo.can_push ? "push" : "read"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+
           <Field label="Repository URL">
             <TextInput
               value={repoUrl}
@@ -1096,6 +1223,49 @@ const styles = StyleSheet.create({
   },
   fileList: {
     gap: 8,
+  },
+  githubPanel: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  githubHeader: {
+    gap: 4,
+  },
+  githubTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  githubTitle: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  githubSubtitle: {
+    color: "#8ea7bd",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  githubButtonRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  githubRepoList: {
+    gap: 8,
+  },
+  githubRepoOption: {
+    gap: 3,
+    minHeight: 44,
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
   },
   filePicker: {
     gap: 10,

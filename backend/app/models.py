@@ -183,6 +183,56 @@ class RepositoryFilePreviewResponse(BaseModel):
     content: str
 
 
+class GitHubAuthStartResponse(BaseModel):
+    """
+    OAuth login bootstrap data.
+    """
+
+    auth_url: str
+    session_id: str
+    state: str
+
+
+class GitHubAccountResponse(BaseModel):
+    """
+    Authenticated GitHub account metadata exposed to clients.
+    """
+
+    github_user_id: int
+    login: str
+    name: str | None = None
+    avatar_url: str | None = None
+    html_url: str | None = None
+    scopes: str | None = None
+    connected_at: datetime
+
+
+class GitHubRepositorySummary(BaseModel):
+    """
+    Repository metadata returned from the authenticated GitHub repo list.
+    """
+
+    id: int
+    name: str
+    full_name: str
+    html_url: str
+    clone_url: str
+    default_branch: str
+    private: bool
+    visibility: str
+    can_read: bool
+    can_push: bool
+
+
+class GitHubRepositoriesResponse(BaseModel):
+    repositories: list[GitHubRepositorySummary] = Field(default_factory=list)
+
+
+class LogoutResponse(BaseModel):
+    status: str
+    message: str
+
+
 class WorkspaceStatusResponse(BaseModel):
     """
     Current Git workspace status for a task repository.

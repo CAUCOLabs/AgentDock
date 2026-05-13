@@ -5,6 +5,9 @@ import type {
   TaskCreateRequest,
   TaskCreateResponse,
   TaskDiffResponse,
+  GitHubAccount,
+  GitHubAuthStartResponse,
+  GitHubRepositoriesResponse,
   TaskLogsResponse,
   TaskSummary,
   RepositoryFilePreviewResponse,
@@ -12,23 +15,29 @@ import type {
   WorkspaceStatusResponse,
 } from "./types";
 
+type AgentDockRequestInit = RequestInit & {
+  sessionId?: string | null;
+};
+
 type HealthResponse = {
   status?: string;
   message?: string;
   [key: string]: unknown;
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
+  const { sessionId, ...requestInit } = init ?? {};
 
   let response: Response;
   try {
     response = await fetch(url, {
-      ...init,
+      ...requestInit,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        ...init?.headers,
+        ...(sessionId ? { "X-AgentDock-Session": sessionId } : {}),
+        ...requestInit.headers,
       },
     });
   } catch (error) {
@@ -63,16 +72,21 @@ export function getTasks() {
   return request<TaskSummary[]>("/tasks");
 }
 
-export function createTask(payload: TaskCreateRequest) {
+export function createTask(payload: TaskCreateRequest, sessionId?: string | null) {
   return request<TaskCreateResponse>("/tasks", {
     method: "POST",
+    sessionId,
     body: JSON.stringify(payload),
   });
 }
 
-export function getRepositoryFiles(payload: { repo_url: string; base_branch: string }) {
+export function getRepositoryFiles(
+  payload: { repo_url: string; base_branch: string },
+  sessionId?: string | null
+) {
   return request<RepositoryFilesResponse>("/repositories/files", {
     method: "POST",
+    sessionId,
     body: JSON.stringify(payload),
   });
 }
@@ -81,10 +95,32 @@ export function getRepositoryFilePreview(payload: {
   repo_url: string;
   base_branch: string;
   path: string;
-}) {
+}, sessionId?: string | null) {
   return request<RepositoryFilePreviewResponse>("/repositories/file-preview", {
     method: "POST",
+    sessionId,
     body: JSON.stringify(payload),
+  });
+}
+
+export function startGitHubAuth() {
+  return request<GitHubAuthStartResponse>("/auth/github/start", {
+    method: "POST",
+  });
+}
+
+export function getGitHubMe(sessionId: string) {
+  return request<GitHubAccount>("/auth/github/me", { sessionId });
+}
+
+export function getGitHubRepos(sessionId: string) {
+  return request<GitHubRepositoriesResponse>("/auth/github/repos", { sessionId });
+}
+
+export function logout(sessionId?: string | null) {
+  return request<{ status: string; message: string }>("/auth/logout", {
+    method: "POST",
+    sessionId,
   });
 }
 

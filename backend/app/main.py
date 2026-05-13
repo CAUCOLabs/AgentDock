@@ -1,12 +1,18 @@
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from app.config import Settings, get_settings
 from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
+from app.github_auth import GitHubAuthError, GitHubAuthService, GitHubAuthStore
 from app.models import (
+    GitHubAccountResponse,
+    GitHubAuthStartResponse,
+    GitHubRepositoriesResponse,
+    LogoutResponse,
     RepositoryFilePreviewRequest,
     RepositoryFilePreviewResponse,
     RepositoryFilesRequest,
@@ -69,6 +75,28 @@ def get_task_store(settings: Settings = Depends(get_settings)) -> TaskStore:
     return TaskStore(settings)
 
 
+def get_github_auth_service(
+    settings: Settings = Depends(get_settings),
+) -> GitHubAuthService:
+    return GitHubAuthService(settings)
+
+
+def get_optional_github_token(
+    x_agentdock_session: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str | None:
+    if not x_agentdock_session:
+        return None
+
+    try:
+        return GitHubAuthService(settings).get_session(x_agentdock_session).access_token
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+
 @app.on_event("startup")
 def initialize_task_store() -> None:
     """
@@ -76,6 +104,7 @@ def initialize_task_store() -> None:
     """
 
     TaskStore(get_settings())
+    GitHubAuthStore(get_settings())
 
 
 @app.get("/")
@@ -91,6 +120,86 @@ def root() -> dict[str, str]:
     }
 
 
+@app.post("/auth/github/start", response_model=GitHubAuthStartResponse)
+def start_github_auth(
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubAuthStartResponse:
+    try:
+        auth_url, session_id, state = auth_service.start_login()
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    return GitHubAuthStartResponse(
+        auth_url=auth_url,
+        session_id=session_id,
+        state=state,
+    )
+
+
+@app.get("/auth/github/callback", response_class=HTMLResponse)
+async def complete_github_auth(
+    code: str,
+    state: str,
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> str:
+    try:
+        account = await auth_service.complete_callback(code=code, state=state)
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return (
+        "<!doctype html><html><body>"
+        "<h1>GitHub connected</h1>"
+        f"<p>Signed in as {account.login}. You can return to AgentDock.</p>"
+        "</body></html>"
+    )
+
+
+@app.get("/auth/github/me", response_model=GitHubAccountResponse)
+def get_github_me(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubAccountResponse:
+    try:
+        return auth_service.get_session(x_agentdock_session).account
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get("/auth/github/repos", response_model=GitHubRepositoriesResponse)
+async def list_github_repositories(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubRepositoriesResponse:
+    try:
+        repositories = await auth_service.list_repositories(x_agentdock_session)
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    return GitHubRepositoriesResponse(repositories=repositories)
+
+
+@app.post("/auth/logout", response_model=LogoutResponse)
+def logout(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> LogoutResponse:
+    auth_service.logout(x_agentdock_session)
+    return LogoutResponse(status="logged_out", message="Local session revoked.")
+
+
 @app.post(
     "/repositories/files",
     response_model=RepositoryFilesResponse,
@@ -98,13 +207,14 @@ def root() -> dict[str, str]:
 def list_repository_files(
     payload: RepositoryFilesRequest,
     settings: Settings = Depends(get_settings),
+    github_token: str | None = Depends(get_optional_github_token),
 ) -> RepositoryFilesResponse:
     """
     Return a read-only repository file tree for target file selection.
     """
 
     try:
-        files = RepoBrowserService(settings).list_files(
+        files = RepoBrowserService(settings, github_token=github_token).list_files(
             repo_url=payload.repo_url,
             base_branch=payload.base_branch,
         )
@@ -128,13 +238,17 @@ def list_repository_files(
 def preview_repository_file(
     payload: RepositoryFilePreviewRequest,
     settings: Settings = Depends(get_settings),
+    github_token: str | None = Depends(get_optional_github_token),
 ) -> RepositoryFilePreviewResponse:
     """
     Return a bounded, read-only text preview for one repository file.
     """
 
     try:
-        content, size, truncated = RepoBrowserService(settings).preview_file(
+        content, size, truncated = RepoBrowserService(
+            settings,
+            github_token=github_token,
+        ).preview_file(
             repo_url=payload.repo_url,
             base_branch=payload.base_branch,
             file_path=payload.path,
@@ -164,6 +278,7 @@ def create_task(
     payload: TaskCreateRequest,
     settings: Settings = Depends(get_settings),
     task_store: TaskStore = Depends(get_task_store),
+    github_token: str | None = Depends(get_optional_github_token),
 ) -> TaskCreateResponse:
     """
     Create and run a new agent task.
@@ -218,7 +333,7 @@ def create_task(
     task_store.append_log(task_id, "info", "Task running.")
 
     try:
-        runner = TaskRunner(settings)
+        runner = TaskRunner(settings, github_token=github_token)
 
         result = runner.run_task(
             task_id=task_id,

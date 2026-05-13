@@ -48,10 +48,10 @@ class TaskRunner:
     - return changed files for review
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, github_token: str | None = None) -> None:
         self.settings = settings
         self.workspace_manager = WorkspaceManager(settings)
-        self.github_client = GitHubClient(settings)
+        self.github_client = GitHubClient(settings, github_token=github_token)
 
     def run_task(
         self,

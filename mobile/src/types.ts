@@ -123,3 +123,36 @@ export type TaskApprovalResponse = {
   status: TaskStatus;
   message: string;
 };
+
+export type GitHubAuthStartResponse = {
+  auth_url: string;
+  session_id: string;
+  state: string;
+};
+
+export type GitHubAccount = {
+  github_user_id: number;
+  login: string;
+  name?: string | null;
+  avatar_url?: string | null;
+  html_url?: string | null;
+  scopes?: string | null;
+  connected_at: string;
+};
+
+export type GitHubRepository = {
+  id: number;
+  name: string;
+  full_name: string;
+  html_url: string;
+  clone_url: string;
+  default_branch: string;
+  private: boolean;
+  visibility: string;
+  can_read: boolean;
+  can_push: boolean;
+};
+
+export type GitHubRepositoriesResponse = {
+  repositories: GitHubRepository[];
+};

@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     github_owner: str | None = Field(default=None, alias="GITHUB_OWNER")
     github_default_branch: str = Field(default="main", alias="GITHUB_DEFAULT_BRANCH")
+    github_oauth_client_id: str | None = Field(
+        default=None,
+        alias="GITHUB_OAUTH_CLIENT_ID",
+    )
+    github_oauth_client_secret: str | None = Field(
+        default=None,
+        alias="GITHUB_OAUTH_CLIENT_SECRET",
+    )
+    github_oauth_redirect_uri: str = Field(
+        default="http://127.0.0.1:8000/auth/github/callback",
+        alias="GITHUB_OAUTH_REDIRECT_URI",
+    )
 
     # AI provider
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")

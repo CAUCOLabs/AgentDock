@@ -35,9 +35,10 @@ class RepoBrowserService:
     MAX_PREVIEW_BYTES = 64 * 1024
     MAX_LIST_ENTRIES = 5000
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, github_token: str | None = None) -> None:
         self.settings = settings
-        self.github_client = GitHubClient(settings)
+        self.github_token = github_token
+        self.github_client = GitHubClient(settings, github_token=github_token)
         self.cache_root = settings.workspace_root / "_repo_browser"
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
@@ -190,7 +191,14 @@ class RepoBrowserService:
         return repo_path
 
     def _repo_path(self, repo_url: str, base_branch: str) -> Path:
-        digest = sha256(f"{repo_url}:{base_branch}".encode("utf-8")).hexdigest()[:16]
+        auth_scope = (
+            sha256(self.github_token.encode("utf-8")).hexdigest()[:12]
+            if self.github_token
+            else "anonymous"
+        )
+        digest = sha256(
+            f"{repo_url}:{base_branch}:{auth_scope}".encode("utf-8")
+        ).hexdigest()[:16]
         return self.cache_root / digest / "repo"
 
     def _is_excluded(self, relative_path: Path) -> bool:

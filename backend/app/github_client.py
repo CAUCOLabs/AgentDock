@@ -9,6 +9,7 @@ from git import Repo
 from git.exc import GitCommandError
 
 from app.config import Settings
+from app.github_auth import redact_token
 
 
 class GitHubClientError(Exception):
@@ -55,11 +56,11 @@ class GitPushResult:
             messages.append((level, f"Push exit code: {self.exit_code}."))
 
         if self.stdout.strip():
-            messages.append(("info", f"Push stdout:\n{self.stdout.strip()}"))
+            messages.append(("info", f"Push stdout:\n{redact_token(self.stdout.strip())}"))
 
         if self.stderr.strip():
             level = "info" if self.success else "error"
-            messages.append((level, f"Push stderr:\n{self.stderr.strip()}"))
+            messages.append((level, f"Push stderr:\n{redact_token(self.stderr.strip())}"))
 
         return messages
 
@@ -72,8 +73,9 @@ class GitHubClient:
     Pull request creation through the GitHub API will be added later.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, github_token: str | None = None) -> None:
         self.settings = settings
+        self.github_token = github_token or settings.github_token
 
     def clone_repository(
         self,
@@ -327,7 +329,7 @@ class GitHubClient:
         Public repositories can still be cloned without a token.
         """
 
-        if not self.settings.github_token:
+        if not self.github_token:
             return repo_url
 
         parsed = urlparse(repo_url)
@@ -338,7 +340,7 @@ class GitHubClient:
         if parsed.hostname != "github.com":
             return repo_url
 
-        netloc = f"x-access-token:{self.settings.github_token}@{parsed.netloc}"
+        netloc = f"x-access-token:{self.github_token}@{parsed.netloc}"
 
         return urlunparse(
             (
