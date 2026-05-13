@@ -207,6 +207,20 @@ class GitHubAccountResponse(BaseModel):
     connected_at: datetime
 
 
+class GitHubInstallationResponse(BaseModel):
+    """
+    GitHub App installation metadata exposed to clients.
+    """
+
+    installation_id: int
+    account_login: str
+    account_type: str
+    selected_repositories: list[str] = Field(default_factory=list)
+    permissions: dict[str, str] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
 class GitHubRepositorySummary(BaseModel):
     """
     Repository metadata returned from the authenticated GitHub repo list.
@@ -226,6 +240,10 @@ class GitHubRepositorySummary(BaseModel):
 
 class GitHubRepositoriesResponse(BaseModel):
     repositories: list[GitHubRepositorySummary] = Field(default_factory=list)
+
+
+class GitHubInstallationsResponse(BaseModel):
+    installations: list[GitHubInstallationResponse] = Field(default_factory=list)
 
 
 class LogoutResponse(BaseModel):

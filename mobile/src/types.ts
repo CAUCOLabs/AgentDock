@@ -140,6 +140,16 @@ export type GitHubAccount = {
   connected_at: string;
 };
 
+export type GitHubInstallation = {
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+  selected_repositories: string[];
+  permissions: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type GitHubRepository = {
   id: number;
   name: string;
@@ -155,4 +165,8 @@ export type GitHubRepository = {
 
 export type GitHubRepositoriesResponse = {
   repositories: GitHubRepository[];
+};
+
+export type GitHubInstallationsResponse = {
+  installations: GitHubInstallation[];
 };

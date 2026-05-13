@@ -40,6 +40,28 @@ class Settings(BaseSettings):
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     github_owner: str | None = Field(default=None, alias="GITHUB_OWNER")
     github_default_branch: str = Field(default="main", alias="GITHUB_DEFAULT_BRANCH")
+    github_app_id: str | None = Field(default=None, alias="GITHUB_APP_ID")
+    github_app_slug: str | None = Field(default=None, alias="GITHUB_APP_SLUG")
+    github_app_private_key_path: Path | None = Field(
+        default=None,
+        alias="GITHUB_APP_PRIVATE_KEY_PATH",
+    )
+    github_app_client_id: str | None = Field(
+        default=None,
+        alias="GITHUB_APP_CLIENT_ID",
+    )
+    github_app_client_secret: str | None = Field(
+        default=None,
+        alias="GITHUB_APP_CLIENT_SECRET",
+    )
+    github_app_install_url: str | None = Field(
+        default=None,
+        alias="GITHUB_APP_INSTALL_URL",
+    )
+    github_app_callback_url: str = Field(
+        default="http://127.0.0.1:8000/auth/github-app/callback",
+        alias="GITHUB_APP_CALLBACK_URL",
+    )
     github_oauth_client_id: str | None = Field(
         default=None,
         alias="GITHUB_OAUTH_CLIENT_ID",

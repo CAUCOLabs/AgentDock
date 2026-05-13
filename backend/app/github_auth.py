@@ -1,14 +1,20 @@
 import secrets
 import sqlite3
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import time
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
 from app.config import Settings
-from app.models import GitHubAccountResponse, GitHubRepositorySummary
+from app.models import (
+    GitHubAccountResponse,
+    GitHubInstallationResponse,
+    GitHubRepositorySummary,
+)
 
 
 class GitHubAuthError(Exception):
@@ -17,11 +23,20 @@ class GitHubAuthError(Exception):
     """
 
 
+GITHUB_APP_NOT_CONFIGURED = "GitHub App is not configured"
+
+
 @dataclass(frozen=True)
 class StoredGitHubSession:
     session_id: str
     access_token: str
     account: GitHubAccountResponse
+
+
+@dataclass(frozen=True)
+class StoredGitHubAppSession:
+    session_id: str
+    installation: GitHubInstallationResponse
 
 
 def redact_token(value: str, token: str | None = None) -> str:
@@ -77,6 +92,70 @@ class GitHubAuthStore:
                 )
 
         return session_id, state
+
+    def save_app_installation(
+        self,
+        session_id: str,
+        installation_id: int,
+        account_login: str,
+        account_type: str,
+        selected_repositories: list[str],
+        permissions: dict[str, str],
+    ) -> GitHubInstallationResponse:
+        now = self._datetime_to_text(datetime.now(timezone.utc))
+
+        with self._connect() as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO github_app_installations (
+                        installation_id,
+                        account_login,
+                        account_type,
+                        selected_repositories_json,
+                        permissions_json,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(installation_id) DO UPDATE SET
+                        account_login = excluded.account_login,
+                        account_type = excluded.account_type,
+                        selected_repositories_json = excluded.selected_repositories_json,
+                        permissions_json = excluded.permissions_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        installation_id,
+                        account_login,
+                        account_type,
+                        json.dumps(selected_repositories),
+                        json.dumps(permissions, sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO github_app_sessions (
+                        session_id,
+                        installation_id,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        installation_id = excluded.installation_id,
+                        revoked_at = NULL
+                    """,
+                    (session_id, installation_id, now),
+                )
+
+        installation = self.get_app_session(session_id)
+
+        if installation is None:
+            raise GitHubAuthError("Failed to persist GitHub App installation.")
+
+        return installation.installation
 
     def consume_state(self, state: str) -> str:
         now = self._datetime_to_text(datetime.now(timezone.utc))
@@ -215,12 +294,88 @@ class GitHubAuthStore:
             ),
         )
 
+    def get_app_session(self, session_id: str) -> StoredGitHubAppSession | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    s.session_id,
+                    i.installation_id,
+                    i.account_login,
+                    i.account_type,
+                    i.selected_repositories_json,
+                    i.permissions_json,
+                    i.created_at,
+                    i.updated_at
+                FROM github_app_sessions s
+                JOIN github_app_installations i
+                    ON i.installation_id = s.installation_id
+                WHERE s.session_id = ?
+                  AND s.revoked_at IS NULL
+                """,
+                (session_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return StoredGitHubAppSession(
+            session_id=str(row["session_id"]),
+            installation=GitHubInstallationResponse(
+                installation_id=int(row["installation_id"]),
+                account_login=str(row["account_login"]),
+                account_type=str(row["account_type"]),
+                selected_repositories=json.loads(
+                    row["selected_repositories_json"] or "[]"
+                ),
+                permissions=json.loads(row["permissions_json"] or "{}"),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            ),
+        )
+
+    def list_app_installations(self) -> list[GitHubInstallationResponse]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM github_app_installations
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+
+        return [
+            GitHubInstallationResponse(
+                installation_id=int(row["installation_id"]),
+                account_login=str(row["account_login"]),
+                account_type=str(row["account_type"]),
+                selected_repositories=json.loads(
+                    row["selected_repositories_json"] or "[]"
+                ),
+                permissions=json.loads(row["permissions_json"] or "{}"),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     def revoke_session(self, session_id: str) -> None:
         with self._connect() as connection:
             with connection:
                 connection.execute(
                     """
                     UPDATE github_sessions
+                    SET revoked_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        self._datetime_to_text(datetime.now(timezone.utc)),
+                        session_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE github_app_sessions
                     SET revoked_at = ?
                     WHERE session_id = ?
                     """,
@@ -263,6 +418,26 @@ class GitHubAuthStore:
                             REFERENCES github_accounts(github_user_id)
                             ON DELETE CASCADE
                     );
+
+                    CREATE TABLE IF NOT EXISTS github_app_installations (
+                        installation_id INTEGER PRIMARY KEY,
+                        account_login TEXT NOT NULL,
+                        account_type TEXT NOT NULL,
+                        selected_repositories_json TEXT NOT NULL DEFAULT '[]',
+                        permissions_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS github_app_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        installation_id INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        revoked_at TEXT,
+                        FOREIGN KEY(installation_id)
+                            REFERENCES github_app_installations(installation_id)
+                            ON DELETE CASCADE
+                    );
                     """
                 )
 
@@ -278,12 +453,150 @@ class GitHubAuthStore:
 
 class GitHubAuthService:
     """
-    GitHub OAuth and read-only account/repository API integration.
+    GitHub App, OAuth fallback, and read-only repository API integration.
     """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.store = GitHubAuthStore(settings)
+
+    def start_app_installation(self) -> tuple[str, str, str]:
+        install_url = self._app_install_url()
+
+        session_id, state = self.store.create_pending_session()
+        separator = "&" if "?" in install_url else "?"
+        auth_url = (
+            f"{install_url}"
+            f"{separator}{urlencode({'state': state})}"
+        )
+
+        return auth_url, session_id, state
+
+    async def complete_app_callback(
+        self,
+        installation_id: int,
+        state: str,
+    ) -> GitHubInstallationResponse:
+        session_id = self.store.consume_state(state)
+        installation_data = await self.get_app_installation_metadata(installation_id)
+        installation_token = await self.create_installation_token(installation_id)
+        repositories = await self._list_installation_repository_data(installation_token)
+        selected_repositories = [
+            str(item["full_name"])
+            for item in repositories
+            if item.get("full_name")
+        ]
+        account = installation_data.get("account") or {}
+
+        return self.store.save_app_installation(
+            session_id=session_id,
+            installation_id=installation_id,
+            account_login=str(account.get("login") or "unknown"),
+            account_type=str(account.get("type") or "unknown"),
+            selected_repositories=selected_repositories,
+            permissions={
+                str(key): str(value)
+                for key, value in (installation_data.get("permissions") or {}).items()
+            },
+        )
+
+    def get_app_session(
+        self,
+        session_id: str | None,
+    ) -> StoredGitHubAppSession:
+        if not session_id:
+            raise GitHubAuthError("GitHub App installation is required.")
+
+        session = self.store.get_app_session(session_id)
+
+        if session is None:
+            raise GitHubAuthError("GitHub App installation is required.")
+
+        return session
+
+    def list_app_installations(self) -> list[GitHubInstallationResponse]:
+        return self.store.list_app_installations()
+
+    async def list_app_repositories(
+        self,
+        session_id: str | None,
+    ) -> list[GitHubRepositorySummary]:
+        session = self.get_app_session(session_id)
+        installation_token = await self.create_installation_token(
+            session.installation.installation_id
+        )
+        repository_data = await self._list_installation_repository_data(
+            installation_token
+        )
+        return [self._map_repository(item) for item in repository_data]
+
+    async def token_for_session(self, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+
+        app_session = self.store.get_app_session(session_id)
+
+        if app_session is not None:
+            return await self.create_installation_token(
+                app_session.installation.installation_id
+            )
+
+        oauth_session = self.store.get_session(session_id)
+
+        if oauth_session is not None and self.settings.is_development:
+            return oauth_session.access_token
+
+        raise GitHubAuthError("GitHub authentication is required.")
+
+    async def create_installation_token(self, installation_id: int) -> str:
+        self._require_app_token_config()
+        app_jwt = self._create_app_jwt()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+                headers=self._headers(app_jwt),
+            )
+
+        if response.status_code >= 400:
+            raise GitHubAuthError(
+                redact_token(
+                    f"GitHub installation token request failed: "
+                    f"{response.status_code} {response.text}",
+                    app_jwt,
+                )
+            )
+
+        token = response.json().get("token")
+
+        if not token:
+            raise GitHubAuthError("GitHub installation token response was empty.")
+
+        return str(token)
+
+    async def get_app_installation_metadata(
+        self,
+        installation_id: int,
+    ) -> dict[str, Any]:
+        self._require_app_token_config()
+        app_jwt = self._create_app_jwt()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"https://api.github.com/app/installations/{installation_id}",
+                headers=self._headers(app_jwt),
+            )
+
+        if response.status_code >= 400:
+            raise GitHubAuthError(
+                redact_token(
+                    f"GitHub installation lookup failed: "
+                    f"{response.status_code} {response.text}",
+                    app_jwt,
+                )
+            )
+
+        return dict(response.json())
 
     def start_login(self) -> tuple[str, str, str]:
         if not self.settings.github_oauth_client_id:
@@ -389,6 +702,35 @@ class GitHubAuthService:
 
         return repositories
 
+    async def _list_installation_repository_data(
+        self,
+        installation_token: str,
+    ) -> list[dict[str, Any]]:
+        repositories: list[dict[str, Any]] = []
+        url: str | None = "https://api.github.com/installation/repositories?per_page=100"
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            while url:
+                response = await client.get(
+                    url,
+                    headers=self._headers(installation_token),
+                )
+
+                if response.status_code >= 400:
+                    raise GitHubAuthError(
+                        redact_token(
+                            f"GitHub installation repository list failed: "
+                            f"{response.status_code} {response.text}",
+                            installation_token,
+                        )
+                    )
+
+                payload = response.json()
+                repositories.extend(payload.get("repositories", []))
+                url = self._next_page_url(response.headers.get("Link"))
+
+        return repositories
+
     async def _get_user(self, access_token: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
@@ -412,6 +754,54 @@ class GitHubAuthService:
             "Authorization": f"Bearer {access_token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    def _create_app_jwt(self) -> str:
+        self._require_app_token_config()
+
+        try:
+            import jwt
+        except ImportError as exc:
+            raise GitHubAuthError(
+                "PyJWT[crypto] is required for GitHub App authentication."
+            ) from exc
+
+        try:
+            private_key = self.settings.github_app_private_key_path.read_text(
+                encoding="utf-8"
+            )
+        except OSError as exc:
+            raise GitHubAuthError(
+                "Failed to read GITHUB_APP_PRIVATE_KEY_PATH."
+            ) from exc
+
+        now = int(time())
+        return str(
+            jwt.encode(
+                {
+                    "iat": now - 60,
+                    "exp": now + 540,
+                    "iss": self.settings.github_app_id,
+                },
+                private_key,
+                algorithm="RS256",
+            )
+        )
+
+    def _app_install_url(self) -> str:
+        if self.settings.github_app_install_url:
+            return self.settings.github_app_install_url
+
+        if self.settings.github_app_slug:
+            return f"https://github.com/apps/{self.settings.github_app_slug}/installations/new"
+
+        raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
+
+    def _require_app_token_config(self) -> None:
+        if not self.settings.github_app_id:
+            raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
+
+        if not self.settings.github_app_private_key_path:
+            raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
 
     def _map_repository(self, item: dict[str, Any]) -> GitHubRepositorySummary:
         permissions = item.get("permissions") or {}

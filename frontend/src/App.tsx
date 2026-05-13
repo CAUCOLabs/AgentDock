@@ -68,6 +68,16 @@ type GitHubAccount = {
   connected_at: string
 }
 
+type GitHubInstallation = {
+  installation_id: number
+  account_login: string
+  account_type: string
+  selected_repositories: string[]
+  permissions: Record<string, string>
+  created_at: string
+  updated_at: string
+}
+
 type GitHubRepository = {
   id: number
   name: string
@@ -232,6 +242,8 @@ function App() {
     localStorage.getItem(GITHUB_SESSION_STORAGE_KEY),
   )
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null)
+  const [githubInstallation, setGithubInstallation] =
+    useState<GitHubInstallation | null>(null)
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([])
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
   const [fileFilter, setFileFilter] = useState('')
@@ -245,6 +257,8 @@ function App() {
   const [isCreating, setIsCreating] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const connectedGithubLogin =
+    githubInstallation?.account_login ?? githubAccount?.login ?? null
 
   const selectedTaskFromList = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
@@ -269,10 +283,11 @@ function App() {
   useEffect(() => {
     if (githubSessionId) {
       localStorage.setItem(GITHUB_SESSION_STORAGE_KEY, githubSessionId)
-      void loadGithubAccount(githubSessionId)
+      void loadGithubInstallation(githubSessionId)
     } else {
       localStorage.removeItem(GITHUB_SESSION_STORAGE_KEY)
       setGithubAccount(null)
+      setGithubInstallation(null)
       setGithubRepos([])
     }
   }, [githubSessionId])
@@ -430,13 +445,12 @@ function App() {
 
     try {
       const result = await request<GitHubAuthStartResponse>(
-        '/auth/github/start',
-        { method: 'POST' },
+        '/auth/github-app/start',
       )
       setGithubSessionId(result.session_id)
       window.open(result.auth_url, '_blank', 'noopener,noreferrer')
       setNotice('GitHub login opened. Return here after authorizing.')
-      window.setTimeout(() => void loadGithubAccount(result.session_id), 2500)
+      window.setTimeout(() => void loadGithubInstallation(result.session_id), 2500)
     } catch (err) {
       setError(formatError(err))
     } finally {
@@ -444,17 +458,18 @@ function App() {
     }
   }
 
-  async function loadGithubAccount(sessionId = githubSessionId) {
+  async function loadGithubInstallation(sessionId = githubSessionId) {
     if (!sessionId) return
 
     try {
-      const account = await request<GitHubAccount>('/auth/github/me', {
-        headers: { 'X-AgentDock-Session': sessionId },
-      })
-      setGithubAccount(account)
+      const installation = await request<GitHubInstallation>(
+        '/auth/github-app/me',
+        { headers: { 'X-AgentDock-Session': sessionId } },
+      )
+      setGithubInstallation(installation)
       await loadGithubRepos(sessionId)
     } catch {
-      setGithubAccount(null)
+      setGithubInstallation(null)
     }
   }
 
@@ -465,7 +480,7 @@ function App() {
 
     try {
       const result = await request<GitHubRepositoriesResponse>(
-        '/auth/github/repos',
+        '/auth/github-app/repos',
         { headers: { 'X-AgentDock-Session': sessionId } },
       )
       setGithubRepos(result.repositories)
@@ -744,8 +759,8 @@ function App() {
                   GitHub
                 </strong>
                 <span>
-                  {githubAccount
-                    ? `Connected as ${githubAccount.login}`
+                  {connectedGithubLogin
+                    ? `Connected as ${connectedGithubLogin}`
                     : 'Manual repository URL mode remains available.'}
                 </span>
               </div>
@@ -754,13 +769,13 @@ function App() {
                   type="button"
                   className="mini-action"
                   onClick={() =>
-                    githubAccount
+                    connectedGithubLogin
                       ? void loadGithubRepos()
                       : void connectGithub()
                   }
                   disabled={isConnectingGithub || isLoadingGithubRepos}
                 >
-                  {githubAccount
+                  {connectedGithubLogin
                     ? isLoadingGithubRepos
                       ? 'Loading repos'
                       : 'Refresh repos'
@@ -768,7 +783,7 @@ function App() {
                       ? 'Connecting'
                       : 'Connect GitHub'}
                 </button>
-                {githubAccount && (
+                {connectedGithubLogin && (
                   <button
                     type="button"
                     className="mini-action"

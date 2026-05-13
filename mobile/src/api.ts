@@ -5,8 +5,9 @@ import type {
   TaskCreateRequest,
   TaskCreateResponse,
   TaskDiffResponse,
-  GitHubAccount,
   GitHubAuthStartResponse,
+  GitHubInstallation,
+  GitHubInstallationsResponse,
   GitHubRepositoriesResponse,
   TaskLogsResponse,
   TaskSummary,
@@ -104,17 +105,21 @@ export function getRepositoryFilePreview(payload: {
 }
 
 export function startGitHubAuth() {
-  return request<GitHubAuthStartResponse>("/auth/github/start", {
-    method: "POST",
-  });
+  return request<GitHubAuthStartResponse>("/auth/github-app/start");
 }
 
 export function getGitHubMe(sessionId: string) {
-  return request<GitHubAccount>("/auth/github/me", { sessionId });
+  return request<GitHubInstallation>("/auth/github-app/me", { sessionId });
 }
 
 export function getGitHubRepos(sessionId: string) {
-  return request<GitHubRepositoriesResponse>("/auth/github/repos", { sessionId });
+  return request<GitHubRepositoriesResponse>("/auth/github-app/repos", { sessionId });
+}
+
+export function getGitHubInstallations(sessionId: string) {
+  return request<GitHubInstallationsResponse>("/auth/github-app/installations", {
+    sessionId,
+  });
 }
 
 export function logout(sessionId?: string | null) {

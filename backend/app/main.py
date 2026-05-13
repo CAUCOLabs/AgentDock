@@ -7,10 +7,17 @@ from fastapi.responses import HTMLResponse
 from app.config import Settings, get_settings
 from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
-from app.github_auth import GitHubAuthError, GitHubAuthService, GitHubAuthStore
+from app.github_auth import (
+    GITHUB_APP_NOT_CONFIGURED,
+    GitHubAuthError,
+    GitHubAuthService,
+    GitHubAuthStore,
+)
 from app.models import (
     GitHubAccountResponse,
     GitHubAuthStartResponse,
+    GitHubInstallationResponse,
+    GitHubInstallationsResponse,
     GitHubRepositoriesResponse,
     LogoutResponse,
     RepositoryFilePreviewRequest,
@@ -81,15 +88,12 @@ def get_github_auth_service(
     return GitHubAuthService(settings)
 
 
-def get_optional_github_token(
+async def get_optional_github_token(
     x_agentdock_session: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
 ) -> str | None:
-    if not x_agentdock_session:
-        return None
-
     try:
-        return GitHubAuthService(settings).get_session(x_agentdock_session).access_token
+        return await GitHubAuthService(settings).token_for_session(x_agentdock_session)
     except GitHubAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -120,10 +124,115 @@ def root() -> dict[str, str]:
     }
 
 
-@app.post("/auth/github/start", response_model=GitHubAuthStartResponse)
-def start_github_auth(
+def github_app_http_error(exc: GitHubAuthError) -> HTTPException:
+    return HTTPException(
+        status_code=(
+            status.HTTP_400_BAD_REQUEST
+            if str(exc) == GITHUB_APP_NOT_CONFIGURED
+            else status.HTTP_401_UNAUTHORIZED
+        ),
+        detail=str(exc),
+    )
+
+
+@app.get("/auth/github-app/start", response_model=GitHubAuthStartResponse)
+@app.post("/auth/github-app/start", response_model=GitHubAuthStartResponse)
+def start_github_app_auth(
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> GitHubAuthStartResponse:
+    try:
+        auth_url, session_id, state = auth_service.start_app_installation()
+    except GitHubAuthError as exc:
+        raise github_app_http_error(exc) from exc
+
+    return GitHubAuthStartResponse(
+        auth_url=auth_url,
+        session_id=session_id,
+        state=state,
+    )
+
+
+@app.get("/auth/github-app/callback", response_class=HTMLResponse)
+async def complete_github_app_auth(
+    installation_id: int,
+    state: str,
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> str:
+    try:
+        installation = await auth_service.complete_app_callback(
+            installation_id=installation_id,
+            state=state,
+        )
+    except GitHubAuthError as exc:
+        raise github_app_http_error(exc) from exc
+
+    return (
+        "<!doctype html><html><body>"
+        "<h1>GitHub App installed</h1>"
+        f"<p>Connected {installation.account_login}. "
+        "You can return to AgentDock.</p>"
+        "</body></html>"
+    )
+
+
+@app.get("/auth/github-app/me", response_model=GitHubInstallationResponse)
+def get_github_app_me(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubInstallationResponse:
+    try:
+        return auth_service.get_app_session(x_agentdock_session).installation
+    except GitHubAuthError as exc:
+        raise github_app_http_error(exc) from exc
+
+
+@app.get(
+    "/auth/github-app/installations",
+    response_model=GitHubInstallationsResponse,
+)
+def list_github_app_installations(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubInstallationsResponse:
+    if x_agentdock_session:
+        try:
+            return GitHubInstallationsResponse(
+                installations=[
+                    auth_service.get_app_session(x_agentdock_session).installation
+                ]
+            )
+        except GitHubAuthError as exc:
+            raise github_app_http_error(exc) from exc
+
+    return GitHubInstallationsResponse(
+        installations=auth_service.list_app_installations()
+    )
+
+
+@app.get("/auth/github-app/repos", response_model=GitHubRepositoriesResponse)
+async def list_github_app_repositories(
+    x_agentdock_session: str | None = Header(default=None),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubRepositoriesResponse:
+    try:
+        repositories = await auth_service.list_app_repositories(x_agentdock_session)
+    except GitHubAuthError as exc:
+        raise github_app_http_error(exc) from exc
+
+    return GitHubRepositoriesResponse(repositories=repositories)
+
+
+@app.post("/auth/github/start", response_model=GitHubAuthStartResponse)
+def start_github_auth(
+    settings: Settings = Depends(get_settings),
+    auth_service: GitHubAuthService = Depends(get_github_auth_service),
+) -> GitHubAuthStartResponse:
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OAuth fallback is only available in development.",
+        )
+
     try:
         auth_url, session_id, state = auth_service.start_login()
     except GitHubAuthError as exc:
@@ -143,8 +252,15 @@ def start_github_auth(
 async def complete_github_auth(
     code: str,
     state: str,
+    settings: Settings = Depends(get_settings),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> str:
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OAuth fallback is only available in development.",
+        )
+
     try:
         account = await auth_service.complete_callback(code=code, state=state)
     except GitHubAuthError as exc:
@@ -164,8 +280,15 @@ async def complete_github_auth(
 @app.get("/auth/github/me", response_model=GitHubAccountResponse)
 def get_github_me(
     x_agentdock_session: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> GitHubAccountResponse:
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OAuth fallback is only available in development.",
+        )
+
     try:
         return auth_service.get_session(x_agentdock_session).account
     except GitHubAuthError as exc:
@@ -178,8 +301,15 @@ def get_github_me(
 @app.get("/auth/github/repos", response_model=GitHubRepositoriesResponse)
 async def list_github_repositories(
     x_agentdock_session: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> GitHubRepositoriesResponse:
+    if not settings.is_development:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="OAuth fallback is only available in development.",
+        )
+
     try:
         repositories = await auth_service.list_repositories(x_agentdock_session)
     except GitHubAuthError as exc:
@@ -192,6 +322,7 @@ async def list_github_repositories(
 
 
 @app.post("/auth/logout", response_model=LogoutResponse)
+@app.post("/auth/github-app/logout", response_model=LogoutResponse)
 def logout(
     x_agentdock_session: str | None = Header(default=None),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),

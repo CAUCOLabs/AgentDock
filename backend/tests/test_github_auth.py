@@ -12,6 +12,92 @@ from app.main import app
 
 
 class GitHubAuthTests(unittest.TestCase):
+    def test_github_app_start_route_exists_and_returns_install_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                github_app_install_url="https://github.com/apps/agentdock/installations/new",
+            )
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.get("/auth/github-app/start")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIn(
+                "https://github.com/apps/agentdock/installations/new",
+                payload["auth_url"],
+            )
+            self.assertIn("state=", payload["auth_url"])
+            self.assertTrue(payload["session_id"])
+
+    def test_github_app_missing_config_returns_400_not_404(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.get("/auth/github-app/start")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()["detail"], "GitHub App is not configured")
+
+    def test_github_app_installation_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+
+            installation = store.save_app_installation(
+                session_id=session_id,
+                installation_id=123,
+                account_login="acme",
+                account_type="Organization",
+                selected_repositories=["acme/demo"],
+                permissions={"contents": "read", "pull_requests": "write"},
+            )
+
+            restarted_session = GitHubAuthStore(settings).get_app_session(session_id)
+
+            self.assertEqual(installation.installation_id, 123)
+            self.assertIsNotNone(restarted_session)
+            self.assertEqual(restarted_session.installation.account_login, "acme")
+            self.assertEqual(
+                restarted_session.installation.selected_repositories,
+                ["acme/demo"],
+            )
+            self.assertEqual(
+                restarted_session.installation.permissions["contents"],
+                "read",
+            )
+
+    def test_repo_listing_uses_installation_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+            store.save_app_installation(
+                session_id=session_id,
+                installation_id=123,
+                account_login="acme",
+                account_type="Organization",
+                selected_repositories=["acme/demo"],
+                permissions={"contents": "read"},
+            )
+            service = StubGitHubAppService(settings)
+
+            repos = service.run_list_app_repositories(session_id)
+
+            self.assertEqual(service.token_installation_id, 123)
+            self.assertEqual(service.repository_token, "installation-token")
+            self.assertEqual(repos[0].full_name, "acme/demo")
+            self.assertTrue(repos[0].can_read)
+
     def test_auth_state_persists_account_without_exposing_token(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir))
@@ -123,13 +209,18 @@ class GitHubAuthTests(unittest.TestCase):
             paths = {entry["path"] for entry in response.json()["files"]}
             self.assertIn("README.md", paths)
 
-    def _settings(self, temp_path: Path) -> Settings:
+    def _settings(
+        self,
+        temp_path: Path,
+        github_app_install_url: str | None = None,
+    ) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",
             LOGS_DIR=temp_path / "logs",
             AGENTDOCK_DB_PATH=temp_path / "data" / "agentdock.sqlite3",
             GITHUB_OAUTH_CLIENT_ID="client-id",
             GITHUB_OAUTH_CLIENT_SECRET="client-secret",
+            GITHUB_APP_INSTALL_URL=github_app_install_url,
         )
 
     def _create_repo(self, repo_path: Path) -> Repo:
@@ -142,6 +233,41 @@ class GitHubAuthTests(unittest.TestCase):
         repo.git.add(A=True)
         repo.index.commit("initial")
         return repo
+
+
+class StubGitHubAppService(GitHubAuthService):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.token_installation_id: int | None = None
+        self.repository_token: str | None = None
+
+    async def create_installation_token(self, installation_id: int) -> str:
+        self.token_installation_id = installation_id
+        return "installation-token"
+
+    async def _list_installation_repository_data(
+        self,
+        installation_token: str,
+    ) -> list[dict[str, object]]:
+        self.repository_token = installation_token
+        return [
+            {
+                "id": 1,
+                "name": "demo",
+                "full_name": "acme/demo",
+                "html_url": "https://github.com/acme/demo",
+                "clone_url": "https://github.com/acme/demo.git",
+                "default_branch": "main",
+                "private": False,
+                "visibility": "public",
+                "permissions": {"pull": True, "push": False},
+            }
+        ]
+
+    def run_list_app_repositories(self, session_id: str):
+        import asyncio
+
+        return asyncio.run(self.list_app_repositories(session_id))
 
 
 if __name__ == "__main__":

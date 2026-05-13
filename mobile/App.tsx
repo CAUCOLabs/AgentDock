@@ -28,7 +28,7 @@ import {
   createTask,
   deleteTask,
   getHealth,
-  getGitHubMe,
+  getGitHubInstallations,
   getGitHubRepos,
   getRepositoryFilePreview,
   getRepositoryFiles,
@@ -44,6 +44,7 @@ import { API_BASE_URL } from "./src/config";
 import type {
   TaskDiffResponse,
   GitHubAccount,
+  GitHubInstallation,
   GitHubRepository,
   TaskLogEvent,
   TaskLogsResponse,
@@ -118,6 +119,7 @@ export default function App() {
   const [targetFile, setTargetFile] = useState("");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
+  const [githubInstallation, setGithubInstallation] = useState<GitHubInstallation | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
@@ -139,6 +141,7 @@ export default function App() {
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
+  const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const filteredRepoFiles = useMemo(
     () =>
       repoFiles
@@ -359,9 +362,9 @@ export default function App() {
     setIsLoadingGithubRepos(true);
     setError(null);
     try {
-      const account = await getGitHubMe(githubSessionId);
+      const installations = await getGitHubInstallations(githubSessionId);
       const repos = await getGitHubRepos(githubSessionId);
-      setGithubAccount(account);
+      setGithubInstallation(installations.installations[0] ?? null);
       setGithubRepos(repos.repositories);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "Unable to load GitHub account.");
@@ -374,6 +377,7 @@ export default function App() {
     await logout(githubSessionId).catch(() => undefined);
     setGithubSessionId(null);
     setGithubAccount(null);
+    setGithubInstallation(null);
     setGithubRepos([]);
   }
 
@@ -429,19 +433,19 @@ export default function App() {
                 <Text style={styles.githubTitle}>GitHub</Text>
               </View>
               <Text style={styles.githubSubtitle}>
-                {githubAccount
-                  ? `Connected as ${githubAccount.login}`
+                {connectedGithubLogin
+                  ? `Connected as ${connectedGithubLogin}`
                   : "Manual repository URL mode remains available."}
               </Text>
             </View>
             <View style={styles.githubButtonRow}>
               <Pressable
-                onPress={() => githubAccount ? void handleRefreshGitHub() : void handleConnectGitHub()}
+                onPress={() => connectedGithubLogin ? void handleRefreshGitHub() : void handleConnectGitHub()}
                 disabled={isConnectingGithub || isLoadingGithubRepos}
                 style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
               >
                 <Text style={styles.smallButtonText}>
-                  {githubAccount
+                  {connectedGithubLogin
                     ? isLoadingGithubRepos
                       ? "Loading repos"
                       : "Refresh repos"
