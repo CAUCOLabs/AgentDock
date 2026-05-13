@@ -9,6 +9,7 @@ export type TaskStatus =
   | "cancelled";
 
 export type AgentProvider = "mock" | "local" | "openai";
+export type ChangeScope = "only_selected_file" | "allow_related_files";
 
 export type ChangedFile = {
   path: string;
@@ -23,6 +24,7 @@ export type TaskSummary = {
   base_branch: string;
   working_branch: string | null;
   target_file?: string | null;
+  change_scope?: ChangeScope;
   instruction: string;
   agent: AgentProvider;
   status: TaskStatus;
@@ -83,6 +85,7 @@ export type TaskCreateRequest = {
   instruction: string;
   agent: AgentProvider;
   target_file?: string | null;
+  change_scope?: ChangeScope;
 };
 
 export type RepositoryFileEntry = {

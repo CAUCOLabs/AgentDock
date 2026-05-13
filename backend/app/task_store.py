@@ -98,6 +98,7 @@ class TaskStore:
                         working_branch,
                         workspace_path,
                         target_file,
+                        change_scope,
                         instruction,
                         agent,
                         status,
@@ -115,7 +116,7 @@ class TaskStore:
                         deleted_at,
                         error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_url = excluded.repo_url,
                         repo_owner = excluded.repo_owner,
@@ -124,6 +125,7 @@ class TaskStore:
                         working_branch = excluded.working_branch,
                         workspace_path = excluded.workspace_path,
                         target_file = excluded.target_file,
+                        change_scope = excluded.change_scope,
                         instruction = excluded.instruction,
                         agent = excluded.agent,
                         status = excluded.status,
@@ -150,6 +152,7 @@ class TaskStore:
                         task.working_branch,
                         workspace_path,
                         task.target_file,
+                        task.change_scope.value,
                         task.instruction,
                         task.agent.value,
                         task.status.value,
@@ -440,6 +443,7 @@ class TaskStore:
                             working_branch TEXT,
                             workspace_path TEXT,
                             target_file TEXT,
+                            change_scope TEXT NOT NULL DEFAULT 'only_selected_file',
                             instruction TEXT NOT NULL,
                             agent TEXT NOT NULL,
                             status TEXT NOT NULL,
@@ -635,6 +639,7 @@ class TaskStore:
             "working_branch": row["working_branch"],
             "workspace_path": row["workspace_path"],
             "target_file": row["target_file"],
+            "change_scope": row["change_scope"],
             "instruction": row["instruction"],
             "agent": row["agent"],
             "status": row["status"],
@@ -705,6 +710,7 @@ class TaskStore:
             "pushed_at": "TEXT",
             "remote_branch": "TEXT",
             "last_push_result": "TEXT",
+            "change_scope": "TEXT NOT NULL DEFAULT 'only_selected_file'",
         }
 
         for column_name, column_type in desired_columns.items():

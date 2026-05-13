@@ -144,3 +144,10 @@ artifacts/
 
 # VS Code settings
 .vscode/
+
+
+
+# Local secrets
+backend/secrets/
+*.pem
+*.private-key

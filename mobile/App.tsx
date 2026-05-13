@@ -43,6 +43,7 @@ import {
 import { API_BASE_URL } from "./src/config";
 import type {
   TaskDiffResponse,
+  ChangeScope,
   GitHubAccount,
   GitHubInstallation,
   GitHubRepository,
@@ -117,10 +118,12 @@ export default function App() {
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
   const [targetFile, setTargetFile] = useState("");
+  const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
   const [githubInstallation, setGithubInstallation] = useState<GitHubInstallation | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
+  const [githubRepoFilter, setGithubRepoFilter] = useState("");
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
   const [filePreview, setFilePreview] = useState<RepositoryFilePreviewResponse | null>(null);
@@ -142,6 +145,19 @@ export default function App() {
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
+  const selectedGithubRepo = useMemo(
+    () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
+    [githubRepos, repoUrl]
+  );
+  const outsideTargetFiles = useMemo(
+    () =>
+      diff.changed_files.filter(
+        (file) => selectedTask?.target_file && file.path !== selectedTask.target_file
+      ),
+    [diff.changed_files, selectedTask?.target_file]
+  );
+  const showScopeWarning =
+    selectedTask?.change_scope === "only_selected_file" && outsideTargetFiles.length > 0;
   const filteredRepoFiles = useMemo(
     () =>
       repoFiles
@@ -149,6 +165,13 @@ export default function App() {
         .filter((entry) => entry.path.toLowerCase().includes(fileFilter.trim().toLowerCase()))
         .slice(0, 50),
     [fileFilter, repoFiles]
+  );
+  const filteredGithubRepos = useMemo(
+    () =>
+      githubRepos.filter((repo) =>
+        repo.full_name.toLowerCase().includes(githubRepoFilter.trim().toLowerCase())
+      ),
+    [githubRepoFilter, githubRepos]
   );
 
   const latestTasks = useMemo(
@@ -231,6 +254,7 @@ export default function App() {
         instruction: instruction.trim(),
         agent: "mock",
         target_file: targetFile || null,
+        change_scope: changeScope,
       }, githubSessionId);
       await refreshTasks();
       await loadTaskDetail(created.task_id);
@@ -337,7 +361,8 @@ export default function App() {
   }
 
   function applyTemplate(value: string) {
-    setInstruction((current) => (current.trim() ? `${current.trim()}\n\n${value}` : value));
+    const contextual = targetFile ? `${value}\n\nFocus on ${targetFile}.` : value;
+    setInstruction((current) => (current.trim() ? `${current.trim()}\n\n${contextual}` : contextual));
   }
 
   async function handleConnectGitHub() {
@@ -473,28 +498,63 @@ export default function App() {
               ) : null}
             </View>
             {githubRepos.length > 0 ? (
-              <View style={styles.githubRepoList}>
-                {githubRepos.slice(0, 50).map((repo) => (
-                  <Pressable
-                    key={repo.id}
-                    onPress={() => handleSelectGitHubRepo(repo)}
-                    style={({ pressed }) => [
-                      styles.githubRepoOption,
-                      repoUrl === repo.clone_url && styles.fileOptionSelected,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={styles.fileOptionPath}>{repo.full_name}</Text>
-                    <Text style={styles.fileOptionMeta}>
-                      {repo.private ? "private" : "public"} · {repo.default_branch} · {repo.can_push ? "push" : "read"}
-                    </Text>
-                  </Pressable>
-                ))}
+              <View style={styles.githubRepoPicker}>
+                <TextInput
+                  value={githubRepoFilter}
+                  onChangeText={setGithubRepoFilter}
+                  placeholder="Filter GitHub repositories"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <ScrollView
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.githubRepoScroller}
+                  contentContainerStyle={styles.githubRepoList}
+                >
+                  {filteredGithubRepos.map((repo) => (
+                    <Pressable
+                      key={repo.id}
+                      onPress={() => handleSelectGitHubRepo(repo)}
+                      style={({ pressed }) => [
+                        styles.githubRepoOption,
+                        repoUrl === repo.clone_url && styles.fileOptionSelected,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.fileOptionPath}>{repo.full_name}</Text>
+                      <Text style={styles.fileOptionMeta}>
+                        {repo.private ? "private" : "public"} · {repo.default_branch} · {repo.can_push ? "push" : "read"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                  {filteredGithubRepos.length === 0 ? (
+                    <Text style={styles.emptyText}>No repositories match.</Text>
+                  ) : null}
+                </ScrollView>
               </View>
             ) : null}
           </View>
 
-          <Field label="Repository URL">
+          <View style={styles.selectedRepoCard}>
+            <Text style={styles.label}>Selected repository</Text>
+            <Text style={styles.selectedRepoTitle}>
+              {selectedGithubRepo?.full_name ?? shortRepoName(repoUrl) ?? "No repository selected"}
+            </Text>
+            {selectedGithubRepo ? (
+              <View style={styles.repoBadgeRow}>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.private ? "Private" : "Public"}</Text>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.default_branch}</Text>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.can_push ? "Read/write" : "Read only"}</Text>
+              </View>
+            ) : null}
+            <Text style={styles.filePath}>{repoUrl || "Manual repository URL fallback is available below."}</Text>
+          </View>
+
+          <View style={styles.manualRepoBox}>
+            <Text style={styles.label}>Manual repository URL</Text>
             <TextInput
               value={repoUrl}
               onChangeText={setRepoUrl}
@@ -504,30 +564,21 @@ export default function App() {
               autoCorrect={false}
               style={styles.input}
             />
-          </Field>
-          <View style={styles.row}>
-            <View style={styles.flex}>
-              <Field label="Base branch">
-                <TextInput
-                  value={baseBranch}
-                  onChangeText={setBaseBranch}
-                  placeholder="main"
-                  placeholderTextColor="#6f7f92"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-              </Field>
-            </View>
-            <View style={styles.agentBox}>
-              <Text style={styles.label}>Agent</Text>
-              <Text style={styles.agentValue}>mock</Text>
-            </View>
+            <TextInput
+              value={baseBranch}
+              onChangeText={setBaseBranch}
+              placeholder="main"
+              placeholderTextColor="#6f7f92"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+            />
           </View>
+
           <View style={styles.filePicker}>
             <View style={styles.filePickerHeader}>
               <View style={styles.flex}>
-                <Text style={styles.label}>Target file</Text>
+                <Text style={styles.label}>Repository Explorer</Text>
                 <Text style={styles.filePath}>{targetFile || "No file selected"}</Text>
               </View>
               <Pressable
@@ -549,7 +600,12 @@ export default function App() {
                   autoCorrect={false}
                   style={styles.input}
                 />
-                <View style={styles.fileList}>
+                <ScrollView
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.fileListScroller}
+                  contentContainerStyle={styles.fileList}
+                >
                   {filteredRepoFiles.map((entry) => (
                     <Pressable
                       key={entry.path}
@@ -567,7 +623,7 @@ export default function App() {
                       </Text>
                     </Pressable>
                   ))}
-                </View>
+                </ScrollView>
               </>
             ) : null}
             {filePreview ? (
@@ -576,7 +632,36 @@ export default function App() {
               </ScrollView>
             ) : null}
           </View>
-          <Field label="Prompt">
+
+          <View style={styles.scopeBox}>
+            <Text style={styles.label}>Change scope</Text>
+            <Pressable
+              onPress={() => setChangeScope("only_selected_file")}
+              style={[
+                styles.scopeOption,
+                changeScope === "only_selected_file" && styles.scopeOptionSelected,
+              ]}
+            >
+              <Text style={styles.scopeTitle}>Only selected file</Text>
+              <Text style={styles.fileOptionMeta}>Safest default. Related edits should be rare.</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setChangeScope("allow_related_files")}
+              style={[
+                styles.scopeOption,
+                changeScope === "allow_related_files" && styles.scopeOptionSelected,
+              ]}
+            >
+              <Text style={styles.scopeTitle}>Allow related files</Text>
+              <Text style={styles.fileOptionMeta}>Use when tests, types, or adjacent modules may need edits.</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.runnerStatus}>
+            <Text style={styles.fileOptionMeta}>Runner: mock</Text>
+          </View>
+
+          <Field label="What should the agent do?">
             <TextInput
               value={instruction}
               onChangeText={setInstruction}
@@ -658,6 +743,7 @@ export default function App() {
               </View>
               <InfoRow label="Branch" value={selectedTask.working_branch ?? workspace?.branch ?? "None"} />
               <InfoRow label="Target file" value={selectedTask.target_file ?? "None"} />
+              <InfoRow label="Change scope" value={(selectedTask.change_scope ?? "only_selected_file").replaceAll("_", " ")} />
               <InfoRow label="Commit sha" value={shortSha(selectedTask.commit_sha ?? workspace?.commit_sha)} />
               <InfoRow label="Pushed" value={selectedTask.pushed ? "Yes" : "No"} />
               <InfoRow label="PR URL" value={selectedTask.pr_url ?? "None"} link={selectedTask.pr_url} />
@@ -695,6 +781,12 @@ export default function App() {
           {selectedTask ? (
             <>
               <ChangedFiles files={diff.changed_files} targetFile={selectedTask.target_file ?? null} />
+              {showScopeWarning ? (
+                <Text style={styles.warningText}>
+                  Scope warning: this diff includes {outsideTargetFiles.length} file
+                  {outsideTargetFiles.length === 1 ? "" : "s"} outside the selected target.
+                </Text>
+              ) : null}
               <ScrollView horizontal style={styles.diffScroller}>
                 <Text style={styles.diffText}>{diff.diff || "No diff available."}</Text>
               </ScrollView>
@@ -845,7 +937,7 @@ function ChangedFiles({
           <GitBranch size={14} color="#8bdcff" />
           <Text style={styles.fileText} numberOfLines={1}>
             {file.status} {file.path}
-            {targetFile === file.path ? " · target" : ""}
+            {targetFile === file.path ? " · target" : targetFile ? " · outside target" : ""}
           </Text>
           <Text style={styles.fileStats}>
             +{file.additions} -{file.deletions}
@@ -1259,7 +1351,17 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
   },
+  githubRepoPicker: {
+    gap: 8,
+  },
+  githubRepoScroller: {
+    maxHeight: 260,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
   githubRepoList: {
+    padding: 8,
     gap: 8,
   },
   githubRepoOption: {
@@ -1270,6 +1372,43 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(45, 106, 150, 0.13)",
     borderWidth: 1,
     borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  selectedRepoCard: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(22, 70, 70, 0.34)",
+    borderWidth: 1,
+    borderColor: "rgba(65, 230, 189, 0.24)",
+  },
+  selectedRepoTitle: {
+    color: "#edf8ff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  repoBadgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  repoBadge: {
+    color: "#dcecf7",
+    fontSize: 11,
+    fontWeight: "800",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(124, 157, 188, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.18)",
+  },
+  manualRepoBox: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.12)",
   },
   filePicker: {
     gap: 10,
@@ -1287,6 +1426,50 @@ const styles = StyleSheet.create({
   filePath: {
     color: "#cfe9f9",
     fontSize: 12,
+  },
+  fileListScroller: {
+    maxHeight: 260,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  scopeBox: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  scopeOption: {
+    gap: 4,
+    padding: 11,
+    borderRadius: 8,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  scopeOptionSelected: {
+    backgroundColor: "rgba(65, 230, 189, 0.18)",
+    borderColor: "rgba(65, 230, 189, 0.38)",
+  },
+  scopeTitle: {
+    color: "#edf8ff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  runnerStatus: {
+    alignItems: "flex-start",
+  },
+  warningText: {
+    color: "#fde68a",
+    fontSize: 13,
+    lineHeight: 19,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(180, 83, 9, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.28)",
   },
   smallButton: {
     minHeight: 36,

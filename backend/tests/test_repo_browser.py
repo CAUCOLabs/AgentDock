@@ -96,6 +96,7 @@ class RepoBrowserTests(unittest.TestCase):
                         "instruction": "Update the selected component safely.",
                         "agent": "mock",
                         "target_file": "src/App.tsx",
+                        "change_scope": "only_selected_file",
                     },
                 )
             finally:
@@ -106,12 +107,45 @@ class RepoBrowserTests(unittest.TestCase):
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
             self.assertEqual(task.target_file, "src/App.tsx")
+            self.assertEqual(task.change_scope.value, "only_selected_file")
             self.assertIn(
                 "Target file selected: src/App.tsx",
                 [event.message for event in TaskStore(settings).get_logs(task_id)],
             )
             self.assertIn(
                 "Selected target file: src/App.tsx",
+                TaskStore(settings).get_diff(task_id),
+            )
+
+    def test_task_creation_persists_change_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir))
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    "/tasks",
+                    json={
+                        "repo_url": str(source_repo.working_tree_dir),
+                        "base_branch": "main",
+                        "instruction": "Update related files where needed.",
+                        "agent": "mock",
+                        "target_file": "src/App.tsx",
+                        "change_scope": "allow_related_files",
+                    },
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 201)
+            task_id = response.json()["task_id"]
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.change_scope.value, "allow_related_files")
+            self.assertIn(
+                "Change scope: related files may be modified",
                 TaskStore(settings).get_diff(task_id),
             )
 

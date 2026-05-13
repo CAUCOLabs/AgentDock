@@ -153,16 +153,25 @@ class RepoBrowserService:
         self,
         instruction: str,
         target_file: str | None,
+        change_scope: str = "only_selected_file",
     ) -> str:
+        scope_instruction = (
+            "Change scope: only modify the selected target file unless the task "
+            "is impossible without related changes. If other files are needed, "
+            "keep them minimal and explain why."
+            if change_scope == "only_selected_file"
+            else "Change scope: related files may be modified when they are needed for a coherent implementation."
+        )
+
         if not target_file:
-            return instruction
+            return f"{scope_instruction}\n\nUser instruction:\n{instruction}"
 
         self.validate_relative_path(target_file)
 
         return (
             f"Selected target file: {target_file}\n\n"
-            "Use this selected file as the primary task context. "
-            "You may modify other files only if the task requires it.\n\n"
+            f"{scope_instruction}\n\n"
+            "Use the selected file as the primary task context.\n\n"
             f"User instruction:\n{instruction}"
         )
 

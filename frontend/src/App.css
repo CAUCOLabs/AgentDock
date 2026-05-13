@@ -259,12 +259,22 @@
   gap: 8px;
 }
 
+.github-repo-picker {
+  display: grid;
+  gap: 8px;
+}
+
 .github-repos {
   display: grid;
-  max-height: 260px;
-  overflow: auto;
+  max-height: min(280px, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 12px;
+}
+
+.github-repos .empty-state {
+  padding: 12px;
 }
 
 .github-repo {
@@ -348,7 +358,8 @@
 }
 
 .file-preview {
-  max-height: 260px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .target-match {
@@ -356,6 +367,22 @@
   color: var(--success);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+.outside-target {
+  margin-left: 8px;
+  color: #fcd34d;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.scope-warning {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  color: #fde68a;
+  background: rgba(180, 83, 9, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 14px;
 }
 
 .launcher-heading h2,
@@ -489,6 +516,133 @@ dt {
 form {
   display: grid;
   gap: 14px;
+}
+
+.launcher-panel {
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+  background: rgba(2, 6, 23, 0.26);
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 16px;
+}
+
+.launcher-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.launcher-step > span {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  color: #06111a;
+  font-size: 12px;
+  font-weight: 900;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.launcher-step div {
+  display: grid;
+  gap: 3px;
+}
+
+.launcher-step small,
+.selected-repo-card small,
+.runner-row span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selected-repo-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  background: rgba(20, 184, 166, 0.08);
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  border-radius: 14px;
+}
+
+.repo-select-panel,
+.manual-repo-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.repo-select-panel summary,
+.manual-repo-panel summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.explorer-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.explorer-list,
+.explorer-preview {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.explorer-preview {
+  align-content: start;
+  padding: 12px;
+  background: rgba(2, 6, 23, 0.32);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 14px;
+}
+
+.scope-options {
+  display: grid;
+  gap: 8px;
+}
+
+.scope-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 9px;
+  padding: 11px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+}
+
+.scope-option input {
+  width: auto;
+  grid-row: span 2;
+  margin-top: 2px;
+}
+
+.scope-option small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scope-option.selected {
+  border-color: rgba(45, 212, 191, 0.42);
+  background: rgba(20, 184, 166, 0.1);
+}
+
+.runner-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runner-row select {
+  max-width: 190px;
 }
 
 label {
@@ -850,6 +1004,10 @@ pre {
   .form-pair,
   .metadata-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .explorer-grid {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.1fr);
   }
 
   .task-list {

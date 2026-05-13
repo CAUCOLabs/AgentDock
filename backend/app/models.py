@@ -33,6 +33,15 @@ class AgentProvider(str, Enum):
     openai = "openai"
 
 
+class ChangeScope(str, Enum):
+    """
+    User-selected task scope guidance for the agent runner.
+    """
+
+    only_selected_file = "only_selected_file"
+    allow_related_files = "allow_related_files"
+
+
 class TaskCreateRequest(BaseModel):
     """
     Request body for creating a new coding task.
@@ -64,6 +73,10 @@ class TaskCreateRequest(BaseModel):
     target_file: str | None = Field(
         default=None,
         description="Optional selected repository file path for task context.",
+    )
+    change_scope: ChangeScope = Field(
+        default=ChangeScope.only_selected_file,
+        description="Guidance for whether the agent should stay in the target file.",
     )
 
 
@@ -103,6 +116,7 @@ class TaskSummary(BaseModel):
     working_branch: str | None = None
     workspace_path: str | None = None
     target_file: str | None = None
+    change_scope: ChangeScope = ChangeScope.only_selected_file
     instruction: str
     agent: AgentProvider
     status: TaskStatus

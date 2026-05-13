@@ -36,7 +36,11 @@ class GitHubAuthTests(unittest.TestCase):
 
     def test_github_app_missing_config_returns_400_not_404(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            settings = self._settings(Path(temp_dir))
+            settings = self._settings(
+                Path(temp_dir),
+                github_app_install_url="",
+                github_app_slug="",
+            )
             app.dependency_overrides[get_settings] = lambda: settings
             try:
                 client = TestClient(app)
@@ -213,6 +217,7 @@ class GitHubAuthTests(unittest.TestCase):
         self,
         temp_path: Path,
         github_app_install_url: str | None = None,
+        github_app_slug: str | None = None,
     ) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",
@@ -221,6 +226,7 @@ class GitHubAuthTests(unittest.TestCase):
             GITHUB_OAUTH_CLIENT_ID="client-id",
             GITHUB_OAUTH_CLIENT_SECRET="client-secret",
             GITHUB_APP_INSTALL_URL=github_app_install_url,
+            GITHUB_APP_SLUG=github_app_slug,
         )
 
     def _create_repo(self, repo_path: Path) -> Repo:

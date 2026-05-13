@@ -28,6 +28,7 @@ type TaskStatus =
   | 'cancelled'
 
 type AgentProvider = 'mock' | 'local' | 'openai'
+type ChangeScope = 'only_selected_file' | 'allow_related_files'
 
 type ChangedFile = {
   path: string
@@ -107,6 +108,7 @@ type TaskSummary = {
   base_branch: string
   working_branch: string | null
   target_file?: string | null
+  change_scope?: ChangeScope
   instruction: string
   agent: AgentProvider
   status: TaskStatus
@@ -185,6 +187,7 @@ type CreateTaskForm = {
   instruction: string
   agent: AgentProvider
   targetFile: string
+  changeScope: ChangeScope
 }
 
 const API_URL =
@@ -199,6 +202,7 @@ const initialForm: CreateTaskForm = {
   instruction: '',
   agent: 'mock',
   targetFile: '',
+  changeScope: 'only_selected_file',
 }
 
 const promptTemplates = [
@@ -245,6 +249,7 @@ function App() {
   const [githubInstallation, setGithubInstallation] =
     useState<GitHubInstallation | null>(null)
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([])
+  const [githubRepoFilter, setGithubRepoFilter] = useState('')
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
@@ -264,6 +269,7 @@ function App() {
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
     [selectedTaskId, tasks],
   )
+  const activeTask = selectedTask ?? selectedTaskFromList
 
   const filteredRepoFiles = useMemo(
     () =>
@@ -275,6 +281,30 @@ function App() {
         .slice(0, 80),
     [fileFilter, repoFiles],
   )
+
+  const filteredGithubRepos = useMemo(
+    () =>
+      githubRepos.filter((repo) =>
+        repo.full_name
+          .toLowerCase()
+          .includes(githubRepoFilter.trim().toLowerCase()),
+      ),
+    [githubRepoFilter, githubRepos],
+  )
+  const selectedGithubRepo = useMemo(
+    () => githubRepos.find((repo) => repo.clone_url === form.repoUrl) ?? null,
+    [form.repoUrl, githubRepos],
+  )
+  const activeTaskOutsideTargetFiles = useMemo(
+    () =>
+      (taskDiff?.changed_files ?? []).filter(
+        (file) => activeTask?.target_file && file.path !== activeTask.target_file,
+      ),
+    [activeTask?.target_file, taskDiff?.changed_files],
+  )
+  const showScopeWarning =
+    activeTask?.change_scope === 'only_selected_file' &&
+    activeTaskOutsideTargetFiles.length > 0
 
   useEffect(() => {
     void loadTasks()
@@ -423,6 +453,7 @@ function App() {
           instruction: form.instruction,
           agent: form.agent,
           target_file: form.targetFile || null,
+          change_scope: form.changeScope,
         }),
       })
 
@@ -620,8 +651,6 @@ function App() {
     }))
   }
 
-  const activeTask = selectedTask ?? selectedTaskFromList
-
   return (
     <main className="app-shell">
       <motion.header
@@ -752,100 +781,247 @@ function App() {
           </div>
 
           <form onSubmit={(event) => void createTask(event)}>
-            <div className="github-connect">
-              <div>
-                <strong>
-                  <GitBranch size={16} />
-                  GitHub
-                </strong>
-                <span>
-                  {connectedGithubLogin
-                    ? `Connected as ${connectedGithubLogin}`
-                    : 'Manual repository URL mode remains available.'}
-                </span>
+            <div className="launcher-panel">
+              <div className="launcher-step">
+                <span>1</span>
+                <div>
+                  <strong>GitHub connection</strong>
+                  <small>
+                    {connectedGithubLogin
+                      ? `Connected as ${connectedGithubLogin}`
+                      : 'Connect GitHub or use a manual repository URL.'}
+                  </small>
+                </div>
               </div>
-              <div className="github-actions">
-                <button
-                  type="button"
-                  className="mini-action"
-                  onClick={() =>
-                    connectedGithubLogin
-                      ? void loadGithubRepos()
-                      : void connectGithub()
-                  }
-                  disabled={isConnectingGithub || isLoadingGithubRepos}
-                >
-                  {connectedGithubLogin
-                    ? isLoadingGithubRepos
-                      ? 'Loading repos'
-                      : 'Refresh repos'
-                    : isConnectingGithub
-                      ? 'Connecting'
-                      : 'Connect GitHub'}
-                </button>
-                {connectedGithubLogin && (
+              <div>
+                <div className="github-actions">
                   <button
                     type="button"
                     className="mini-action"
-                    onClick={() => void logoutGithub()}
+                    onClick={() =>
+                      connectedGithubLogin
+                        ? void loadGithubRepos()
+                        : void connectGithub()
+                    }
+                    disabled={isConnectingGithub || isLoadingGithubRepos}
                   >
-                    Logout
+                    {connectedGithubLogin
+                      ? isLoadingGithubRepos
+                        ? 'Loading repos'
+                        : 'Refresh repos'
+                      : isConnectingGithub
+                        ? 'Connecting'
+                        : 'Connect GitHub'}
                   </button>
-                )}
+                  {connectedGithubLogin && (
+                    <button
+                      type="button"
+                      className="mini-action"
+                      onClick={() => void logoutGithub()}
+                    >
+                      Logout
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
-            {githubRepos.length > 0 && (
-              <div className="github-repos">
-                {githubRepos.slice(0, 80).map((repo) => (
-                  <button
-                    type="button"
-                    key={repo.id}
-                    className={
-                      form.repoUrl === repo.clone_url
-                        ? 'github-repo selected'
-                        : 'github-repo'
-                    }
-                    onClick={() => selectGithubRepo(repo)}
-                  >
-                    <span>{repo.full_name}</span>
-                    <small>
-                      {repo.private ? 'private' : 'public'} · {repo.default_branch}
-                      {' · '}
-                      {repo.can_push ? 'push' : 'read'}
-                    </small>
-                  </button>
-                ))}
+            <div className="launcher-panel">
+              <div className="launcher-step">
+                <span>2</span>
+                <div>
+                  <strong>Selected repository</strong>
+                  <small>
+                    {selectedGithubRepo
+                      ? selectedGithubRepo.full_name
+                      : form.repoUrl || 'No repository selected'}
+                  </small>
+                </div>
               </div>
-            )}
 
-            <label>
-              Repository URL
-              <input
-                required
-                type="url"
-                placeholder="https://github.com/org/repo"
-                value={form.repoUrl}
-                onChange={(event) =>
-                  setForm({ ...form, repoUrl: event.target.value })
-                }
-              />
-            </label>
+              {selectedGithubRepo && (
+                <div className="selected-repo-card">
+                  <strong>{selectedGithubRepo.full_name}</strong>
+                  <div className="badge-row">
+                    <span className="meta-badge">
+                      {selectedGithubRepo.private ? 'Private' : 'Public'}
+                    </span>
+                    <span className="meta-badge">
+                      {selectedGithubRepo.default_branch}
+                    </span>
+                    <span className={selectedGithubRepo.can_push ? 'meta-badge ok' : 'meta-badge'}>
+                      {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
+                    </span>
+                  </div>
+                  <small>{selectedGithubRepo.clone_url}</small>
+                </div>
+              )}
 
-            <div className="form-pair">
-              <label>
-                Base Branch
-                <input
-                  required
-                  value={form.baseBranch}
-                  onChange={(event) =>
-                    setForm({ ...form, baseBranch: event.target.value })
-                  }
-                />
-              </label>
+              {githubRepos.length > 0 && (
+                <details className="repo-select-panel" open={!selectedGithubRepo}>
+                  <summary>Choose from connected repositories</summary>
+                  <div className="github-repo-picker">
+                    <input
+                      value={githubRepoFilter}
+                      onChange={(event) => setGithubRepoFilter(event.target.value)}
+                      placeholder="Filter GitHub repositories"
+                    />
+                    <div className="github-repos">
+                      {filteredGithubRepos.map((repo) => (
+                        <button
+                          type="button"
+                          key={repo.id}
+                          className={
+                            form.repoUrl === repo.clone_url
+                              ? 'github-repo selected'
+                              : 'github-repo'
+                          }
+                          onClick={() => selectGithubRepo(repo)}
+                        >
+                          <span>{repo.full_name}</span>
+                          <small>
+                            {repo.private ? 'private' : 'public'} ·{' '}
+                            {repo.default_branch}
+                            {' · '}
+                            {repo.can_push ? 'push' : 'read'}
+                          </small>
+                        </button>
+                      ))}
+                      {filteredGithubRepos.length === 0 && (
+                        <p className="empty-state">No repositories match.</p>
+                      )}
+                    </div>
+                  </div>
+                </details>
+              )}
 
-              <label>
-                Agent
+              <details className="manual-repo-panel">
+                <summary>Manual repository URL</summary>
+                <div className="form-pair">
+                  <label>
+                    Repository URL
+                    <input
+                      type="url"
+                      placeholder="https://github.com/org/repo"
+                      value={form.repoUrl}
+                      onChange={(event) =>
+                        setForm({ ...form, repoUrl: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Base Branch
+                    <input
+                      value={form.baseBranch}
+                      onChange={(event) =>
+                        setForm({ ...form, baseBranch: event.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+              </details>
+            </div>
+
+            <div className="launcher-panel repository-explorer">
+              <div className="launcher-step">
+                <span>3</span>
+                <div>
+                  <strong>Repository Explorer</strong>
+                  <small>{form.targetFile || 'Select a target file'}</small>
+                </div>
+                <button
+                  type="button"
+                  className="mini-action"
+                  disabled={isLoadingFiles || !form.repoUrl}
+                  onClick={() => void loadRepositoryFiles()}
+                >
+                  {isLoadingFiles ? 'Loading files' : 'Browse files'}
+                </button>
+              </div>
+
+              {repoFiles.length > 0 && (
+                <div className="explorer-grid">
+                  <div className="explorer-list">
+                    <input
+                      value={fileFilter}
+                      onChange={(event) => setFileFilter(event.target.value)}
+                      placeholder="Search files by path"
+                    />
+                    <div className="file-list">
+                      {filteredRepoFiles.map((entry) => (
+                        <button
+                          type="button"
+                          key={entry.path}
+                          className={
+                            form.targetFile === entry.path
+                              ? 'file-option selected'
+                              : 'file-option'
+                          }
+                          onClick={() => void selectTargetFile(entry.path)}
+                        >
+                          <span>{entry.path}</span>
+                          <small>
+                            {entry.extension ?? 'file'}
+                            {typeof entry.size === 'number'
+                              ? ` · ${entry.size} bytes`
+                              : ''}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="explorer-preview">
+                    <strong>{form.targetFile || 'No target selected'}</strong>
+                    {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
+                    {filePreview ? (
+                      <pre className="file-preview">{filePreview.content}</pre>
+                    ) : (
+                      <p className="empty-state">A read-only preview appears here after selecting a file.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="launcher-panel">
+              <div className="launcher-step">
+                <span>4</span>
+                <div>
+                  <strong>Change scope</strong>
+                  <small>Choose how tightly the agent should stay near the target file.</small>
+                </div>
+              </div>
+              <div className="scope-options">
+                <label className={form.changeScope === 'only_selected_file' ? 'scope-option selected' : 'scope-option'}>
+                  <input
+                    type="radio"
+                    name="changeScope"
+                    checked={form.changeScope === 'only_selected_file'}
+                    onChange={() =>
+                      setForm({ ...form, changeScope: 'only_selected_file' })
+                    }
+                  />
+                  <span>Only selected file</span>
+                  <small>Safest default. Other files should only change if unavoidable.</small>
+                </label>
+                <label className={form.changeScope === 'allow_related_files' ? 'scope-option selected' : 'scope-option'}>
+                  <input
+                    type="radio"
+                    name="changeScope"
+                    checked={form.changeScope === 'allow_related_files'}
+                    onChange={() =>
+                      setForm({ ...form, changeScope: 'allow_related_files' })
+                    }
+                  />
+                  <span>Allow related files</span>
+                  <small>Use when tests, types, or neighboring modules may need edits.</small>
+                </label>
+              </div>
+            </div>
+
+            <div className="launcher-panel">
+              <div className="runner-row">
+                <span>Runner: {form.agent}</span>
                 <select
                   value={form.agent}
                   onChange={(event) =>
@@ -857,88 +1033,30 @@ function App() {
                 >
                   <option value="mock">Mock</option>
                   <option value="local">Local command</option>
-                  <option value="codex-cli" disabled>
-                    Codex CLI - coming soon
-                  </option>
-                  <option value="claude-cli" disabled>
-                    Claude CLI - coming soon
-                  </option>
-                  <option value="openai-api" disabled>
-                    OpenAI API - coming soon
-                  </option>
+                  <option value="openai">OpenAI</option>
                 </select>
-              </label>
-            </div>
-
-            <div className="file-picker">
-              <div className="file-picker-header">
-                <div>
-                  <strong>Target file</strong>
-                  <span>{form.targetFile || 'No file selected'}</span>
-                </div>
-                <button
-                  type="button"
-                  className="mini-action"
-                  disabled={isLoadingFiles || !form.repoUrl}
-                  onClick={() => void loadRepositoryFiles()}
-                >
-                  {isLoadingFiles ? 'Loading files' : 'Load files'}
-                </button>
               </div>
 
-              {repoFiles.length > 0 && (
-                <>
-                  <input
-                    value={fileFilter}
-                    onChange={(event) => setFileFilter(event.target.value)}
-                    placeholder="Filter files by path"
-                  />
-                  <div className="file-list">
-                    {filteredRepoFiles.map((entry) => (
-                      <button
-                        type="button"
-                        key={entry.path}
-                        className={
-                          form.targetFile === entry.path
-                            ? 'file-option selected'
-                            : 'file-option'
-                        }
-                        onClick={() => void selectTargetFile(entry.path)}
-                      >
-                        <span>{entry.path}</span>
-                        <small>
-                          {entry.extension ?? 'file'}
-                          {typeof entry.size === 'number'
-                            ? ` · ${entry.size} bytes`
-                            : ''}
-                        </small>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-
-              {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
-              {filePreview && (
-                <pre className="file-preview">{filePreview.content}</pre>
-              )}
-            </div>
-
-            <div className="template-strip" aria-label="Quick prompt templates">
-              {promptTemplates.map((template) => (
-                <button
-                  type="button"
-                  className="template-button"
-                  key={template.label}
-                  onClick={() => applyPromptTemplate(template.prompt)}
-                >
-                  {template.label}
-                </button>
-              ))}
+              <div className="template-strip" aria-label="Quick prompt templates">
+                {promptTemplates.map((template) => (
+                  <button
+                    type="button"
+                    className="template-button"
+                    key={template.label}
+                    onClick={() => applyPromptTemplate(
+                      form.targetFile
+                        ? `${template.prompt}\n\nFocus on ${form.targetFile}.`
+                        : template.prompt,
+                    )}
+                  >
+                    {template.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <label className="prompt-field">
-              Agent Prompt
+              What should the agent do?
               <textarea
                 required
                 minLength={10}
@@ -999,8 +1117,16 @@ function App() {
                   <dd className="metric-value">{shortSha(activeTask.commit_sha)}</dd>
                 </div>
                 <div>
+                  <dt>Repository</dt>
+                  <dd>{shortRepoName(activeTask.repo_url)}</dd>
+                </div>
+                <div>
                   <dt>Target File</dt>
                   <dd>{activeTask.target_file ?? 'None'}</dd>
+                </div>
+                <div>
+                  <dt>Change Scope</dt>
+                  <dd>{(activeTask.change_scope ?? 'only_selected_file').replaceAll('_', ' ')}</dd>
                 </div>
                 <div>
                   <dt>Delivery</dt>
@@ -1188,6 +1314,8 @@ function App() {
                   {file.path}
                   {activeTask?.target_file === file.path ? (
                     <strong className="target-match">Target</strong>
+                  ) : activeTask?.target_file ? (
+                    <strong className="outside-target">Outside target</strong>
                   ) : null}
                 </span>
                 <small>
@@ -1198,6 +1326,13 @@ function App() {
           </ul>
         ) : (
           <p className="empty-state">No changed files to show.</p>
+        )}
+        {showScopeWarning && (
+          <p className="scope-warning">
+            This task was scoped to the selected file, but the diff includes{' '}
+            {activeTaskOutsideTargetFiles.length} outside file
+            {activeTaskOutsideTargetFiles.length === 1 ? '' : 's'}.
+          </p>
         )}
 
         <pre>{taskDiff?.diff || 'No diff loaded.'}</pre>

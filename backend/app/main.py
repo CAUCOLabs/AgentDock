@@ -435,6 +435,7 @@ def create_task(
         runner_instruction = RepoBrowserService(settings).task_instruction(
             payload.instruction,
             target_file,
+            payload.change_scope.value,
         )
     except RepoBrowserError as exc:
         raise HTTPException(
@@ -449,6 +450,7 @@ def create_task(
         working_branch=working_branch,
         workspace_path=str(settings.workspace_root / task_id / "repo"),
         target_file=target_file,
+        change_scope=payload.change_scope,
         instruction=payload.instruction,
         agent=payload.agent,
         status=TaskStatus.running,
@@ -461,6 +463,11 @@ def create_task(
     task_store.append_log(task_id, "info", "Task created.")
     if target_file:
         task_store.append_log(task_id, "info", f"Target file selected: {target_file}")
+    task_store.append_log(
+        task_id,
+        "info",
+        f"Change scope selected: {payload.change_scope.value}",
+    )
     task_store.append_log(task_id, "info", "Task running.")
 
     try:
