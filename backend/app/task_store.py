@@ -428,89 +428,95 @@ class TaskStore:
         )
 
     def _initialize_database(self) -> None:
-        with TaskStore._lock:
-            with self._connect() as connection:
-                with connection:
-                    connection.execute("PRAGMA foreign_keys = ON")
-                    connection.executescript(
-                        """
-                        CREATE TABLE IF NOT EXISTS tasks (
-                            task_id TEXT PRIMARY KEY,
-                            repo_url TEXT NOT NULL,
-                            repo_owner TEXT,
-                            repo_name TEXT,
-                            base_branch TEXT NOT NULL,
-                            working_branch TEXT,
-                            workspace_path TEXT,
-                            target_file TEXT,
-                            change_scope TEXT NOT NULL DEFAULT 'only_selected_file',
-                            instruction TEXT NOT NULL,
-                            agent TEXT NOT NULL,
-                            status TEXT NOT NULL,
-                            changed_files_json TEXT NOT NULL DEFAULT '[]',
-                            commit_sha TEXT,
-                            pushed INTEGER NOT NULL DEFAULT 0,
-                            pushed_at TEXT,
-                            remote_branch TEXT,
-                            last_push_result TEXT,
-                            pr_url TEXT,
-                            created_at TEXT NOT NULL,
-                            updated_at TEXT NOT NULL,
-                            completed_at TEXT,
-                            rejected_at TEXT,
-                            deleted_at TEXT,
-                            error TEXT
-                        );
+        try:
+            with TaskStore._lock:
+                with self._connect() as connection:
+                    with connection:
+                        connection.execute("PRAGMA foreign_keys = ON")
+                        connection.executescript(
+                            """
+                            CREATE TABLE IF NOT EXISTS tasks (
+                                task_id TEXT PRIMARY KEY,
+                                repo_url TEXT NOT NULL,
+                                repo_owner TEXT,
+                                repo_name TEXT,
+                                base_branch TEXT NOT NULL,
+                                working_branch TEXT,
+                                workspace_path TEXT,
+                                target_file TEXT,
+                                change_scope TEXT NOT NULL DEFAULT 'only_selected_file',
+                                instruction TEXT NOT NULL,
+                                agent TEXT NOT NULL,
+                                status TEXT NOT NULL,
+                                changed_files_json TEXT NOT NULL DEFAULT '[]',
+                                commit_sha TEXT,
+                                pushed INTEGER NOT NULL DEFAULT 0,
+                                pushed_at TEXT,
+                                remote_branch TEXT,
+                                last_push_result TEXT,
+                                pr_url TEXT,
+                                created_at TEXT NOT NULL,
+                                updated_at TEXT NOT NULL,
+                                completed_at TEXT,
+                                rejected_at TEXT,
+                                deleted_at TEXT,
+                                error TEXT
+                            );
 
-                        CREATE TABLE IF NOT EXISTS task_logs (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            task_id TEXT NOT NULL,
-                            timestamp TEXT NOT NULL,
-                            level TEXT NOT NULL,
-                            message TEXT NOT NULL,
-                            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
-                                ON DELETE CASCADE
-                        );
+                            CREATE TABLE IF NOT EXISTS task_logs (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                task_id TEXT NOT NULL,
+                                timestamp TEXT NOT NULL,
+                                level TEXT NOT NULL,
+                                message TEXT NOT NULL,
+                                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+                                    ON DELETE CASCADE
+                            );
 
-                        CREATE INDEX IF NOT EXISTS idx_task_logs_task_id_id
-                        ON task_logs(task_id, id);
+                            CREATE INDEX IF NOT EXISTS idx_task_logs_task_id_id
+                            ON task_logs(task_id, id);
 
-                        CREATE TABLE IF NOT EXISTS task_diffs (
-                            task_id TEXT PRIMARY KEY,
-                            diff TEXT NOT NULL,
-                            changed_files_json TEXT NOT NULL DEFAULT '[]',
-                            generated_at TEXT NOT NULL,
-                            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
-                                ON DELETE CASCADE
-                        );
+                            CREATE TABLE IF NOT EXISTS task_diffs (
+                                task_id TEXT PRIMARY KEY,
+                                diff TEXT NOT NULL,
+                                changed_files_json TEXT NOT NULL DEFAULT '[]',
+                                generated_at TEXT NOT NULL,
+                                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+                                    ON DELETE CASCADE
+                            );
 
-                        CREATE TABLE IF NOT EXISTS workspace_snapshots (
-                            task_id TEXT PRIMARY KEY,
-                            repo_path TEXT NOT NULL,
-                            branch TEXT,
-                            head_commit TEXT,
-                            remote_url TEXT,
-                            has_valid_origin INTEGER NOT NULL DEFAULT 0,
-                            default_branch TEXT,
-                            push_enabled INTEGER NOT NULL DEFAULT 0,
-                            pr_creation_enabled INTEGER NOT NULL DEFAULT 0,
-                            is_dirty INTEGER NOT NULL,
-                            has_untracked_files INTEGER NOT NULL,
-                            changed_files_json TEXT NOT NULL DEFAULT '[]',
-                            commit_sha TEXT,
-                            pushed INTEGER NOT NULL DEFAULT 0,
-                            pushed_at TEXT,
-                            remote_branch TEXT,
-                            last_push_result TEXT,
-                            pr_url TEXT,
-                            captured_at TEXT NOT NULL,
-                            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
-                                ON DELETE CASCADE
-                        );
-                        """
-                    )
-                    self._ensure_workspace_snapshot_columns(connection)
-                    self._ensure_task_columns(connection)
+                            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                                task_id TEXT PRIMARY KEY,
+                                repo_path TEXT NOT NULL,
+                                branch TEXT,
+                                head_commit TEXT,
+                                remote_url TEXT,
+                                has_valid_origin INTEGER NOT NULL DEFAULT 0,
+                                default_branch TEXT,
+                                push_enabled INTEGER NOT NULL DEFAULT 0,
+                                pr_creation_enabled INTEGER NOT NULL DEFAULT 0,
+                                is_dirty INTEGER NOT NULL,
+                                has_untracked_files INTEGER NOT NULL,
+                                changed_files_json TEXT NOT NULL DEFAULT '[]',
+                                commit_sha TEXT,
+                                pushed INTEGER NOT NULL DEFAULT 0,
+                                pushed_at TEXT,
+                                remote_branch TEXT,
+                                last_push_result TEXT,
+                                pr_url TEXT,
+                                captured_at TEXT NOT NULL,
+                                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+                                    ON DELETE CASCADE
+                            );
+                            """
+                        )
+                        self._ensure_workspace_snapshot_columns(connection)
+                        self._ensure_task_columns(connection)
+        except sqlite3.Error as exc:
+            raise TaskStoreError(
+                "Failed to initialize or migrate task database schema "
+                f"at {self.db_path}: {exc}"
+            ) from exc
 
     def _recover_interrupted_tasks(self) -> None:
         """
@@ -707,9 +713,17 @@ class TaskStore:
             for row in connection.execute("PRAGMA table_info(tasks)")
         }
         desired_columns = {
+            "repo_owner": "TEXT",
+            "repo_name": "TEXT",
+            "workspace_path": "TEXT",
+            "target_file": "TEXT",
             "pushed_at": "TEXT",
             "remote_branch": "TEXT",
             "last_push_result": "TEXT",
+            "pr_url": "TEXT",
+            "completed_at": "TEXT",
+            "rejected_at": "TEXT",
+            "deleted_at": "TEXT",
             "change_scope": "TEXT NOT NULL DEFAULT 'only_selected_file'",
         }
 

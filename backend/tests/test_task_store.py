@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
 from app.config import Settings
-from app.models import AgentProvider, ChangedFile, TaskStatus, TaskSummary
+from app.models import AgentProvider, ChangeScope, ChangedFile, TaskStatus, TaskSummary
 from app.task_store import TaskStore
 
 
@@ -147,6 +148,101 @@ class TaskStorePersistenceTests(unittest.TestCase):
             self.assertIn(
                 "Task marked failed during startup recovery.",
                 [event.message for event in restarted_store.get_logs(task.task_id)],
+            )
+
+    def test_old_sqlite_schema_migrates_target_file_and_change_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+            now = datetime.now(timezone.utc).isoformat()
+
+            with sqlite3.connect(settings.db_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE tasks (
+                        task_id TEXT PRIMARY KEY,
+                        repo_url TEXT NOT NULL,
+                        base_branch TEXT NOT NULL,
+                        working_branch TEXT,
+                        instruction TEXT NOT NULL,
+                        agent TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        changed_files_json TEXT NOT NULL DEFAULT '[]',
+                        commit_sha TEXT,
+                        pushed INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        error TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO tasks (
+                        task_id,
+                        repo_url,
+                        base_branch,
+                        working_branch,
+                        instruction,
+                        agent,
+                        status,
+                        changed_files_json,
+                        commit_sha,
+                        pushed,
+                        created_at,
+                        updated_at,
+                        error
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "old_task",
+                        "https://github.com/example/repo",
+                        "main",
+                        "agentdock/old_task",
+                        "Old task created before target file support.",
+                        AgentProvider.mock.value,
+                        TaskStatus.completed.value,
+                        "[]",
+                        None,
+                        0,
+                        now,
+                        now,
+                        None,
+                    ),
+                )
+
+            store = TaskStore(settings)
+
+            with sqlite3.connect(settings.db_path) as connection:
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(tasks)")
+                }
+
+            self.assertIn("target_file", columns)
+            self.assertIn("change_scope", columns)
+            self.assertIn("repo_owner", columns)
+            self.assertIn("workspace_path", columns)
+            self.assertIn("remote_branch", columns)
+
+            old_task = store.get_task("old_task")
+            self.assertIsNotNone(old_task)
+            self.assertEqual(old_task.task_id, "old_task")
+            self.assertIsNone(old_task.target_file)
+            self.assertEqual(old_task.change_scope, ChangeScope.only_selected_file)
+
+            new_task = self._task("new_task")
+            new_task.target_file = "src/App.tsx"
+            new_task.change_scope = ChangeScope.only_selected_file
+            store.save_task(new_task)
+
+            persisted_new_task = store.get_task("new_task")
+            self.assertIsNotNone(persisted_new_task)
+            self.assertEqual(persisted_new_task.target_file, "src/App.tsx")
+            self.assertEqual(
+                persisted_new_task.change_scope,
+                ChangeScope.only_selected_file,
             )
 
     def _settings(self, temp_path: Path) -> Settings:
