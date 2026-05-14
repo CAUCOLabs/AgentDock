@@ -955,6 +955,67 @@ dd {
   margin-top: 16px;
 }
 
+.primary-review {
+  margin-top: 16px;
+  border-color: rgba(45, 212, 191, 0.22);
+}
+
+.result-grid {
+  align-items: start;
+}
+
+.task-summary-grid div {
+  background: rgba(2, 6, 23, 0.22);
+  border-color: rgba(148, 163, 184, 0.09);
+}
+
+.advanced-details {
+  margin: 0;
+}
+
+.advanced-details summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+
+.advanced-details summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.advanced-details summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.advanced-grid {
+  display: grid;
+  gap: 18px;
+  padding-top: 16px;
+}
+
+.compact-heading {
+  margin-bottom: 12px;
+}
+
+.compact-heading h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
 .log-list {
   position: relative;
   display: grid;
@@ -1184,5 +1245,9 @@ pre {
 
   .detail-grid {
     grid-template-columns: minmax(460px, 1.05fr) minmax(340px, 0.95fr);
+  }
+
+  .advanced-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

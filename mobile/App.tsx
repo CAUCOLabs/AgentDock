@@ -214,6 +214,7 @@ export default function App() {
   const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [diffCopyStatus, setDiffCopyStatus] = useState<"copied" | "failed" | null>(null);
 
@@ -229,6 +230,11 @@ export default function App() {
     [agentProviders]
   );
   const selectedAgentMetadata = agentProviderById.get(agentProvider);
+  const selectedTaskAgentLabel = selectedTask
+    ? agentProviderById.get(selectedTask.agent)?.label ??
+      providerOptions.find((provider) => provider.value === selectedTask.agent)?.label ??
+      selectedTask.agent
+    : null;
   const hasConnectedProvider = agentProviders.some((provider) => provider.status === "connected");
   const outsideTargetFiles = useMemo(
     () =>
@@ -1001,54 +1007,8 @@ export default function App() {
           )}
         </Section>
 
-        <Section title="Selected task detail">
-          {isLoadingTask ? (
-            <Loader label="Loading task details..." />
-          ) : selectedTask ? (
-            <View style={styles.detailStack}>
-              <View style={styles.detailHeader}>
-                <Text style={styles.taskId}>{selectedTask.task_id}</Text>
-                <Text style={styles.taskRepo}>{shortRepoName(selectedTask.repo_url)}</Text>
-              </View>
-              <InfoRow label="Status" value={selectedTask.status.replaceAll("_", " ")} />
-              <InfoRow label="Branch" value={selectedTask.working_branch ?? workspace?.branch ?? "None"} />
-              <InfoRow label="Target file" value={selectedTask.target_file ?? "None"} />
-              <InfoRow label="Change scope" value={(selectedTask.change_scope ?? "only_selected_file").replaceAll("_", " ")} />
-              <InfoRow label="Commit sha" value={shortSha(selectedTask.commit_sha ?? workspace?.commit_sha)} />
-              <InfoRow label="Pushed" value={selectedTask.pushed ? "Yes" : "No"} />
-              <InfoRow label="PR URL" value={selectedTask.pr_url ?? "None"} link={selectedTask.pr_url} />
-              {selectedTask.error ? <Text style={styles.errorText}>{selectedTask.error}</Text> : null}
-              <View style={styles.actionRow}>
-                <ActionButton
-                  label="Approve"
-                  icon={<CheckCircle2 size={18} color="#031014" />}
-                  disabled={isActing}
-                  onPress={() => handleApproval(true)}
-                  tone="approve"
-                />
-                <ActionButton
-                  label="Reject"
-                  icon={<XCircle size={18} color="#ffd4d8" />}
-                  disabled={isActing}
-                  onPress={() => handleApproval(false)}
-                  tone="reject"
-                />
-                <ActionButton
-                  label="Delete"
-                  icon={<Trash2 size={18} color="#ffd4d8" />}
-                  disabled={isActing}
-                  onPress={handleDelete}
-                  tone="delete"
-                />
-              </View>
-            </View>
-          ) : (
-            <Text style={styles.emptyText}>Select a task to inspect it.</Text>
-          )}
-        </Section>
-
         <Section
-          title="Diff viewer"
+          title="Review diff"
           right={
             selectedTask ? (
               <View style={styles.diffHeaderActions}>
@@ -1087,32 +1047,100 @@ export default function App() {
           )}
         </Section>
 
-        <Section title="Agent logs">
-          {selectedTask ? <LogTimeline events={logs.events} /> : <Text style={styles.emptyText}>Logs appear after selecting a task.</Text>}
-        </Section>
-
-        <Section title="Workspace status">
-          {selectedTask && workspace ? (
+        <Section title="Selected task">
+          {isLoadingTask ? (
+            <Loader label="Loading task..." />
+          ) : selectedTask ? (
             <View style={styles.detailStack}>
-              <InfoRow label="Branch" value={workspace.branch ?? "Detached"} />
-              <InfoRow label="Head" value={shortSha(workspace.head_commit)} />
-              <InfoRow label="Origin" value={workspace.has_valid_origin ? "Valid" : "Missing"} />
-              <InfoRow label="Remote" value={workspace.remote_url ?? "None"} />
-              <InfoRow label="Default branch" value={workspace.default_branch ?? "Unknown"} />
-              <InfoRow label="Push" value={workspace.push_enabled ? "Enabled" : "Disabled"} />
-              <InfoRow label="Pushed" value={workspace.pushed ? "Yes" : "No"} />
-              <InfoRow label="Remote branch" value={workspace.remote_branch ?? "None"} />
-              <InfoRow label="Pushed at" value={workspace.pushed_at ? formatDate(workspace.pushed_at) : "None"} />
-              <InfoRow label="Last push" value={workspace.last_push_result ?? "None"} />
-              <InfoRow label="PRs" value={workspace.pr_creation_enabled ? "Enabled" : "Disabled"} />
-              <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
-              <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />
-              <InfoRow label="Path" value={workspace.repo_path} />
-              <ChangedFiles files={workspace.changed_files} targetFile={selectedTask.target_file ?? null} />
+              <View style={styles.detailHeader}>
+                <Text style={styles.taskId}>{selectedTask.task_id}</Text>
+                <Text style={styles.taskRepo}>{shortRepoName(selectedTask.repo_url)}</Text>
+              </View>
+              <InfoRow label="Status" value={selectedTask.status.replaceAll("_", " ")} />
+              <InfoRow label="Target file" value={selectedTask.target_file ?? "None"} />
+              <InfoRow label="Agent" value={selectedTaskAgentLabel ?? "Unknown"} />
+              {selectedTask.error ? <Text style={styles.errorText}>{selectedTask.error}</Text> : null}
+              <View style={styles.actionRow}>
+                <ActionButton
+                  label="Approve"
+                  icon={<CheckCircle2 size={18} color="#031014" />}
+                  disabled={isActing}
+                  onPress={() => handleApproval(true)}
+                  tone="approve"
+                />
+                <ActionButton
+                  label="Reject"
+                  icon={<XCircle size={18} color="#ffd4d8" />}
+                  disabled={isActing}
+                  onPress={() => handleApproval(false)}
+                  tone="reject"
+                />
+                <ActionButton
+                  label="Delete"
+                  icon={<Trash2 size={18} color="#ffd4d8" />}
+                  disabled={isActing}
+                  onPress={handleDelete}
+                  tone="delete"
+                />
+              </View>
             </View>
           ) : (
-            <Text style={styles.emptyText}>Workspace status appears after selecting a task.</Text>
+            <Text style={styles.emptyText}>Select a task to inspect it.</Text>
           )}
+        </Section>
+
+        <Section title="Advanced details">
+          <Pressable
+            onPress={() => setIsAdvancedOpen((current) => !current)}
+            style={({ pressed }) => [styles.advancedToggle, pressed && styles.pressed]}
+          >
+            <Text style={styles.advancedToggleText}>
+              {isAdvancedOpen ? "Hide technical details" : "Show technical details"}
+            </Text>
+            <Text style={styles.fileOptionMeta}>Logs, workspace, and git state</Text>
+          </Pressable>
+          {isAdvancedOpen ? (
+            <View style={styles.detailStack}>
+              <Text style={styles.launcherGroupTitle}>Task metadata</Text>
+              {selectedTask ? (
+                <View style={styles.detailStack}>
+                  <InfoRow label="Branch" value={selectedTask.working_branch ?? "None"} />
+                  <InfoRow label="Change scope" value={(selectedTask.change_scope ?? "only_selected_file").replaceAll("_", " ")} />
+                  <InfoRow label="Commit sha" value={shortSha(selectedTask.commit_sha ?? workspace?.commit_sha)} />
+                  <InfoRow label="Pushed" value={selectedTask.pushed ? "Yes" : "No"} />
+                  <InfoRow label="PR URL" value={selectedTask.pr_url ?? "None"} link={selectedTask.pr_url} />
+                </View>
+              ) : (
+                <Text style={styles.emptyText}>Select a task to inspect metadata.</Text>
+              )}
+
+              <Text style={styles.launcherGroupTitle}>Agent logs</Text>
+              {selectedTask ? <LogTimeline events={logs.events} /> : <Text style={styles.emptyText}>Logs appear after selecting a task.</Text>}
+
+              <Text style={styles.launcherGroupTitle}>Workspace status</Text>
+              {selectedTask && workspace ? (
+                <View style={styles.detailStack}>
+                  <InfoRow label="Branch" value={workspace.branch ?? "Detached"} />
+                  <InfoRow label="Head" value={shortSha(workspace.head_commit)} />
+                  <InfoRow label="Origin" value={workspace.has_valid_origin ? "Valid" : "Missing"} />
+                  <InfoRow label="Remote" value={workspace.remote_url ?? "None"} />
+                  <InfoRow label="Default branch" value={workspace.default_branch ?? "Unknown"} />
+                  <InfoRow label="Push" value={workspace.push_enabled ? "Enabled" : "Disabled"} />
+                  <InfoRow label="Pushed" value={workspace.pushed ? "Yes" : "No"} />
+                  <InfoRow label="Remote branch" value={workspace.remote_branch ?? "None"} />
+                  <InfoRow label="Pushed at" value={workspace.pushed_at ? formatDate(workspace.pushed_at) : "None"} />
+                  <InfoRow label="Last push" value={workspace.last_push_result ?? "None"} />
+                  <InfoRow label="PRs" value={workspace.pr_creation_enabled ? "Enabled" : "Disabled"} />
+                  <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
+                  <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />
+                  <InfoRow label="Path" value={workspace.repo_path} />
+                  <ChangedFiles files={workspace.changed_files} targetFile={selectedTask.target_file ?? null} />
+                </View>
+              ) : (
+                <Text style={styles.emptyText}>Workspace status appears after selecting a task.</Text>
+              )}
+            </View>
+          ) : null}
         </Section>
       </ScrollView>
     </SafeAreaView>
@@ -1565,6 +1593,20 @@ const styles = StyleSheet.create({
   },
   detailStack: {
     gap: 12,
+  },
+  advancedToggle: {
+    minHeight: 52,
+    gap: 4,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.32)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.14)",
+  },
+  advancedToggleText: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "800",
   },
   detailHeader: {
     width: "100%",

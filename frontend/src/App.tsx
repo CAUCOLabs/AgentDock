@@ -317,6 +317,11 @@ function App() {
     [agentProviders],
   )
   const selectedAgentProvider = agentProviderById.get(form.agent)
+  const activeAgentLabel = activeTask
+    ? agentProviderById.get(activeTask.agent)?.label ??
+      providerOptions.find((provider) => provider.value === activeTask.agent)?.label ??
+      activeTask.agent
+    : null
   const hasConnectedProvider = agentProviders.some(
     (provider) => provider.status === 'connected',
   )
@@ -1299,12 +1304,78 @@ function App() {
         </section>
       </section>
 
-      <section className="detail-grid">
+      <section className="diff-viewer glass-card primary-review" aria-labelledby="diff-viewer-title">
+        <div className="section-heading">
+          <h2 id="diff-viewer-title">
+            <FileText size={17} />
+            Review Diff
+          </h2>
+          <div className="section-actions">
+            <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
+            {taskDiff?.diff && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void copyTaskDiff()}
+              >
+                Copy diff
+              </button>
+            )}
+            {diffCopyStatus && (
+              <small className="preview-copy-status">
+                {diffCopyStatus === 'copied' ? 'Copied' : 'Copy failed'}
+              </small>
+            )}
+            {activeTask && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void loadTaskDiff(activeTask.task_id)}
+              >
+                Refresh diff
+              </button>
+            )}
+          </div>
+        </div>
+
+        {taskDiff?.changed_files.length ? (
+          <ul className="changed-files changed-files-summary">
+            {taskDiff.changed_files.map((file) => (
+              <li key={`${file.status}-${file.path}`}>
+                <span>
+                  {file.path}
+                  {activeTask?.target_file === file.path ? (
+                    <strong className="target-match">Target</strong>
+                  ) : activeTask?.target_file ? (
+                    <strong className="outside-target">Outside target</strong>
+                  ) : null}
+                </span>
+                <small>
+                  {file.status} +{file.additions} -{file.deletions}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="empty-state">No changed files to show.</p>
+        )}
+        {showScopeWarning && (
+          <p className="scope-warning">
+            This task was scoped to the selected file, but the diff includes{' '}
+            {activeTaskOutsideTargetFiles.length} outside file
+            {activeTaskOutsideTargetFiles.length === 1 ? '' : 's'}.
+          </p>
+        )}
+
+        <pre>{taskDiff?.diff || 'No diff loaded.'}</pre>
+      </section>
+
+      <section className="detail-grid result-grid">
         <section className="task-details glass-card" aria-labelledby="task-details-title">
           <div className="section-heading">
             <h2 id="task-details-title">
               <Code2 size={17} />
-              Task Details
+              Selected Task
             </h2>
             {activeTask && (
               <span className={`status-pill ${activeTask.status}`}>
@@ -1317,46 +1388,31 @@ function App() {
 
           {activeTask && (
             <>
-              <dl className="metadata-grid">
+              <dl className="metadata-grid task-summary-grid">
                 <div>
                   <dt>Task</dt>
                   <dd>{activeTask.task_id}</dd>
-                </div>
-                <div>
-                  <dt>Working Branch</dt>
-                  <dd>{activeTask.working_branch ?? 'Not assigned'}</dd>
-                </div>
-                <div>
-                  <dt>Commit</dt>
-                  <dd className="metric-value">{shortSha(activeTask.commit_sha)}</dd>
                 </div>
                 <div>
                   <dt>Repository</dt>
                   <dd>{shortRepoName(activeTask.repo_url)}</dd>
                 </div>
                 <div>
+                  <dt>Status</dt>
+                  <dd>{activeTask.status.replaceAll('_', ' ')}</dd>
+                </div>
+                <div>
                   <dt>Target File</dt>
                   <dd>{activeTask.target_file ?? 'None'}</dd>
                 </div>
                 <div>
-                  <dt>Change Scope</dt>
-                  <dd>{(activeTask.change_scope ?? 'only_selected_file').replaceAll('_', ' ')}</dd>
-                </div>
-                <div>
-                  <dt>Delivery</dt>
-                  <dd className="badge-row">
-                    <span className={activeTask.pushed ? 'meta-badge ok' : 'meta-badge'}>
-                      {activeTask.pushed ? 'Pushed' : 'Local only'}
-                    </span>
-                    <span className={activeTask.pr_url ? 'meta-badge ok' : 'meta-badge'}>
-                      {activeTask.pr_url ? 'PR opened' : 'No PR'}
-                    </span>
-                  </dd>
+                  <dt>Agent</dt>
+                  <dd>{activeAgentLabel}</dd>
                 </div>
               </dl>
 
               <div className="instruction-block">
-                <h3>Instruction</h3>
+                <h3>Prompt</h3>
                 <p>{activeTask.instruction}</p>
               </div>
 
@@ -1391,179 +1447,158 @@ function App() {
           )}
         </section>
 
-        <section
-          className="workspace-status glass-card"
-          aria-labelledby="workspace-status-title"
-        >
-          <div className="section-heading">
-            <h2 id="workspace-status-title">
-              <GitBranch size={17} />
-              Workspace Status
-            </h2>
-            {activeTask && (
-              <button
-                type="button"
-                className="mini-action"
-                onClick={() => void loadWorkspaceStatus(activeTask.task_id)}
-              >
-                View workspace status
-              </button>
-            )}
+        <details className="advanced-details glass-card">
+          <summary>
+            <span>
+              <Terminal size={17} />
+              Advanced details
+            </span>
+            <small>Logs, workspace, and git metadata</small>
+          </summary>
+
+          <div className="advanced-grid">
+            <section aria-labelledby="task-metadata-title">
+              <div className="section-heading compact-heading">
+                <h3 id="task-metadata-title">
+                  <Code2 size={16} />
+                  Task metadata
+                </h3>
+              </div>
+
+              {activeTask ? (
+                <dl className="metadata-grid">
+                  <div>
+                    <dt>Working branch</dt>
+                    <dd>{activeTask.working_branch ?? 'Not assigned'}</dd>
+                  </div>
+                  <div>
+                    <dt>Commit</dt>
+                    <dd className="metric-value">{shortSha(activeTask.commit_sha)}</dd>
+                  </div>
+                  <div>
+                    <dt>Change scope</dt>
+                    <dd>{(activeTask.change_scope ?? 'only_selected_file').replaceAll('_', ' ')}</dd>
+                  </div>
+                  <div>
+                    <dt>Pushed</dt>
+                    <dd>{activeTask.pushed ? 'Yes' : 'No'}</dd>
+                  </div>
+                  <div>
+                    <dt>PR URL</dt>
+                    <dd>{activeTask.pr_url ?? 'None'}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="empty-state">Select a task to inspect metadata.</p>
+              )}
+            </section>
+
+            <section aria-labelledby="workspace-status-title">
+              <div className="section-heading compact-heading">
+                <h3 id="workspace-status-title">
+                  <GitBranch size={16} />
+                  Workspace
+                </h3>
+                {activeTask && (
+                  <button
+                    type="button"
+                    className="mini-action"
+                    onClick={() => void loadWorkspaceStatus(activeTask.task_id)}
+                  >
+                    Refresh
+                  </button>
+                )}
+              </div>
+
+              {!workspaceStatus && (
+                <p className="empty-state">Workspace status is not available.</p>
+              )}
+
+              {workspaceStatus && (
+                <dl className="metadata-grid">
+                  <div>
+                    <dt>Branch</dt>
+                    <dd>{workspaceStatus.branch ?? 'Detached'}</dd>
+                  </div>
+                  <div>
+                    <dt>Head</dt>
+                    <dd className="metric-value">{shortSha(workspaceStatus.head_commit)}</dd>
+                  </div>
+                  <div>
+                    <dt>Origin</dt>
+                    <dd>{workspaceStatus.has_valid_origin ? 'Valid' : 'Missing'}</dd>
+                  </div>
+                  <div>
+                    <dt>Remote</dt>
+                    <dd>{workspaceStatus.remote_url ?? 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>Default</dt>
+                    <dd>{workspaceStatus.default_branch ?? 'Unknown'}</dd>
+                  </div>
+                  <div>
+                    <dt>Push</dt>
+                    <dd>{workspaceStatus.push_enabled ? 'Enabled' : 'Disabled'}</dd>
+                  </div>
+                  <div>
+                    <dt>Pushed</dt>
+                    <dd>{workspaceStatus.pushed ? 'Yes' : 'No'}</dd>
+                  </div>
+                  <div>
+                    <dt>Remote branch</dt>
+                    <dd>{workspaceStatus.remote_branch ?? 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>Pushed at</dt>
+                    <dd>{workspaceStatus.pushed_at ? formatTimestamp(workspaceStatus.pushed_at) : 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>Last push</dt>
+                    <dd>{workspaceStatus.last_push_result ?? 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>PRs</dt>
+                    <dd>{workspaceStatus.pr_creation_enabled ? 'Enabled' : 'Disabled'}</dd>
+                  </div>
+                  <div>
+                    <dt>Dirty</dt>
+                    <dd>{workspaceStatus.is_dirty ? 'Yes' : 'No'}</dd>
+                  </div>
+                  <div>
+                    <dt>Untracked</dt>
+                    <dd>{workspaceStatus.has_untracked_files ? 'Yes' : 'No'}</dd>
+                  </div>
+                </dl>
+              )}
+            </section>
+
+            <section aria-labelledby="agent-log-title">
+              <div className="section-heading compact-heading">
+                <h3 id="agent-log-title">
+                  <Terminal size={16} />
+                  Agent log
+                </h3>
+                <span>{taskLogs.length} events</span>
+              </div>
+
+              {taskLogs.length === 0 ? (
+                <p className="empty-state">No task events to show.</p>
+              ) : (
+                <ol className="log-list">
+                  {taskLogs.map((event) => (
+                    <li key={`${event.timestamp}-${event.message}`}>
+                      <time>{formatTimestamp(event.timestamp)}</time>
+                      <span className={`log-level ${event.level}`}>
+                        {event.level}
+                      </span>
+                      <p>{event.message}</p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
           </div>
-
-          {!workspaceStatus && (
-            <p className="empty-state">Workspace status is not available.</p>
-          )}
-
-          {workspaceStatus && (
-            <dl className="metadata-grid">
-              <div>
-                <dt>Branch</dt>
-                <dd>{workspaceStatus.branch ?? 'Detached'}</dd>
-              </div>
-              <div>
-                <dt>Head</dt>
-                <dd>{shortSha(workspaceStatus.head_commit)}</dd>
-              </div>
-              <div>
-                <dt>Origin</dt>
-                <dd>{workspaceStatus.has_valid_origin ? 'Valid' : 'Missing'}</dd>
-              </div>
-              <div>
-                <dt>Remote</dt>
-                <dd>{workspaceStatus.remote_url ?? 'None'}</dd>
-              </div>
-              <div>
-                <dt>Default</dt>
-                <dd>{workspaceStatus.default_branch ?? 'Unknown'}</dd>
-              </div>
-              <div>
-                <dt>Push</dt>
-                <dd>{workspaceStatus.push_enabled ? 'Enabled' : 'Disabled'}</dd>
-              </div>
-              <div>
-                <dt>Pushed</dt>
-                <dd>{workspaceStatus.pushed ? 'Yes' : 'No'}</dd>
-              </div>
-              <div>
-                <dt>Remote branch</dt>
-                <dd>{workspaceStatus.remote_branch ?? 'None'}</dd>
-              </div>
-              <div>
-                <dt>Pushed at</dt>
-                <dd>{workspaceStatus.pushed_at ? formatTimestamp(workspaceStatus.pushed_at) : 'None'}</dd>
-              </div>
-              <div>
-                <dt>Last push</dt>
-                <dd>{workspaceStatus.last_push_result ?? 'None'}</dd>
-              </div>
-              <div>
-                <dt>PRs</dt>
-                <dd>{workspaceStatus.pr_creation_enabled ? 'Enabled' : 'Disabled'}</dd>
-              </div>
-              <div>
-                <dt>Dirty</dt>
-                <dd>{workspaceStatus.is_dirty ? 'Yes' : 'No'}</dd>
-              </div>
-              <div>
-                <dt>Untracked</dt>
-                <dd>{workspaceStatus.has_untracked_files ? 'Yes' : 'No'}</dd>
-              </div>
-            </dl>
-          )}
-        </section>
-      </section>
-
-      <section className="agent-log glass-card" aria-labelledby="agent-log-title">
-        <div className="section-heading">
-          <h2 id="agent-log-title">
-            <Terminal size={17} />
-            Agent Log
-          </h2>
-          <span>{taskLogs.length} events</span>
-        </div>
-
-        {taskLogs.length === 0 ? (
-          <p className="empty-state">No task events to show.</p>
-        ) : (
-          <ol className="log-list">
-            {taskLogs.map((event) => (
-              <li key={`${event.timestamp}-${event.message}`}>
-                <time>{formatTimestamp(event.timestamp)}</time>
-                <span className={`log-level ${event.level}`}>
-                  {event.level}
-                </span>
-                <p>{event.message}</p>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
-
-      <section className="diff-viewer glass-card" aria-labelledby="diff-viewer-title">
-        <div className="section-heading">
-          <h2 id="diff-viewer-title">
-            <FileText size={17} />
-            Diff Viewer
-          </h2>
-          <div className="section-actions">
-            <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
-            {taskDiff?.diff && (
-              <button
-                type="button"
-                className="mini-action"
-                onClick={() => void copyTaskDiff()}
-              >
-                Copy diff
-              </button>
-            )}
-            {diffCopyStatus && (
-              <small className="preview-copy-status">
-                {diffCopyStatus === 'copied' ? 'Copied' : 'Copy failed'}
-              </small>
-            )}
-            {activeTask && (
-              <button
-                type="button"
-                className="mini-action"
-                onClick={() => void loadTaskDiff(activeTask.task_id)}
-              >
-                View diff
-              </button>
-            )}
-          </div>
-        </div>
-
-        {taskDiff?.changed_files.length ? (
-          <ul className="changed-files">
-            {taskDiff.changed_files.map((file) => (
-              <li key={`${file.status}-${file.path}`}>
-                <span>
-                  {file.path}
-                  {activeTask?.target_file === file.path ? (
-                    <strong className="target-match">Target</strong>
-                  ) : activeTask?.target_file ? (
-                    <strong className="outside-target">Outside target</strong>
-                  ) : null}
-                </span>
-                <small>
-                  {file.status} +{file.additions} -{file.deletions}
-                </small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="empty-state">No changed files to show.</p>
-        )}
-        {showScopeWarning && (
-          <p className="scope-warning">
-            This task was scoped to the selected file, but the diff includes{' '}
-            {activeTaskOutsideTargetFiles.length} outside file
-            {activeTaskOutsideTargetFiles.length === 1 ? '' : 's'}.
-          </p>
-        )}
-
-        <pre>{taskDiff?.diff || 'No diff loaded.'}</pre>
+        </details>
       </section>
     </main>
   )
