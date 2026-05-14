@@ -51,6 +51,16 @@ class TaskRunnerTests(unittest.TestCase):
                 ["src/App.tsx"],
             )
             self.assertNotIn("AGENTDOCK_TASK.md", result.diff)
+            workspace_repo = settings.workspace_root / "task_target" / "repo"
+            self.assertFalse((workspace_repo / "AGENTDOCK_TASK.md").exists())
+            self.assertIn(
+                "TODO(AgentDock)",
+                (workspace_repo / "src/App.tsx").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                repo_status_paths(workspace_repo),
+                ["src/App.tsx"],
+            )
 
     def test_development_runner_uses_markdown_marker_for_markdown_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -69,10 +79,67 @@ class TaskRunnerTests(unittest.TestCase):
             )
 
             self.assertIn("README.md", result.diff)
-            self.assertIn("<!-- AgentDock development note:", result.diff)
+            self.assertIn(
+                "> TODO(AgentDock): AgentDock development note:",
+                result.diff,
+            )
             self.assertEqual(
                 [changed_file.path for changed_file in result.changed_files],
                 ["README.md"],
+            )
+
+    def test_development_runner_uses_css_comment_for_css_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_source_repo(Path(temp_dir) / "source")
+            repo_path = Path(source_repo.working_tree_dir)
+            (repo_path / "src/styles.css").write_text(
+                "body { margin: 0; }\n",
+                encoding="utf-8",
+            )
+            source_repo.git.add(A=True)
+            source_repo.index.commit("add css")
+            settings = self._settings(Path(temp_dir) / "css-run")
+
+            result = TaskRunner(settings).run_task(
+                task_id="task_css",
+                repo_url=str(source_repo.working_tree_dir),
+                base_branch="main",
+                working_branch="agentdock/task_css",
+                instruction="Add review note.",
+                agent=AgentProvider.codex,
+                target_file="src/styles.css",
+                change_scope="only_selected_file",
+            )
+
+            self.assertIn("src/styles.css", result.diff)
+            self.assertIn(
+                "/* TODO(AgentDock): AgentDock development note:",
+                result.diff,
+            )
+            self.assertEqual(
+                [changed_file.path for changed_file in result.changed_files],
+                ["src/styles.css"],
+            )
+
+    def test_development_runner_falls_back_to_task_note_without_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_source_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir) / "fallback-run")
+
+            result = TaskRunner(settings).run_task(
+                task_id="task_fallback",
+                repo_url=str(source_repo.working_tree_dir),
+                base_branch="main",
+                working_branch="agentdock/task_fallback",
+                instruction="Create the default development note.",
+                agent=AgentProvider.codex,
+                change_scope="only_selected_file",
+            )
+
+            self.assertIn("AGENTDOCK_TASK.md", result.diff)
+            self.assertEqual(
+                [changed_file.path for changed_file in result.changed_files],
+                ["AGENTDOCK_TASK.md"],
             )
 
     def test_local_runner_modifies_file_and_produces_real_diff(self) -> None:
@@ -172,6 +239,14 @@ class TaskRunnerTests(unittest.TestCase):
         repo.git.add(A=True)
         repo.index.commit("initial")
         return repo
+
+
+def repo_status_paths(repo_path: Path) -> list[str]:
+    return sorted(
+        line[3:]
+        for line in Repo(repo_path).git.status("--short").splitlines()
+        if line.strip()
+    )
 
 
 if __name__ == "__main__":

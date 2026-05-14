@@ -213,11 +213,14 @@ class MockProvider(AgentProviderBase):
         if extension == ".py":
             return f"# TODO(AgentDock): {note}\n"
 
-        if extension in {".ts", ".tsx", ".js"}:
+        if extension in {".ts", ".tsx", ".js", ".jsx"}:
             return f"// TODO(AgentDock): {note}\n"
 
+        if extension == ".css":
+            return f"/* TODO(AgentDock): {note} */\n"
+
         if extension == ".md":
-            return f"\n<!-- {note} -->\n"
+            return f"\n> TODO(AgentDock): {note}\n"
 
         return f"\n{note}\n"
 
