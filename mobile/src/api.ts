@@ -26,6 +26,28 @@ type HealthResponse = {
   [key: string]: unknown;
 };
 
+export type ApiConnectivitySnapshot = {
+  status: "online" | "offline";
+  error: string | null;
+};
+
+let connectivityListener: ((snapshot: ApiConnectivitySnapshot) => void) | null = null;
+
+export function subscribeToApiConnectivity(
+  listener: (snapshot: ApiConnectivitySnapshot) => void
+) {
+  connectivityListener = listener;
+  return () => {
+    if (connectivityListener === listener) {
+      connectivityListener = null;
+    }
+  };
+}
+
+function reportApiConnectivity(snapshot: ApiConnectivitySnapshot) {
+  connectivityListener?.(snapshot);
+}
+
 async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
   const { sessionId, ...requestInit } = init ?? {};
@@ -42,10 +64,12 @@ async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T>
       },
     });
   } catch (error) {
-    throw new Error(
-      `Unable to reach AgentDock API at ${API_BASE_URL}. For Android emulator use http://10.0.2.2:8000. For a physical Android device, set EXPO_PUBLIC_AGENTDOCK_API_URL to your Mac LAN IP, for example http://192.168.0.185:8000.`
-    );
+    const message = `Unable to reach AgentDock API at ${API_BASE_URL}. For Android emulator use http://10.0.2.2:8000. For a physical Android device, set EXPO_PUBLIC_AGENTDOCK_API_URL to your Mac LAN IP, for example http://192.168.0.185:8000.`;
+    reportApiConnectivity({ status: "offline", error: message });
+    throw new Error(message);
   }
+
+  reportApiConnectivity({ status: "online", error: null });
 
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;

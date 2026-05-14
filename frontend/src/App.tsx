@@ -262,6 +262,9 @@ function App() {
   const [isCreating, setIsCreating] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [apiConnectionError, setApiConnectionError] = useState<string | null>(
+    null,
+  )
   const connectedGithubLogin =
     githubInstallation?.account_login ?? githubAccount?.login ?? null
 
@@ -335,14 +338,24 @@ function App() {
   }, [selectedTaskId])
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${API_URL}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(githubSessionId ? { 'X-AgentDock-Session': githubSessionId } : {}),
-        ...init?.headers,
-      },
-      ...init,
-    })
+    let response: Response
+
+    try {
+      response = await fetch(`${API_URL}${path}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(githubSessionId ? { 'X-AgentDock-Session': githubSessionId } : {}),
+          ...init?.headers,
+        },
+        ...init,
+      })
+    } catch {
+      const message = `Unable to reach AgentDock API at ${API_URL}.`
+      setApiConnectionError(message)
+      throw new Error(message)
+    }
+
+    setApiConnectionError(null)
 
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`
@@ -720,10 +733,12 @@ function App() {
         </div>
       </motion.header>
 
-      {(notice || error) && (
+      {(notice || apiConnectionError || error) && (
         <section className="messages" aria-live="polite">
           {notice && <p className="notice">{notice}</p>}
-          {error && <p className="error">{error}</p>}
+          {(apiConnectionError || error) && (
+            <p className="error">{apiConnectionError ?? error}</p>
+          )}
         </section>
       )}
 

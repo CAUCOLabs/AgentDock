@@ -39,6 +39,7 @@ import {
   getWorkspaceStatus,
   logout,
   startGitHubAuth,
+  subscribeToApiConnectivity,
 } from "./src/api";
 import { API_BASE_URL } from "./src/config";
 import type {
@@ -74,6 +75,11 @@ const emptyDiff: TaskDiffResponse = {
 const emptyLogs: TaskLogsResponse = {
   task_id: "",
   events: [],
+};
+
+type ApiConnectionState = {
+  status: "checking" | "online" | "offline";
+  error: string | null;
 };
 
 function shortRepoName(repoUrl: string) {
@@ -127,7 +133,10 @@ export default function App() {
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
   const [filePreview, setFilePreview] = useState<RepositoryFilePreviewResponse | null>(null);
-  const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
+  const [apiConnection, setApiConnection] = useState<ApiConnectionState>({
+    status: "checking",
+    error: null,
+  });
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
   const [diff, setDiff] = useState<TaskDiffResponse>(emptyDiff);
@@ -217,10 +226,12 @@ export default function App() {
     setError(null);
     try {
       await getHealth();
-      setHealth("online");
+      setApiConnection({ status: "online", error: null });
     } catch (healthError) {
-      setHealth("offline");
-      setError(healthError instanceof Error ? healthError.message : `Unable to reach ${API_BASE_URL}.`);
+      setApiConnection({
+        status: "offline",
+        error: healthError instanceof Error ? healthError.message : `Unable to reach ${API_BASE_URL}.`,
+      });
     }
 
     try {
@@ -234,6 +245,14 @@ export default function App() {
       setIsRefreshing(false);
     }
   }, [loadTaskDetail, refreshTasks, selectedTaskId]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToApiConnectivity((snapshot) => {
+      setApiConnection(snapshot);
+    });
+
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     void loadInitialData();
@@ -433,20 +452,20 @@ export default function App() {
             <Text style={styles.title}>AgentDock</Text>
             <Text style={styles.subtitle}>Mobile command center for AI coding agents</Text>
           </View>
-          <View style={[styles.healthPill, health === "online" ? styles.healthOnline : styles.healthOffline]}>
-            {health === "checking" ? (
+          <View style={[styles.healthPill, apiConnection.status === "online" ? styles.healthOnline : styles.healthOffline]}>
+            {apiConnection.status === "checking" ? (
               <ActivityIndicator size="small" color="#9eefff" />
             ) : (
-              <View style={styles.healthDot} />
+              <View style={[styles.healthDot, apiConnection.status === "offline" && styles.healthDotOffline]} />
             )}
-            <Text style={styles.healthText}>{health}</Text>
+            <Text style={styles.healthText}>{apiConnection.status}</Text>
           </View>
         </View>
 
-        {error ? (
+        {apiConnection.error || error ? (
           <View style={styles.errorCard}>
             <CircleAlert size={18} color="#ff8f9b" />
-            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.errorText}>{apiConnection.error ?? error}</Text>
           </View>
         ) : null}
 
@@ -1031,6 +1050,9 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: "#45f0c8",
+  },
+  healthDotOffline: {
+    backgroundColor: "#ff5c76",
   },
   healthText: {
     color: "#d8f9ff",
