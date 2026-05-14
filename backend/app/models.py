@@ -25,12 +25,18 @@ class AgentProvider(str, Enum):
     """
     Supported AI agent providers.
 
-    For now, we start with mock. Real providers will be added later.
+    Legacy values remain accepted for existing clients and persisted tasks.
+    New visible provider choices are scaffolded and route through the
+    deterministic development provider until real integrations are added.
     """
 
     mock = "mock"
     local = "local"
     openai = "openai"
+    codex = "codex"
+    claude = "claude"
+    ollama = "ollama"
+    local_model = "local_model"
 
 
 class ChangeScope(str, Enum):
@@ -67,7 +73,7 @@ class TaskCreateRequest(BaseModel):
         ],
     )
     agent: AgentProvider = Field(
-        default=AgentProvider.mock,
+        default=AgentProvider.codex,
         description="AI agent provider to use for this task.",
     )
     target_file: str | None = Field(

@@ -27,7 +27,14 @@ type TaskStatus =
   | 'failed'
   | 'cancelled'
 
-type AgentProvider = 'mock' | 'local' | 'openai'
+type AgentProvider =
+  | 'codex'
+  | 'claude'
+  | 'ollama'
+  | 'local_model'
+  | 'mock'
+  | 'local'
+  | 'openai'
 type ChangeScope = 'only_selected_file' | 'allow_related_files'
 
 type ChangedFile = {
@@ -200,10 +207,17 @@ const initialForm: CreateTaskForm = {
   repoUrl: '',
   baseBranch: 'main',
   instruction: '',
-  agent: 'mock',
+  agent: 'codex',
   targetFile: '',
   changeScope: 'only_selected_file',
 }
+
+const providerOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: 'Codex', value: 'codex' },
+  { label: 'Claude', value: 'claude' },
+  { label: 'Ollama', value: 'ollama' },
+  { label: 'Local model', value: 'local_model' },
+]
 
 const promptTemplates = [
   {
@@ -254,6 +268,9 @@ function App() {
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
     useState<RepositoryFilePreviewResponse | null>(null)
+  const [previewCopyStatus, setPreviewCopyStatus] = useState<
+    'copied' | 'failed' | null
+  >(null)
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
   const [isConnectingGithub, setIsConnectingGithub] = useState(false)
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false)
@@ -551,6 +568,7 @@ function App() {
     }))
     setRepoFiles([])
     setFilePreview(null)
+    setPreviewCopyStatus(null)
     setNotice(`Selected ${repo.full_name}. Load files to continue.`)
   }
 
@@ -563,6 +581,7 @@ function App() {
     setIsLoadingFiles(true)
     setError(null)
     setFilePreview(null)
+    setPreviewCopyStatus(null)
 
     try {
       const result = await request<RepositoryFilesResponse>('/repositories/files', {
@@ -585,6 +604,7 @@ function App() {
     setForm((current) => ({ ...current, targetFile: path }))
     setIsLoadingPreview(true)
     setError(null)
+    setPreviewCopyStatus(null)
 
     try {
       setFilePreview(
@@ -606,6 +626,23 @@ function App() {
     } finally {
       setIsLoadingPreview(false)
     }
+  }
+
+  async function copyFilePreview() {
+    if (!filePreview || !navigator.clipboard?.writeText) {
+      setPreviewCopyStatus('failed')
+      window.setTimeout(() => setPreviewCopyStatus(null), 1600)
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(filePreview.content)
+      setPreviewCopyStatus('copied')
+    } catch {
+      setPreviewCopyStatus('failed')
+    }
+
+    window.setTimeout(() => setPreviewCopyStatus(null), 1600)
   }
 
   async function approveTask(approve: boolean) {
@@ -800,7 +837,7 @@ function App() {
               <div className="launcher-step">
                 <span>1</span>
                 <div>
-                  <strong>GitHub connection</strong>
+                  <strong>Connections</strong>
                   <small>
                     {connectedGithubLogin
                       ? `Connected as ${connectedGithubLogin}`
@@ -845,7 +882,39 @@ function App() {
               <div className="launcher-step">
                 <span>2</span>
                 <div>
-                  <strong>Selected repository</strong>
+                  <strong>AI Agent</strong>
+                  <small>Select the agent profile for this task.</small>
+                </div>
+              </div>
+              <div className="provider-options">
+                {providerOptions.map((provider) => (
+                  <label
+                    key={provider.value}
+                    className={
+                      form.agent === provider.value
+                        ? 'provider-option selected'
+                        : 'provider-option'
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="agentProvider"
+                      checked={form.agent === provider.value}
+                      onChange={() =>
+                        setForm({ ...form, agent: provider.value })
+                      }
+                    />
+                    <span>{provider.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="launcher-panel">
+              <div className="launcher-step">
+                <span>3</span>
+                <div>
+                  <strong>Repository</strong>
                   <small>
                     {selectedGithubRepo
                       ? selectedGithubRepo.full_name
@@ -868,7 +937,7 @@ function App() {
                       {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
                     </span>
                   </div>
-                  <small>{selectedGithubRepo.clone_url}</small>
+                  <small>{selectedGithubRepo.html_url}</small>
                 </div>
               )}
 
@@ -911,7 +980,7 @@ function App() {
               )}
 
               <details className="manual-repo-panel">
-                <summary>Manual repository URL</summary>
+                <summary>Advanced: use manual repository URL</summary>
                 <div className="form-pair">
                   <label>
                     Repository URL
@@ -939,9 +1008,9 @@ function App() {
 
             <div className="launcher-panel repository-explorer">
               <div className="launcher-step">
-                <span>3</span>
+                <span>4</span>
                 <div>
-                  <strong>Repository Explorer</strong>
+                  <strong>Target Selection</strong>
                   <small>{form.targetFile || 'Select a target file'}</small>
                 </div>
                 <button
@@ -986,10 +1055,36 @@ function App() {
                     </div>
                   </div>
                   <div className="explorer-preview">
-                    <strong>{form.targetFile || 'No target selected'}</strong>
                     {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
                     {filePreview ? (
-                      <pre className="file-preview">{filePreview.content}</pre>
+                      <>
+                        <div className="file-preview-header">
+                          <div className="file-preview-title">
+                            <div>
+                              <strong>{filePreview.path}</strong>
+                              <small>
+                                {formatBytes(filePreview.size)}
+                                {filePreview.truncated ? ' · Preview truncated' : ''}
+                              </small>
+                            </div>
+                            <button
+                              type="button"
+                              className="preview-copy-button"
+                              onClick={() => void copyFilePreview()}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                          {previewCopyStatus && (
+                            <small className="preview-copy-status">
+                              {previewCopyStatus === 'copied'
+                                ? 'Copied'
+                                : 'Copy failed'}
+                            </small>
+                          )}
+                        </div>
+                        <pre className="file-preview">{filePreview.content}</pre>
+                      </>
                     ) : (
                       <p className="empty-state">A read-only preview appears here after selecting a file.</p>
                     )}
@@ -1000,10 +1095,10 @@ function App() {
 
             <div className="launcher-panel">
               <div className="launcher-step">
-                <span>4</span>
+                <span>5</span>
                 <div>
-                  <strong>Change scope</strong>
-                  <small>Choose how tightly the agent should stay near the target file.</small>
+                  <strong>Review & Approval</strong>
+                  <small>Choose how tightly the task should stay near the target file.</small>
                 </div>
               </div>
               <div className="scope-options">
@@ -1035,21 +1130,12 @@ function App() {
             </div>
 
             <div className="launcher-panel">
-              <div className="runner-row">
-                <span>Runner: {form.agent}</span>
-                <select
-                  value={form.agent}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      agent: event.target.value as AgentProvider,
-                    })
-                  }
-                >
-                  <option value="mock">Mock</option>
-                  <option value="local">Local command</option>
-                  <option value="openai">OpenAI</option>
-                </select>
+              <div className="launcher-step">
+                <span>6</span>
+                <div>
+                  <strong>Task Prompt</strong>
+                  <small>Describe the code change the agent should prepare.</small>
+                </div>
               </div>
 
               <div className="template-strip" aria-label="Quick prompt templates">
@@ -1068,24 +1154,24 @@ function App() {
                   </button>
                 ))}
               </div>
-            </div>
 
-            <label className="prompt-field">
-              What should the agent do?
-              <textarea
-                required
-                minLength={10}
-                rows={7}
-                placeholder="Paste your coding prompt here. Example: Fix the indexing issue, keep the change minimal, run tests, and show the diff before approval."
-                value={form.instruction}
-                onChange={(event) =>
-                  setForm({ ...form, instruction: event.target.value })
-                }
-              />
-              <span className="character-count">
-                {form.instruction.length} characters
-              </span>
-            </label>
+              <label className="prompt-field">
+                What should the agent do?
+                <textarea
+                  required
+                  minLength={10}
+                  rows={7}
+                  placeholder="Paste your coding prompt here. Example: Fix the indexing issue, keep the change minimal, run tests, and show the diff before approval."
+                  value={form.instruction}
+                  onChange={(event) =>
+                    setForm({ ...form, instruction: event.target.value })
+                  }
+                />
+                <span className="character-count">
+                  {form.instruction.length} characters
+                </span>
+              </label>
+            </div>
 
             <div className="safety-note">
               Safety: AgentDock creates an isolated workspace and branch.
@@ -1375,6 +1461,23 @@ function formatTimestamp(value: string) {
     minute: '2-digit',
     second: '2-digit',
   }).format(new Date(value))
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} bytes`
+  }
+
+  const units = ['KB', 'MB', 'GB']
+  let size = value / 1024
+  let unitIndex = 0
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
 }
 
 function formatError(error: unknown) {

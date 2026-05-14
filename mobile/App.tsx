@@ -1,4 +1,5 @@
 import { StatusBar } from "expo-status-bar";
+import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -43,6 +44,7 @@ import {
 } from "./src/api";
 import { API_BASE_URL } from "./src/config";
 import type {
+  AgentProvider,
   TaskDiffResponse,
   ChangeScope,
   GitHubAccount,
@@ -63,6 +65,13 @@ const templates = [
   { label: "Add feature", value: "Add the requested feature with focused tests and minimal scope." },
   { label: "Review code", value: "Review the code and make the safest high-impact improvements." },
   { label: "Write tests", value: "Add tests for the behavior described below without changing production logic." },
+];
+
+const providerOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: "Codex", value: "codex" },
+  { label: "Claude", value: "claude" },
+  { label: "Ollama", value: "ollama" },
+  { label: "Local model", value: "local_model" },
 ];
 
 const emptyDiff: TaskDiffResponse = {
@@ -101,6 +110,23 @@ function formatDate(value: string) {
   });
 }
 
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} bytes`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let size = value / 1024;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function statusTone(status: TaskStatus) {
   switch (status) {
     case "completed":
@@ -123,6 +149,7 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
+  const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
@@ -150,6 +177,8 @@ export default function App() {
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
+  const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
+  const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
@@ -182,6 +211,7 @@ export default function App() {
       ),
     [githubRepoFilter, githubRepos]
   );
+  const showManualRepoMode = isManualRepoModeOpen;
 
   const latestTasks = useMemo(
     () =>
@@ -271,7 +301,7 @@ export default function App() {
         repo_url: repoUrl.trim(),
         base_branch: baseBranch.trim() || "main",
         instruction: instruction.trim(),
-        agent: "mock",
+        agent: agentProvider,
         target_file: targetFile || null,
         change_scope: changeScope,
       }, githubSessionId);
@@ -312,6 +342,7 @@ export default function App() {
   async function handleSelectFile(path: string) {
     setTargetFile(path);
     setError(null);
+    setPreviewCopyStatus(null);
     try {
       setFilePreview(
         await getRepositoryFilePreview({
@@ -428,9 +459,26 @@ export default function App() {
   function handleSelectGitHubRepo(repo: GitHubRepository) {
     setRepoUrl(repo.clone_url);
     setBaseBranch(repo.default_branch);
+    setIsManualRepoModeOpen(false);
     setTargetFile("");
     setRepoFiles([]);
     setFilePreview(null);
+    setPreviewCopyStatus(null);
+  }
+
+  async function handleCopyPreview() {
+    if (!filePreview) {
+      return;
+    }
+
+    try {
+      await Clipboard.setStringAsync(filePreview.content);
+      setPreviewCopyStatus("copied");
+    } catch {
+      setPreviewCopyStatus("failed");
+    }
+
+    setTimeout(() => setPreviewCopyStatus(null), 1600);
   }
 
   return (
@@ -470,6 +518,7 @@ export default function App() {
         ) : null}
 
         <Section title="Prompt Launcher">
+          <Text style={styles.launcherGroupTitle}>Connections</Text>
           <View style={styles.githubPanel}>
             <View style={styles.githubHeader}>
               <View style={styles.githubTitleRow}>
@@ -557,43 +606,84 @@ export default function App() {
             ) : null}
           </View>
 
-          <View style={styles.selectedRepoCard}>
-            <Text style={styles.label}>Selected repository</Text>
-            <Text style={styles.selectedRepoTitle}>
-              {selectedGithubRepo?.full_name ?? shortRepoName(repoUrl) ?? "No repository selected"}
-            </Text>
-            {selectedGithubRepo ? (
+          <Text style={styles.launcherGroupTitle}>AI Agent</Text>
+          <View style={styles.agentProviderBox}>
+            <Text style={styles.fileOptionMeta}>Choose the agent profile for this task.</Text>
+            <View style={styles.providerGrid}>
+              {providerOptions.map((provider) => (
+                <Pressable
+                  key={provider.value}
+                  onPress={() => setAgentProvider(provider.value)}
+                  style={({ pressed }) => [
+                    styles.providerOption,
+                    agentProvider === provider.value && styles.providerOptionSelected,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.providerOptionText}>{provider.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <Text style={styles.launcherGroupTitle}>Repository</Text>
+          {selectedGithubRepo ? (
+            <View style={styles.selectedRepoCard}>
+              <Text style={styles.label}>Selected repository</Text>
+              <Text style={styles.selectedRepoTitle}>{selectedGithubRepo.full_name}</Text>
               <View style={styles.repoBadgeRow}>
                 <Text style={styles.repoBadge}>{selectedGithubRepo.private ? "Private" : "Public"}</Text>
                 <Text style={styles.repoBadge}>{selectedGithubRepo.default_branch}</Text>
                 <Text style={styles.repoBadge}>{selectedGithubRepo.can_push ? "Read/write" : "Read only"}</Text>
               </View>
-            ) : null}
-            <Text style={styles.filePath}>{repoUrl || "Manual repository URL fallback is available below."}</Text>
-          </View>
+              <Text style={styles.filePath}>{selectedGithubRepo.clone_url}</Text>
+            </View>
+          ) : null}
 
           <View style={styles.manualRepoBox}>
-            <Text style={styles.label}>Manual repository URL</Text>
-            <TextInput
-              value={repoUrl}
-              onChangeText={setRepoUrl}
-              placeholder="https://github.com/org/repo"
-              placeholderTextColor="#6f7f92"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-            />
-            <TextInput
-              value={baseBranch}
-              onChangeText={setBaseBranch}
-              placeholder="main"
-              placeholderTextColor="#6f7f92"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={styles.input}
-            />
+            <Pressable
+              onPress={() => setIsManualRepoModeOpen((current) => !current)}
+              style={({ pressed }) => [styles.manualRepoSummary, pressed && styles.pressed]}
+            >
+              <View style={styles.flex}>
+                <Text style={styles.label}>Advanced: use manual repository URL</Text>
+                <Text style={styles.filePath}>
+                  {selectedGithubRepo
+                    ? "Selected GitHub repository will be used."
+                    : repoUrl
+                      ? shortRepoName(repoUrl)
+                      : "Fallback for repositories outside the GitHub picker."}
+                </Text>
+              </View>
+              <Text style={styles.manualRepoToggle}>
+                {showManualRepoMode ? "Hide" : "Edit"}
+              </Text>
+            </Pressable>
+            {showManualRepoMode ? (
+              <>
+                <TextInput
+                  value={repoUrl}
+                  onChangeText={setRepoUrl}
+                  placeholder="https://github.com/org/repo"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <TextInput
+                  value={baseBranch}
+                  onChangeText={setBaseBranch}
+                  placeholder="main"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+              </>
+            ) : null}
           </View>
 
+          <Text style={styles.launcherGroupTitle}>Target Selection</Text>
           <View style={styles.filePicker}>
             <View style={styles.filePickerHeader}>
               <View style={styles.flex}>
@@ -646,12 +736,41 @@ export default function App() {
               </>
             ) : null}
             {filePreview ? (
-              <ScrollView horizontal style={styles.previewScroller}>
-                <Text style={styles.previewText}>{filePreview.content}</Text>
-              </ScrollView>
+              <View style={styles.previewCard}>
+                <View style={styles.previewHeader}>
+                  <View style={styles.previewHeaderMain}>
+                    <View style={styles.flex}>
+                      <Text style={styles.previewPath}>{filePreview.path}</Text>
+                      <Text style={styles.previewMeta}>
+                        {formatBytes(filePreview.size)}
+                        {filePreview.truncated ? " · Preview truncated" : ""}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => void handleCopyPreview()}
+                      style={({ pressed }) => [styles.previewCopyButton, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.previewCopyText}>Copy</Text>
+                    </Pressable>
+                  </View>
+                  {previewCopyStatus ? (
+                    <Text style={styles.previewCopyStatus}>
+                      {previewCopyStatus === "copied" ? "Copied" : "Copy failed"}
+                    </Text>
+                  ) : null}
+                </View>
+                <ScrollView
+                  nestedScrollEnabled
+                  style={styles.previewScroller}
+                  contentContainerStyle={styles.previewContent}
+                >
+                  <Text style={styles.previewText}>{filePreview.content}</Text>
+                </ScrollView>
+              </View>
             ) : null}
           </View>
 
+          <Text style={styles.launcherGroupTitle}>Review & Approval</Text>
           <View style={styles.scopeBox}>
             <Text style={styles.label}>Change scope</Text>
             <Pressable
@@ -676,10 +795,7 @@ export default function App() {
             </Pressable>
           </View>
 
-          <View style={styles.runnerStatus}>
-            <Text style={styles.fileOptionMeta}>Runner: mock</Text>
-          </View>
-
+          <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
           <Field label="What should the agent do?">
             <TextInput
               value={instruction}
@@ -754,12 +870,10 @@ export default function App() {
           ) : selectedTask ? (
             <View style={styles.detailStack}>
               <View style={styles.detailHeader}>
-                <View>
-                  <Text style={styles.taskId}>{selectedTask.task_id}</Text>
-                  <Text style={styles.taskRepo}>{shortRepoName(selectedTask.repo_url)}</Text>
-                </View>
-                <StatusBadge status={selectedTask.status} />
+                <Text style={styles.taskId}>{selectedTask.task_id}</Text>
+                <Text style={styles.taskRepo}>{shortRepoName(selectedTask.repo_url)}</Text>
               </View>
+              <InfoRow label="Status" value={selectedTask.status.replaceAll("_", " ")} />
               <InfoRow label="Branch" value={selectedTask.working_branch ?? workspace?.branch ?? "None"} />
               <InfoRow label="Target file" value={selectedTask.target_file ?? "None"} />
               <InfoRow label="Change scope" value={(selectedTask.change_scope ?? "only_selected_file").replaceAll("_", " ")} />
@@ -876,10 +990,12 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function StatusBadge({ status }: { status: TaskStatus }) {
+function StatusBadge({ status, compact = false }: { status: TaskStatus; compact?: boolean }) {
   return (
-    <View style={[styles.statusBadge, statusTone(status)]}>
-      <Text style={styles.statusText}>{status.replaceAll("_", " ")}</Text>
+    <View style={[styles.statusBadge, compact && styles.statusBadgeCompact, statusTone(status)]}>
+      <Text style={[styles.statusText, compact && styles.statusTextCompact]}>
+        {status.replaceAll("_", " ")}
+      </Text>
     </View>
   );
 }
@@ -1088,6 +1204,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textTransform: "uppercase",
   },
+  launcherGroupTitle: {
+    color: "#7ee5ff",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0,
+    textTransform: "uppercase",
+  },
   input: {
     minHeight: 52,
     borderRadius: 8,
@@ -1203,6 +1326,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(102, 137, 169, 0.2)",
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
@@ -1213,33 +1337,53 @@ const styles = StyleSheet.create({
   },
   taskMeta: {
     flex: 1,
+    minWidth: 0,
     gap: 4,
   },
   taskId: {
     color: "#eef9ff",
     fontSize: 14,
     fontWeight: "800",
+    flexShrink: 1,
+    flexWrap: "wrap",
   },
   taskRepo: {
     color: "#9db5ca",
     fontSize: 13,
+    flexShrink: 1,
+    flexWrap: "wrap",
   },
   taskDate: {
     color: "#64788c",
     fontSize: 12,
   },
   statusBadge: {
+    alignSelf: "flex-start",
+    flexShrink: 1,
     borderRadius: 999,
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 7,
     borderWidth: 1,
-    maxWidth: 148,
+    maxWidth: 132,
+  },
+  statusBadgeCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+    maxWidth: 98,
   },
   statusText: {
     color: "#effbff",
     fontSize: 11,
+    lineHeight: 15,
     fontWeight: "800",
     textTransform: "uppercase",
+    flexShrink: 1,
+    flexWrap: "wrap",
+    textAlign: "center",
+  },
+  statusTextCompact: {
+    fontSize: 10,
+    lineHeight: 13,
   },
   statusSuccess: {
     backgroundColor: "rgba(49, 222, 158, 0.14)",
@@ -1265,10 +1409,11 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   detailHeader: {
-    flexDirection: "row",
+    width: "100%",
+    flexDirection: "column",
     alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
+    gap: 8,
+    paddingRight: 12,
   },
   infoRow: {
     minHeight: 36,
@@ -1395,6 +1540,37 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(90, 177, 230, 0.18)",
   },
+  agentProviderBox: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  providerGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  providerOption: {
+    minHeight: 38,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+    justifyContent: "center",
+  },
+  providerOptionSelected: {
+    backgroundColor: "rgba(65, 230, 189, 0.18)",
+    borderColor: "rgba(65, 230, 189, 0.38)",
+  },
+  providerOptionText: {
+    color: "#edf8ff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
   selectedRepoCard: {
     gap: 8,
     padding: 12,
@@ -1431,6 +1607,18 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(8, 18, 30, 0.28)",
     borderWidth: 1,
     borderColor: "rgba(124, 157, 188, 0.12)",
+  },
+  manualRepoSummary: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  manualRepoToggle: {
+    color: "#7ee5ff",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
   },
   filePicker: {
     gap: 10,
@@ -1480,9 +1668,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
   },
-  runnerStatus: {
-    alignItems: "flex-start",
-  },
   warningText: {
     color: "#fde68a",
     fontSize: 13,
@@ -1530,20 +1715,66 @@ const styles = StyleSheet.create({
     color: "#8299ae",
     fontSize: 11,
   },
-  previewScroller: {
-    maxHeight: 180,
+  previewCard: {
+    gap: 8,
     borderRadius: 8,
     backgroundColor: "#02060b",
     borderWidth: 1,
     borderColor: "rgba(91, 129, 161, 0.22)",
+    overflow: "hidden",
+  },
+  previewHeader: {
+    gap: 3,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(91, 129, 161, 0.18)",
+  },
+  previewHeaderMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  previewPath: {
+    color: "#dff5ff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  previewMeta: {
+    color: "#8299ae",
+    fontSize: 11,
+  },
+  previewCopyButton: {
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(56, 217, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 217, 255, 0.28)",
+    justifyContent: "center",
+  },
+  previewCopyText: {
+    color: "#9eefff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  previewCopyStatus: {
+    color: "#9eefff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  previewScroller: {
+    maxHeight: 220,
+  },
+  previewContent: {
+    padding: 12,
   },
   previewText: {
-    minWidth: 520,
     color: "#c8e4f4",
     fontFamily: "Courier",
     fontSize: 12,
     lineHeight: 18,
-    padding: 12,
   },
   filePill: {
     minHeight: 38,

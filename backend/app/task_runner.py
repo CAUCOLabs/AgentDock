@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from app.agent_providers import AgentProviderError
 from app.agent_runner import AgentRunnerError, get_agent_runner
 from app.config import Settings
 from app.diff_service import DiffService, DiffServiceError
@@ -114,6 +115,7 @@ class TaskRunner:
         except (
             WorkspaceError,
             GitHubClientError,
+            AgentProviderError,
             AgentRunnerError,
             DiffServiceError,
         ) as exc:
