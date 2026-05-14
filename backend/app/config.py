@@ -77,6 +77,8 @@ class Settings(BaseSettings):
 
     # AI provider
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    ollama_base_url: str | None = Field(default=None, alias="OLLAMA_BASE_URL")
     ai_provider: str = Field(default="mock", alias="AI_PROVIDER")
     agent_runner: str = Field(default="mock", alias="AGENT_RUNNER")
     local_runner_command: str | None = Field(

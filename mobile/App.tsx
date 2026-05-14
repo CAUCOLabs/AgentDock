@@ -26,8 +26,11 @@ import {
 
 import {
   approveTask,
+  connectAgentProvider,
   createTask,
   deleteTask,
+  disconnectAgentProvider,
+  getAgentProviders,
   getHealth,
   getGitHubInstallations,
   getGitHubRepos,
@@ -45,6 +48,8 @@ import {
 import { API_BASE_URL } from "./src/config";
 import type {
   AgentProvider,
+  AgentProviderMetadata,
+  ProviderConnectionStatus,
   TaskDiffResponse,
   ChangeScope,
   GitHubAccount,
@@ -127,6 +132,36 @@ function formatBytes(value: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatConnectionStatus(status?: ProviderConnectionStatus) {
+  switch (status) {
+    case "connected":
+      return "Connected";
+    case "disconnected":
+      return "Disconnected";
+    case "not_configured":
+      return "Not configured";
+    case "coming_soon":
+      return "Coming soon";
+    default:
+      return "Unknown";
+  }
+}
+
+function providerConnectionMessage(provider: AgentProviderMetadata) {
+  switch (provider.status) {
+    case "connected":
+      return `Connected. ${provider.description}`;
+    case "disconnected":
+      return `Disconnected. ${provider.description}`;
+    case "not_configured":
+      return `Not configured. ${provider.description}`;
+    case "coming_soon":
+      return `Coming soon. ${provider.description}`;
+    default:
+      return provider.description;
+  }
+}
+
 function statusTone(status: TaskStatus) {
   switch (status) {
     case "completed":
@@ -156,6 +191,7 @@ export default function App() {
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
   const [githubInstallation, setGithubInstallation] = useState<GitHubInstallation | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderMetadata[]>([]);
   const [githubRepoFilter, setGithubRepoFilter] = useState("");
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
@@ -187,6 +223,12 @@ export default function App() {
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
     [githubRepos, repoUrl]
   );
+  const agentProviderById = useMemo(
+    () => new Map(agentProviders.map((provider) => [provider.id, provider])),
+    [agentProviders]
+  );
+  const selectedAgentMetadata = agentProviderById.get(agentProvider);
+  const hasConnectedProvider = agentProviders.some((provider) => provider.status === "connected");
   const outsideTargetFiles = useMemo(
     () =>
       diff.changed_files.filter(
@@ -287,6 +329,34 @@ export default function App() {
   useEffect(() => {
     void loadInitialData();
   }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAgentProviders(await getAgentProviders());
+      } catch {
+        setAgentProviders([]);
+      }
+    })();
+  }, []);
+
+  async function handleConnectAgentProvider(providerId: AgentProvider) {
+    try {
+      await connectAgentProvider(providerId);
+      setAgentProviders(await getAgentProviders());
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : "Unable to connect provider.");
+    }
+  }
+
+  async function handleDisconnectAgentProvider(providerId: AgentProvider) {
+    try {
+      await disconnectAgentProvider(providerId);
+      setAgentProviders(await getAgentProviders());
+    } catch (disconnectError) {
+      setError(disconnectError instanceof Error ? disconnectError.message : "Unable to disconnect provider.");
+    }
+  }
 
   async function handleLaunch() {
     if (!canLaunch) {
@@ -610,20 +680,71 @@ export default function App() {
           <View style={styles.agentProviderBox}>
             <Text style={styles.fileOptionMeta}>Choose the agent profile for this task.</Text>
             <View style={styles.providerGrid}>
-              {providerOptions.map((provider) => (
-                <Pressable
-                  key={provider.value}
-                  onPress={() => setAgentProvider(provider.value)}
-                  style={({ pressed }) => [
-                    styles.providerOption,
-                    agentProvider === provider.value && styles.providerOptionSelected,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.providerOptionText}>{provider.label}</Text>
-                </Pressable>
-              ))}
+              {providerOptions.map((provider) => {
+                const metadata = agentProviderById.get(provider.value);
+                const status = metadata?.status ?? "disconnected";
+                const isConnected = status === "connected";
+                const canConnect = status === "disconnected";
+
+                return (
+                  <View
+                    key={provider.value}
+                    style={[
+                      styles.providerOption,
+                      agentProvider === provider.value && styles.providerOptionSelected,
+                    ]}
+                  >
+                    <Pressable
+                      onPress={() => setAgentProvider(provider.value)}
+                      style={({ pressed }) => [styles.providerSelectArea, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.providerOptionText}>{metadata?.label ?? provider.label}</Text>
+                      <Text
+                        style={[
+                          styles.providerStatusBadge,
+                          isConnected && styles.providerStatusAvailable,
+                        ]}
+                      >
+                        {formatConnectionStatus(status)}
+                      </Text>
+                      <Text style={styles.providerDescription}>
+                        {metadata?.description ?? "Provider metadata is loading."}
+                      </Text>
+                    </Pressable>
+                    {isConnected ? (
+                      <Pressable
+                        onPress={() => void handleDisconnectAgentProvider(provider.value)}
+                        style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                      >
+                        <Text style={styles.providerActionText}>Disconnect</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        disabled={!canConnect}
+                        onPress={() => void handleConnectAgentProvider(provider.value)}
+                        style={({ pressed }) => [
+                          styles.providerActionButton,
+                          !canConnect && styles.disabledButton,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={styles.providerActionText}>Connect</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                );
+              })}
             </View>
+            <Text style={styles.providerModeNote}>
+              {selectedAgentMetadata
+                ? providerConnectionMessage(selectedAgentMetadata)
+                : "Provider setup state is loading."}
+            </Text>
+            {!hasConnectedProvider ? (
+              <Text style={styles.providerModeNote}>
+                Development agent active: tasks currently run using the local development agent.
+              </Text>
+            ) : null}
           </View>
 
           <Text style={styles.launcherGroupTitle}>Repository</Text>
@@ -1549,13 +1670,16 @@ const styles = StyleSheet.create({
     borderColor: "rgba(124, 157, 188, 0.16)",
   },
   providerGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+    gap: 8,
+  },
+  providerSelectArea: {
     gap: 8,
   },
   providerOption: {
-    minHeight: 38,
+    minHeight: 48,
+    gap: 10,
     paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 8,
     backgroundColor: "rgba(45, 106, 150, 0.13)",
     borderWidth: 1,
@@ -1570,6 +1694,40 @@ const styles = StyleSheet.create({
     color: "#edf8ff",
     fontSize: 13,
     fontWeight: "800",
+  },
+  providerStatusBadge: {
+    color: "#fde68a",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  providerStatusAvailable: {
+    color: "#7ee5bf",
+  },
+  providerDescription: {
+    color: "#8ea7bd",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  providerActionButton: {
+    alignSelf: "flex-start",
+    minHeight: 34,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(56, 217, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 217, 255, 0.28)",
+    justifyContent: "center",
+  },
+  providerActionText: {
+    color: "#9eefff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  providerModeNote: {
+    color: "#8ea7bd",
+    fontSize: 12,
+    lineHeight: 18,
   },
   selectedRepoCard: {
     gap: 8,

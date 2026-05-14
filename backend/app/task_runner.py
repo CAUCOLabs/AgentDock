@@ -62,6 +62,8 @@ class TaskRunner:
         working_branch: str,
         instruction: str,
         agent: AgentProvider,
+        target_file: str | None = None,
+        change_scope: str = "only_selected_file",
     ) -> TaskRunResult:
         """
         Run a task and return the generated review data.
@@ -86,6 +88,8 @@ class TaskRunner:
             agent_result = runner.run(
                 repo_path=repo_path,
                 instruction=instruction,
+                target_file=target_file,
+                change_scope=change_scope,
             )
 
             if not agent_result.success:

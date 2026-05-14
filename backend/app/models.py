@@ -39,6 +39,63 @@ class AgentProvider(str, Enum):
     local_model = "local_model"
 
 
+class AgentProviderStatus(str, Enum):
+    """
+    Configuration state for user-facing agent providers.
+    """
+
+    available = "available"
+    not_configured = "not_configured"
+    coming_soon = "coming_soon"
+    local_required = "local_required"
+
+
+class AgentProviderStatusResponse(BaseModel):
+    """
+    Public provider configuration metadata for launcher UI.
+    """
+
+    id: str
+    label: str
+    status: AgentProviderStatus
+    description: str
+    required_config: list[str] = Field(default_factory=list)
+
+
+class AgentProviderConnectionStatus(str, Enum):
+    """
+    Local connection state for user-facing agent providers.
+    """
+
+    connected = "connected"
+    disconnected = "disconnected"
+    not_configured = "not_configured"
+    coming_soon = "coming_soon"
+
+
+class AgentProviderMetadataResponse(BaseModel):
+    """
+    Public provider metadata and local connection state for launcher UI.
+    """
+
+    id: str
+    label: str
+    auth_mode: str
+    status: AgentProviderConnectionStatus
+    description: str
+    supports_chatgpt_login: bool = False
+    supports_api_key: bool = False
+
+
+class AgentProviderConnectionRequest(BaseModel):
+    """
+    Request to simulate connecting or disconnecting an agent provider locally.
+    """
+
+    provider_id: str
+    auth_mode: str | None = None
+
+
 class ChangeScope(str, Enum):
     """
     User-selected task scope guidance for the agent runner.

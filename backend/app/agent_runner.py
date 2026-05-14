@@ -28,6 +28,8 @@ class OpenAIAgentRunner(AgentProviderBase):
         self,
         repo_path: Path,
         instruction: str,
+        target_file: str | None = None,
+        change_scope: str = "only_selected_file",
     ) -> AgentRunResult:
         """
         Future implementation.
@@ -53,6 +55,8 @@ class LocalRunner(AgentProviderBase):
         self,
         repo_path: Path,
         instruction: str,
+        target_file: str | None = None,
+        change_scope: str = "only_selected_file",
     ) -> AgentRunResult:
         """
         Execute the configured command and capture process details.

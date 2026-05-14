@@ -17,6 +17,34 @@ export type AgentProvider =
   | "local"
   | "openai";
 export type ChangeScope = "only_selected_file" | "allow_related_files";
+export type ProviderStatus =
+  | "available"
+  | "not_configured"
+  | "coming_soon"
+  | "local_required";
+export type ProviderConnectionStatus =
+  | "connected"
+  | "disconnected"
+  | "not_configured"
+  | "coming_soon";
+
+export type AgentProviderStatus = {
+  id: AgentProvider | "development";
+  label: string;
+  status: ProviderStatus;
+  description: string;
+  required_config: string[];
+};
+
+export type AgentProviderMetadata = {
+  id: AgentProvider;
+  label: string;
+  auth_mode: string;
+  status: ProviderConnectionStatus;
+  description: string;
+  supports_chatgpt_login: boolean;
+  supports_api_key: boolean;
+};
 
 export type ChangedFile = {
   path: string;

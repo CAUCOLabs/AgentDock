@@ -694,6 +694,38 @@ form {
   font-weight: 800;
 }
 
+.provider-status-badge {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.provider-status-badge.connected {
+  color: var(--success);
+}
+
+.provider-status-badge.not_configured,
+.provider-status-badge.coming_soon {
+  color: #fde68a;
+}
+
+.provider-status-badge.disconnected {
+  color: var(--muted);
+}
+
+.provider-card-actions {
+  grid-column: 1 / -1;
+}
+
+.provider-mode-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .scope-option small {
   color: var(--muted);
   font-size: 12px;

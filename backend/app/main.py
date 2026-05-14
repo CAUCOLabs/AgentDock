@@ -4,6 +4,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
+from app.agent_providers import (
+    AgentProviderError,
+    connect_provider,
+    disconnect_provider,
+    provider_metadata,
+    provider_statuses,
+)
 from app.config import Settings, get_settings
 from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
@@ -14,6 +21,9 @@ from app.github_auth import (
     GitHubAuthStore,
 )
 from app.models import (
+    AgentProviderStatusResponse,
+    AgentProviderConnectionRequest,
+    AgentProviderMetadataResponse,
     GitHubAccountResponse,
     GitHubAuthStartResponse,
     GitHubInstallationResponse,
@@ -72,6 +82,71 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, str | bool]:
         "env": settings.app_env,
         "debug": settings.app_debug,
     }
+
+
+@app.get(
+    "/agent-providers/status",
+    response_model=list[AgentProviderStatusResponse],
+)
+def agent_provider_status(
+    settings: Settings = Depends(get_settings),
+) -> list[AgentProviderStatusResponse]:
+    """
+    Return provider configuration metadata for launcher UI.
+    """
+
+    return provider_statuses(settings)
+
+
+@app.get("/agent-providers", response_model=list[AgentProviderMetadataResponse])
+def list_agent_providers(
+    settings: Settings = Depends(get_settings),
+) -> list[AgentProviderMetadataResponse]:
+    """
+    Return agent provider metadata and simulated local connection state.
+    """
+
+    return provider_metadata(settings)
+
+
+@app.post("/agent-providers/connect", response_model=AgentProviderMetadataResponse)
+def connect_agent_provider(
+    payload: AgentProviderConnectionRequest,
+    settings: Settings = Depends(get_settings),
+) -> AgentProviderMetadataResponse:
+    """
+    Simulate connecting an agent provider and persist the local connection state.
+    """
+
+    try:
+        return connect_provider(
+            settings,
+            provider_id=payload.provider_id,
+            auth_mode=payload.auth_mode,
+        )
+    except AgentProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post("/agent-providers/disconnect", response_model=AgentProviderMetadataResponse)
+def disconnect_agent_provider(
+    payload: AgentProviderConnectionRequest,
+    settings: Settings = Depends(get_settings),
+) -> AgentProviderMetadataResponse:
+    """
+    Disconnect an agent provider from local simulated connection state.
+    """
+
+    try:
+        return disconnect_provider(settings, provider_id=payload.provider_id)
+    except AgentProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 def get_task_store(settings: Settings = Depends(get_settings)) -> TaskStore:
@@ -480,6 +555,8 @@ def create_task(
             working_branch=working_branch,
             instruction=runner_instruction,
             agent=payload.agent,
+            target_file=target_file,
+            change_scope=payload.change_scope.value,
         )
 
         task.status = TaskStatus.waiting_for_approval

@@ -36,6 +36,11 @@ type AgentProvider =
   | 'local'
   | 'openai'
 type ChangeScope = 'only_selected_file' | 'allow_related_files'
+type ProviderConnectionStatus =
+  | 'connected'
+  | 'disconnected'
+  | 'not_configured'
+  | 'coming_soon'
 
 type ChangedFile = {
   path: string
@@ -107,6 +112,16 @@ type GitHubAuthStartResponse = {
 
 type GitHubRepositoriesResponse = {
   repositories: GitHubRepository[]
+}
+
+type AgentProviderMetadata = {
+  id: AgentProvider
+  label: string
+  auth_mode: string
+  status: ProviderConnectionStatus
+  description: string
+  supports_chatgpt_login: boolean
+  supports_api_key: boolean
 }
 
 type TaskSummary = {
@@ -264,6 +279,7 @@ function App() {
     useState<GitHubInstallation | null>(null)
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([])
   const [githubRepoFilter, setGithubRepoFilter] = useState('')
+  const [agentProviders, setAgentProviders] = useState<AgentProviderMetadata[]>([])
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
@@ -290,6 +306,17 @@ function App() {
     [selectedTaskId, tasks],
   )
   const activeTask = selectedTask ?? selectedTaskFromList
+  const agentProviderById = useMemo(
+    () =>
+      new Map(
+        agentProviders.map((provider) => [provider.id, provider]),
+      ),
+    [agentProviders],
+  )
+  const selectedAgentProvider = agentProviderById.get(form.agent)
+  const hasConnectedProvider = agentProviders.some(
+    (provider) => provider.status === 'connected',
+  )
 
   const filteredRepoFiles = useMemo(
     () =>
@@ -328,6 +355,7 @@ function App() {
 
   useEffect(() => {
     void loadTasks()
+    void loadAgentProviders()
   }, [])
 
   useEffect(() => {
@@ -406,6 +434,30 @@ function App() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  async function loadAgentProviders() {
+    try {
+      setAgentProviders(await request<AgentProviderMetadata[]>('/agent-providers'))
+    } catch {
+      setAgentProviders([])
+    }
+  }
+
+  async function connectAgentProvider(providerId: AgentProvider) {
+    await request<AgentProviderMetadata>('/agent-providers/connect', {
+      method: 'POST',
+      body: JSON.stringify({ provider_id: providerId }),
+    })
+    await loadAgentProviders()
+  }
+
+  async function disconnectAgentProvider(providerId: AgentProvider) {
+    await request<AgentProviderMetadata>('/agent-providers/disconnect', {
+      method: 'POST',
+      body: JSON.stringify({ provider_id: providerId }),
+    })
+    await loadAgentProviders()
   }
 
   async function loadTaskBundle(taskId: string) {
@@ -887,8 +939,14 @@ function App() {
                 </div>
               </div>
               <div className="provider-options">
-                {providerOptions.map((provider) => (
-                  <label
+                {providerOptions.map((provider) => {
+                  const metadata = agentProviderById.get(provider.value)
+                  const status = metadata?.status ?? 'disconnected'
+                  const isConnected = status === 'connected'
+                  const canConnect = status === 'disconnected'
+
+                  return (
+                  <div
                     key={provider.value}
                     className={
                       form.agent === provider.value
@@ -904,10 +962,45 @@ function App() {
                         setForm({ ...form, agent: provider.value })
                       }
                     />
-                    <span>{provider.label}</span>
-                  </label>
-                ))}
+                    <span>{metadata?.label ?? provider.label}</span>
+                    <small className={`provider-status-badge ${status}`}>
+                      {formatConnectionStatus(status)}
+                    </small>
+                    <small>{metadata?.description ?? 'Provider metadata is loading.'}</small>
+                    <div className="provider-card-actions">
+                      {isConnected ? (
+                        <button
+                          type="button"
+                          className="mini-action"
+                          onClick={() => void disconnectAgentProvider(provider.value)}
+                        >
+                          Disconnect
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="mini-action"
+                          disabled={!canConnect}
+                          onClick={() => void connectAgentProvider(provider.value)}
+                        >
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  )
+                })}
               </div>
+              <p className="provider-mode-note">
+                {selectedAgentProvider
+                  ? providerConnectionMessage(selectedAgentProvider)
+                  : 'Provider setup state is loading.'}
+              </p>
+              {!hasConnectedProvider && (
+                <p className="provider-mode-note">
+                  Development agent active: tasks currently run using the local development agent.
+                </p>
+              )}
             </div>
 
             <div className="launcher-panel">
@@ -1478,6 +1571,36 @@ function formatBytes(value: number) {
   }
 
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
+}
+
+function formatConnectionStatus(status?: ProviderConnectionStatus) {
+  switch (status) {
+    case 'connected':
+      return 'Connected'
+    case 'disconnected':
+      return 'Disconnected'
+    case 'not_configured':
+      return 'Not configured'
+    case 'coming_soon':
+      return 'Coming soon'
+    default:
+      return 'Unknown'
+  }
+}
+
+function providerConnectionMessage(provider: AgentProviderMetadata) {
+  switch (provider.status) {
+    case 'connected':
+      return `Connected. ${provider.description}`
+    case 'disconnected':
+      return `Disconnected. ${provider.description}`
+    case 'not_configured':
+      return `Not configured. ${provider.description}`
+    case 'coming_soon':
+      return `Coming soon. ${provider.description}`
+    default:
+      return provider.description
+  }
 }
 
 function formatError(error: unknown) {

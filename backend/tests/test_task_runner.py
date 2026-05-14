@@ -28,6 +28,53 @@ class TaskRunnerTests(unittest.TestCase):
             self.assertIn("AGENTDOCK_TASK.md", result.diff)
             self.assertEqual(result.changed_files[0].path, "AGENTDOCK_TASK.md")
 
+    def test_development_runner_modifies_selected_target_file_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_source_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir) / "target-run")
+
+            result = TaskRunner(settings).run_task(
+                task_id="task_target",
+                repo_url=str(source_repo.working_tree_dir),
+                base_branch="main",
+                working_branch="agentdock/task_target",
+                instruction="Append a safe marker to the selected file.",
+                agent=AgentProvider.codex,
+                target_file="src/App.tsx",
+                change_scope="only_selected_file",
+            )
+
+            self.assertIn("src/App.tsx", result.diff)
+            self.assertIn("TODO(AgentDock)", result.diff)
+            self.assertEqual(
+                [changed_file.path for changed_file in result.changed_files],
+                ["src/App.tsx"],
+            )
+            self.assertNotIn("AGENTDOCK_TASK.md", result.diff)
+
+    def test_development_runner_uses_markdown_marker_for_markdown_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_source_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir) / "markdown-run")
+
+            result = TaskRunner(settings).run_task(
+                task_id="task_markdown",
+                repo_url=str(source_repo.working_tree_dir),
+                base_branch="main",
+                working_branch="agentdock/task_markdown",
+                instruction="Add review note.",
+                agent=AgentProvider.codex,
+                target_file="README.md",
+                change_scope="only_selected_file",
+            )
+
+            self.assertIn("README.md", result.diff)
+            self.assertIn("<!-- AgentDock development note:", result.diff)
+            self.assertEqual(
+                [changed_file.path for changed_file in result.changed_files],
+                ["README.md"],
+            )
+
     def test_local_runner_modifies_file_and_produces_real_diff(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_repo = self._create_source_repo(Path(temp_dir) / "source")
@@ -116,6 +163,12 @@ class TaskRunnerTests(unittest.TestCase):
             config.set_value("user", "name", "AgentDock Tests")
             config.set_value("user", "email", "agentdock-tests@example.local")
         (repo_path / "README.md").write_text("initial\n", encoding="utf-8")
+        src_dir = repo_path / "src"
+        src_dir.mkdir()
+        (src_dir / "App.tsx").write_text(
+            "export function App() {\n  return null\n}\n",
+            encoding="utf-8",
+        )
         repo.git.add(A=True)
         repo.index.commit("initial")
         return repo

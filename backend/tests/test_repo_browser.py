@@ -113,9 +113,26 @@ class RepoBrowserTests(unittest.TestCase):
                 [event.message for event in TaskStore(settings).get_logs(task_id)],
             )
             self.assertIn(
-                "Selected target file: src/App.tsx",
+                "TODO(AgentDock)",
                 TaskStore(settings).get_diff(task_id),
             )
+            self.assertIn("src/App.tsx", TaskStore(settings).get_diff(task_id))
+            self.assertNotIn("AGENTDOCK_TASK.md", TaskStore(settings).get_diff(task_id))
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                approval_response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(approval_response.status_code, 200)
+            approved_task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(approved_task)
+            self.assertEqual(approved_task.status.value, "completed")
 
     def test_task_creation_persists_change_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -145,7 +162,7 @@ class RepoBrowserTests(unittest.TestCase):
             self.assertIsNotNone(task)
             self.assertEqual(task.change_scope.value, "allow_related_files")
             self.assertIn(
-                "Change scope: related files may be modified",
+                "Scope=allow_related_files",
                 TaskStore(settings).get_diff(task_id),
             )
 

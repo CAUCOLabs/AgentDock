@@ -1,5 +1,7 @@
 import { API_BASE_URL } from "./config";
 import type {
+  AgentProviderStatus,
+  AgentProviderMetadata,
   TaskApprovalRequest,
   TaskApprovalResponse,
   TaskCreateRequest,
@@ -91,6 +93,28 @@ async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T>
 
 export function getHealth() {
   return request<HealthResponse>("/health");
+}
+
+export function getAgentProviderStatuses() {
+  return request<AgentProviderStatus[]>("/agent-providers/status");
+}
+
+export function getAgentProviders() {
+  return request<AgentProviderMetadata[]>("/agent-providers");
+}
+
+export function connectAgentProvider(providerId: string, authMode?: string | null) {
+  return request<AgentProviderMetadata>("/agent-providers/connect", {
+    method: "POST",
+    body: JSON.stringify({ provider_id: providerId, auth_mode: authMode ?? null }),
+  });
+}
+
+export function disconnectAgentProvider(providerId: string) {
+  return request<AgentProviderMetadata>("/agent-providers/disconnect", {
+    method: "POST",
+    body: JSON.stringify({ provider_id: providerId }),
+  });
 }
 
 export function getTasks() {
