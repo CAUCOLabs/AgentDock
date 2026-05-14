@@ -215,6 +215,7 @@ export default function App() {
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const [diffCopyStatus, setDiffCopyStatus] = useState<"copied" | "failed" | null>(null);
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
@@ -549,6 +550,21 @@ export default function App() {
     }
 
     setTimeout(() => setPreviewCopyStatus(null), 1600);
+  }
+
+  async function handleCopyDiff() {
+    if (!diff.diff) {
+      return;
+    }
+
+    try {
+      await Clipboard.setStringAsync(diff.diff);
+      setDiffCopyStatus("copied");
+    } catch {
+      setDiffCopyStatus("failed");
+    }
+
+    setTimeout(() => setDiffCopyStatus(null), 1600);
   }
 
   return (
@@ -1031,7 +1047,28 @@ export default function App() {
           )}
         </Section>
 
-        <Section title="Diff viewer">
+        <Section
+          title="Diff viewer"
+          right={
+            selectedTask ? (
+              <View style={styles.diffHeaderActions}>
+                {diffCopyStatus ? (
+                  <Text style={styles.previewCopyStatus}>
+                    {diffCopyStatus === "copied" ? "Copied" : "Copy failed"}
+                  </Text>
+                ) : null}
+                {diff.diff ? (
+                  <Pressable
+                    onPress={() => void handleCopyDiff()}
+                    style={({ pressed }) => [styles.previewCopyButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.previewCopyText}>Copy diff</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null
+          }
+        >
           {selectedTask ? (
             <>
               <ChangedFiles files={diff.changed_files} targetFile={selectedTask.target_file ?? null} />
@@ -1596,6 +1633,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#02060b",
     borderWidth: 1,
     borderColor: "rgba(91, 129, 161, 0.22)",
+  },
+  diffHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   diffText: {
     minWidth: 620,

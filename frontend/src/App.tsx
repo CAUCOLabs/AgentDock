@@ -287,6 +287,9 @@ function App() {
   const [previewCopyStatus, setPreviewCopyStatus] = useState<
     'copied' | 'failed' | null
   >(null)
+  const [diffCopyStatus, setDiffCopyStatus] = useState<
+    'copied' | 'failed' | null
+  >(null)
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
   const [isConnectingGithub, setIsConnectingGithub] = useState(false)
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false)
@@ -695,6 +698,23 @@ function App() {
     }
 
     window.setTimeout(() => setPreviewCopyStatus(null), 1600)
+  }
+
+  async function copyTaskDiff() {
+    if (!taskDiff?.diff || !navigator.clipboard?.writeText) {
+      setDiffCopyStatus('failed')
+      window.setTimeout(() => setDiffCopyStatus(null), 1600)
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(taskDiff.diff)
+      setDiffCopyStatus('copied')
+    } catch {
+      setDiffCopyStatus('failed')
+    }
+
+    window.setTimeout(() => setDiffCopyStatus(null), 1600)
   }
 
   async function approveTask(approve: boolean) {
@@ -1488,6 +1508,20 @@ function App() {
           </h2>
           <div className="section-actions">
             <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
+            {taskDiff?.diff && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void copyTaskDiff()}
+              >
+                Copy diff
+              </button>
+            )}
+            {diffCopyStatus && (
+              <small className="preview-copy-status">
+                {diffCopyStatus === 'copied' ? 'Copied' : 'Copy failed'}
+              </small>
+            )}
             {activeTask && (
               <button
                 type="button"
