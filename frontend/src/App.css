@@ -706,6 +706,14 @@ form {
   color: var(--success);
 }
 
+.provider-status-badge.ready {
+  color: var(--success);
+}
+
+.provider-status-badge.unavailable {
+  color: #fca5a5;
+}
+
 .provider-status-badge.not_configured,
 .provider-status-badge.coming_soon {
   color: #fde68a;
@@ -724,6 +732,17 @@ form {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.provider-details-panel summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.provider-details-panel p {
+  margin-top: 8px;
 }
 
 .scope-option small {

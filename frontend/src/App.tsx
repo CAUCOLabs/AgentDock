@@ -41,6 +41,7 @@ type ProviderConnectionStatus =
   | 'disconnected'
   | 'not_configured'
   | 'coming_soon'
+type ProviderReadiness = 'ready' | 'unavailable' | 'not_configured'
 
 type ChangedFile = {
   path: string
@@ -119,6 +120,8 @@ type AgentProviderMetadata = {
   label: string
   auth_mode: string
   status: ProviderConnectionStatus
+  connection: ProviderConnectionStatus
+  readiness: ProviderReadiness
   description: string
   supports_chatgpt_login: boolean
   supports_api_key: boolean
@@ -966,9 +969,10 @@ function App() {
               <div className="provider-options">
                 {providerOptions.map((provider) => {
                   const metadata = agentProviderById.get(provider.value)
-                  const status = metadata?.status ?? 'disconnected'
-                  const isConnected = status === 'connected'
-                  const canConnect = status === 'disconnected'
+                  const connection = metadata?.connection ?? metadata?.status ?? 'disconnected'
+                  const readiness = metadata?.readiness ?? 'not_configured'
+                  const isConnected = connection === 'connected'
+                  const canConnect = readiness === 'ready' && connection === 'disconnected'
 
                   return (
                   <div
@@ -988,8 +992,11 @@ function App() {
                       }
                     />
                     <span>{metadata?.label ?? provider.label}</span>
-                    <small className={`provider-status-badge ${status}`}>
-                      {formatConnectionStatus(status)}
+                    <small className={`provider-status-badge ${connection}`}>
+                      {formatConnectionStatus(connection)}
+                    </small>
+                    <small className={`provider-status-badge ${readiness}`}>
+                      {formatReadinessStatus(readiness)}
                     </small>
                     <small>{metadata?.description ?? 'Provider metadata is loading.'}</small>
                     <div className="provider-card-actions">
@@ -1016,11 +1023,14 @@ function App() {
                   )
                 })}
               </div>
-              <p className="provider-mode-note">
-                {selectedAgentProvider
-                  ? providerConnectionMessage(selectedAgentProvider)
-                  : 'Provider setup state is loading.'}
-              </p>
+              <details className="provider-details-panel">
+                <summary>Provider details</summary>
+                <p className="provider-mode-note">
+                  {selectedAgentProvider
+                    ? providerConnectionMessage(selectedAgentProvider)
+                    : 'Provider setup state is loading.'}
+                </p>
+              </details>
               {!hasConnectedProvider && (
                 <p className="provider-mode-note">
                   Development agent active: tasks currently run using the local development agent.
@@ -1645,31 +1655,37 @@ function formatBytes(value: number) {
 function formatConnectionStatus(status?: ProviderConnectionStatus) {
   switch (status) {
     case 'connected':
-      return 'Connected'
+      return 'CONNECTED'
     case 'disconnected':
-      return 'Disconnected'
+      return 'DISCONNECTED'
     case 'not_configured':
-      return 'Not configured'
+      return 'NOT CONFIGURED'
     case 'coming_soon':
-      return 'Coming soon'
+      return 'COMING SOON'
     default:
-      return 'Unknown'
+      return 'UNKNOWN'
+  }
+}
+
+function formatReadinessStatus(readiness?: ProviderReadiness) {
+  switch (readiness) {
+    case 'ready':
+      return 'READY'
+    case 'unavailable':
+      return 'UNAVAILABLE'
+    case 'not_configured':
+      return 'NOT CONFIGURED'
+    default:
+      return 'UNKNOWN'
   }
 }
 
 function providerConnectionMessage(provider: AgentProviderMetadata) {
-  switch (provider.status) {
-    case 'connected':
-      return `Connected. ${provider.description}`
-    case 'disconnected':
-      return `Disconnected. ${provider.description}`
-    case 'not_configured':
-      return `Not configured. ${provider.description}`
-    case 'coming_soon':
-      return `Coming soon. ${provider.description}`
-    default:
-      return provider.description
-  }
+  return [
+    `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
+    `Readiness: ${formatReadinessStatus(provider.readiness)}`,
+    provider.description,
+  ].join(' · ')
 }
 
 function formatError(error: unknown) {

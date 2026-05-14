@@ -1,12 +1,16 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from pathlib import PurePosixPath
+import shlex
+import shutil
 import sqlite3
+import subprocess
 
 from app.config import Settings
 from app.models import (
     AgentProviderConnectionStatus,
     AgentProviderMetadataResponse,
+    AgentProviderReadiness,
     AgentProviderStatus,
     AgentProviderStatusResponse,
 )
@@ -312,37 +316,57 @@ def provider_metadata(settings: Settings) -> list[AgentProviderMetadataResponse]
     """
 
     connected_auth_modes = AgentProviderConnectionStore(settings).connected_auth_modes()
+    codex_ready = _codex_cli_ready(settings)
+    codex_cli_available = _codex_cli_available(settings)
+    codex_readiness = (
+        AgentProviderReadiness.ready
+        if codex_ready
+        else AgentProviderReadiness.not_configured
+    )
+    claude_readiness = (
+        AgentProviderReadiness.unavailable
+        if settings.anthropic_api_key
+        else AgentProviderReadiness.not_configured
+    )
+    ollama_readiness = (
+        AgentProviderReadiness.ready
+        if settings.ollama_base_url
+        else AgentProviderReadiness.not_configured
+    )
+    local_model_readiness = (
+        AgentProviderReadiness.ready
+        if settings.local_runner_command
+        else AgentProviderReadiness.not_configured
+    )
 
     providers = [
         _metadata(
             provider_id="codex",
             label="OpenAI Codex",
-            auth_mode=connected_auth_modes.get("codex", "chatgpt_or_api_key"),
-            status=(
+            auth_mode=connected_auth_modes.get("codex", "codex_cli"),
+            connection=(
                 AgentProviderConnectionStatus.connected
-                if "codex" in connected_auth_modes or settings.openai_api_key
+                if "codex" in connected_auth_modes
                 else AgentProviderConnectionStatus.disconnected
             ),
+            readiness=codex_readiness,
             description=(
-                "Connect with ChatGPT or use an OpenAI API key. Authentication is "
-                "simulated until real provider integration is enabled."
+                "Use local Codex CLI with your ChatGPT/OpenAI login."
             ),
-            supports_chatgpt_login=True,
-            supports_api_key=True,
+            supports_chatgpt_login=False,
+            supports_api_key=False,
         ),
         _metadata(
             provider_id="claude",
             label="Claude",
             auth_mode=connected_auth_modes.get("claude", "claude_login_or_api_key"),
-            status=(
+            connection=(
                 AgentProviderConnectionStatus.connected
-                if "claude" in connected_auth_modes or settings.anthropic_api_key
+                if "claude" in connected_auth_modes
                 else AgentProviderConnectionStatus.disconnected
             ),
-            description=(
-                "Claude login and Anthropic API key modes are placeholders until "
-                "real provider integration is enabled."
-            ),
+            readiness=claude_readiness,
+            description="Claude provider integration placeholder.",
             supports_chatgpt_login=False,
             supports_api_key=True,
         ),
@@ -350,12 +374,13 @@ def provider_metadata(settings: Settings) -> list[AgentProviderMetadataResponse]
             provider_id="ollama",
             label="Ollama",
             auth_mode=connected_auth_modes.get("ollama", "local_url"),
-            status=(
+            connection=(
                 AgentProviderConnectionStatus.connected
-                if "ollama" in connected_auth_modes or settings.ollama_base_url
-                else AgentProviderConnectionStatus.not_configured
+                if "ollama" in connected_auth_modes
+                else AgentProviderConnectionStatus.disconnected
             ),
-            description="Local URL configuration placeholder for a local Ollama service.",
+            readiness=ollama_readiness,
+            description="Requires local Ollama server.",
             supports_chatgpt_login=False,
             supports_api_key=False,
         ),
@@ -363,12 +388,13 @@ def provider_metadata(settings: Settings) -> list[AgentProviderMetadataResponse]
             provider_id="local_model",
             label="Local model",
             auth_mode=connected_auth_modes.get("local_model", "local_runner"),
-            status=(
+            connection=(
                 AgentProviderConnectionStatus.connected
-                if "local_model" in connected_auth_modes or settings.local_runner_command
-                else AgentProviderConnectionStatus.not_configured
+                if "local_model" in connected_auth_modes
+                else AgentProviderConnectionStatus.disconnected
             ),
-            description="Local runner/model configuration placeholder.",
+            readiness=local_model_readiness,
+            description="Requires local runner configuration.",
             supports_chatgpt_login=False,
             supports_api_key=False,
         ),
@@ -393,6 +419,9 @@ def connect_provider(
 
     if metadata.status == AgentProviderConnectionStatus.coming_soon:
         raise AgentProviderError(f"Agent provider is coming soon: {provider_id}")
+
+    if metadata.readiness != AgentProviderReadiness.ready:
+        raise AgentProviderError(f"Agent provider is not ready: {provider_id}")
 
     AgentProviderConnectionStore(settings).connect(
         provider_id,
@@ -422,7 +451,8 @@ def _metadata(
     provider_id: str,
     label: str,
     auth_mode: str,
-    status: AgentProviderConnectionStatus,
+    connection: AgentProviderConnectionStatus,
+    readiness: AgentProviderReadiness,
     description: str,
     supports_chatgpt_login: bool,
     supports_api_key: bool,
@@ -431,7 +461,9 @@ def _metadata(
         id=provider_id,
         label=label,
         auth_mode=auth_mode,
-        status=status,
+        status=connection,
+        connection=connection,
+        readiness=readiness,
         description=description,
         supports_chatgpt_login=supports_chatgpt_login,
         supports_api_key=supports_api_key,
@@ -443,9 +475,11 @@ def provider_statuses(settings: Settings) -> list[AgentProviderStatusResponse]:
     Return configuration status for user-facing agent provider choices.
     """
 
+    codex_ready = _codex_cli_ready(settings)
+    codex_cli_available = _codex_cli_available(settings)
     codex_status = (
         AgentProviderStatus.available
-        if settings.openai_api_key
+        if codex_ready
         else AgentProviderStatus.not_configured
     )
     claude_status = (
@@ -470,9 +504,13 @@ def provider_statuses(settings: Settings) -> list[AgentProviderStatusResponse]:
             label="Codex",
             status=codex_status,
             description=(
-                "Requires OpenAI credentials. Not connected to task execution yet."
+                "Runs the local Codex CLI inside the task workspace when enabled."
+                if codex_ready
+                else "Requires CODEX_ENABLED=true, the Codex CLI, and local Codex authentication."
             ),
-            required_config=[] if settings.openai_api_key else ["OPENAI_API_KEY"],
+            required_config=[]
+            if codex_ready
+            else _codex_required_config(settings, codex_cli_available),
         ),
         AgentProviderStatusResponse(
             id="claude",
@@ -519,3 +557,82 @@ def provider_statuses(settings: Settings) -> list[AgentProviderStatusResponse]:
         )
 
     return providers
+
+
+def _codex_cli_ready(settings: Settings) -> bool:
+    return (
+        settings.codex_enabled
+        and _codex_cli_available(settings)
+        and _codex_cli_authenticated(settings)
+    )
+
+
+def _codex_cli_available(settings: Settings) -> bool:
+    try:
+        command = shlex.split(settings.codex_cli_command)
+    except ValueError:
+        return False
+
+    return bool(command and shutil.which(command[0]))
+
+
+def _codex_cli_authenticated(settings: Settings) -> bool:
+    if settings.openai_api_key:
+        return True
+
+    try:
+        command = shlex.split(settings.codex_cli_command)
+    except ValueError:
+        return False
+
+    if not command or not shutil.which(command[0]):
+        return False
+
+    try:
+        completed = subprocess.run(
+            [*command, "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    return completed.returncode == 0
+
+
+def _codex_required_config(
+    settings: Settings,
+    codex_cli_available: bool,
+) -> list[str]:
+    required: list[str] = []
+
+    if not settings.codex_enabled:
+        required.append("CODEX_ENABLED")
+
+    if not codex_cli_available:
+        required.append("CODEX_CLI_COMMAND")
+
+    if codex_cli_available and not _codex_cli_authenticated(settings):
+        required.append("CODEX_AUTH")
+
+    return required
+
+
+def _codex_readiness_description(
+    settings: Settings,
+    codex_cli_available: bool,
+) -> str:
+    missing = _codex_required_config(settings, codex_cli_available)
+
+    if "CODEX_ENABLED" in missing:
+        return "Disconnected. Set CODEX_ENABLED=true to enable the local Codex CLI."
+
+    if "CODEX_CLI_COMMAND" in missing:
+        return "Disconnected. Codex CLI is not available from CODEX_CLI_COMMAND."
+
+    if "CODEX_AUTH" in missing:
+        return "Disconnected. Authenticate the Codex CLI outside AgentDock."
+
+    return "Disconnected. Connect this provider in AgentDock to use the Codex CLI."

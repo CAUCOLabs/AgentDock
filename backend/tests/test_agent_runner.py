@@ -1,11 +1,20 @@
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from git import Repo
 
-from app.agent_runner import AgentRunnerError, LocalAgentRunner, MockAgentRunner, get_agent_runner
+from app.agent_runner import (
+    AgentRunnerError,
+    CodexCliProvider,
+    LocalAgentRunner,
+    MockAgentRunner,
+    get_agent_runner,
+)
+from app.agent_providers import AgentProviderConnectionStore
 from app.config import Settings
 from app.models import AgentProvider
 
@@ -79,17 +88,168 @@ class LocalAgentRunnerTests(unittest.TestCase):
 
             self.assertIsInstance(runner, MockAgentRunner)
 
+    def test_codex_cli_runner_captures_process_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            repo_path = workspace_root / "task_123" / "repo"
+            self._create_repo(repo_path)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+            completed = subprocess.CompletedProcess(
+                args=["codex"],
+                returncode=0,
+                stdout="codex out",
+                stderr="codex err",
+            )
+
+            with (
+                patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"),
+                patch("app.agent_runner.subprocess.run", return_value=completed),
+            ):
+                result = CodexCliProvider(settings).run(
+                    repo_path,
+                    "Update the selected component.",
+                    target_file="src/App.tsx",
+                    change_scope="only_selected_file",
+                )
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("codex out", result.stdout)
+            self.assertIn("codex err", result.stderr)
+            self.assertGreaterEqual(result.duration_seconds or 0, 0)
+
+    def test_codex_cli_runner_times_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            repo_path = workspace_root / "task_123" / "repo"
+            self._create_repo(repo_path)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+                codex_timeout=3,
+            )
+
+            with (
+                patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"),
+                patch(
+                    "app.agent_runner.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(
+                        cmd=["codex"],
+                        timeout=3,
+                        output="partial out",
+                        stderr="partial err",
+                    ),
+                ),
+            ):
+                result = CodexCliProvider(settings).run(repo_path, "Do work.")
+
+            self.assertFalse(result.success)
+            self.assertIn("timed out after 3s", result.message)
+            self.assertIn("partial out", result.stdout)
+            self.assertIn("partial err", result.stderr)
+            self.assertIsNone(result.exit_code)
+
+    def test_codex_cli_runner_rejects_paths_outside_workspace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            outside_repo = Path(temp_dir) / "outside" / "repo"
+            self._create_repo(outside_repo)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+
+            with patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"):
+                with self.assertRaises(AgentRunnerError):
+                    CodexCliProvider(settings).run(outside_repo, "unsafe")
+
+    def test_codex_cli_prompt_includes_target_file_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            repo_path = workspace_root / "task_123" / "repo"
+            self._create_repo(repo_path)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+            completed = subprocess.CompletedProcess(
+                args=["codex"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+            with (
+                patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"),
+                patch("app.agent_runner.subprocess.run", return_value=completed) as run,
+            ):
+                CodexCliProvider(settings).run(
+                    repo_path,
+                    "Fix the render issue.",
+                    target_file="src/App.tsx",
+                    change_scope="only_selected_file",
+                )
+
+            args = run.call_args.args[0]
+            prompt = args[-1]
+            self.assertIn("Selected target file: src/App.tsx", prompt)
+            self.assertIn("Change scope: only_selected_file", prompt)
+            self.assertIn("Modify only the selected target file", prompt)
+            self.assertIn("Leave all changes as working tree edits", prompt)
+            self.assertIn("Do not commit, push", prompt)
+
+    def test_codex_provider_is_selected_when_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir) / "workspaces",
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+            AgentProviderConnectionStore(settings).connect("codex", "codex_cli")
+
+            with patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"):
+                runner = get_agent_runner(AgentProvider.codex, settings)
+
+            self.assertIsInstance(runner, CodexCliProvider)
+
+    def test_codex_provider_falls_back_without_stored_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir) / "workspaces",
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+
+            with patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"):
+                runner = get_agent_runner(AgentProvider.codex, settings)
+
+            self.assertIsInstance(runner, MockAgentRunner)
+
     def _settings(
         self,
         workspace_root: Path,
         command: str | None = None,
         timeout: int | None = None,
+        codex_enabled: bool = False,
+        codex_timeout: int = 900,
+        openai_api_key: str | None = None,
     ) -> Settings:
         return Settings(
             WORKSPACES_DIR=workspace_root,
             LOGS_DIR=workspace_root.parent / "logs",
             LOCAL_RUNNER_COMMAND=command,
             LOCAL_RUNNER_TIMEOUT_SECONDS=timeout,
+            CODEX_ENABLED=codex_enabled,
+            CODEX_TIMEOUT_SECONDS=codex_timeout,
+            OPENAI_API_KEY=openai_api_key,
+            AGENTDOCK_DB_PATH=workspace_root.parent / "data" / "agentdock.sqlite3",
         )
 
     def _create_repo(self, repo_path: Path) -> Repo:

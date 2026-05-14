@@ -50,6 +50,7 @@ import type {
   AgentProvider,
   AgentProviderMetadata,
   ProviderConnectionStatus,
+  ProviderReadiness,
   TaskDiffResponse,
   ChangeScope,
   GitHubAccount,
@@ -135,31 +136,37 @@ function formatBytes(value: number) {
 function formatConnectionStatus(status?: ProviderConnectionStatus) {
   switch (status) {
     case "connected":
-      return "Connected";
+      return "CONNECTED";
     case "disconnected":
-      return "Disconnected";
+      return "DISCONNECTED";
     case "not_configured":
-      return "Not configured";
+      return "NOT CONFIGURED";
     case "coming_soon":
-      return "Coming soon";
+      return "COMING SOON";
     default:
-      return "Unknown";
+      return "UNKNOWN";
+  }
+}
+
+function formatReadinessStatus(readiness?: ProviderReadiness) {
+  switch (readiness) {
+    case "ready":
+      return "READY";
+    case "unavailable":
+      return "UNAVAILABLE";
+    case "not_configured":
+      return "NOT CONFIGURED";
+    default:
+      return "UNKNOWN";
   }
 }
 
 function providerConnectionMessage(provider: AgentProviderMetadata) {
-  switch (provider.status) {
-    case "connected":
-      return `Connected. ${provider.description}`;
-    case "disconnected":
-      return `Disconnected. ${provider.description}`;
-    case "not_configured":
-      return `Not configured. ${provider.description}`;
-    case "coming_soon":
-      return `Coming soon. ${provider.description}`;
-    default:
-      return provider.description;
-  }
+  return [
+    `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
+    `Readiness: ${formatReadinessStatus(provider.readiness)}`,
+    provider.description,
+  ].join(" · ");
 }
 
 function statusTone(status: TaskStatus) {
@@ -214,6 +221,7 @@ export default function App() {
   const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
+  const [isProviderDetailsOpen, setIsProviderDetailsOpen] = useState(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [diffCopyStatus, setDiffCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -704,9 +712,10 @@ export default function App() {
             <View style={styles.providerGrid}>
               {providerOptions.map((provider) => {
                 const metadata = agentProviderById.get(provider.value);
-                const status = metadata?.status ?? "disconnected";
-                const isConnected = status === "connected";
-                const canConnect = status === "disconnected";
+                const connection = metadata?.connection ?? metadata?.status ?? "disconnected";
+                const readiness = metadata?.readiness ?? "not_configured";
+                const isConnected = connection === "connected";
+                const canConnect = readiness === "ready" && connection === "disconnected";
 
                 return (
                   <View
@@ -727,7 +736,16 @@ export default function App() {
                           isConnected && styles.providerStatusAvailable,
                         ]}
                       >
-                        {formatConnectionStatus(status)}
+                        {formatConnectionStatus(connection)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.providerStatusBadge,
+                          readiness === "ready" && styles.providerStatusAvailable,
+                          readiness === "unavailable" && styles.providerStatusUnavailable,
+                        ]}
+                      >
+                        {formatReadinessStatus(readiness)}
                       </Text>
                       <Text style={styles.providerDescription}>
                         {metadata?.description ?? "Provider metadata is loading."}
@@ -757,11 +775,21 @@ export default function App() {
                 );
               })}
             </View>
-            <Text style={styles.providerModeNote}>
-              {selectedAgentMetadata
-                ? providerConnectionMessage(selectedAgentMetadata)
-                : "Provider setup state is loading."}
-            </Text>
+            <Pressable
+              onPress={() => setIsProviderDetailsOpen((current) => !current)}
+              style={({ pressed }) => [styles.advancedToggle, pressed && styles.pressed]}
+            >
+              <Text style={styles.advancedToggleText}>
+                {isProviderDetailsOpen ? "Hide provider details" : "Provider details"}
+              </Text>
+              {isProviderDetailsOpen ? (
+                <Text style={styles.providerModeNote}>
+                  {selectedAgentMetadata
+                    ? providerConnectionMessage(selectedAgentMetadata)
+                    : "Provider setup state is loading."}
+                </Text>
+              ) : null}
+            </Pressable>
             {!hasConnectedProvider ? (
               <Text style={styles.providerModeNote}>
                 Development agent active: tasks currently run using the local development agent.
@@ -1787,6 +1815,9 @@ const styles = StyleSheet.create({
   },
   providerStatusAvailable: {
     color: "#7ee5bf",
+  },
+  providerStatusUnavailable: {
+    color: "#ffb8c0",
   },
   providerDescription: {
     color: "#8ea7bd",

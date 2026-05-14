@@ -27,6 +27,7 @@ export type ProviderConnectionStatus =
   | "disconnected"
   | "not_configured"
   | "coming_soon";
+export type ProviderReadiness = "ready" | "unavailable" | "not_configured";
 
 export type AgentProviderStatus = {
   id: AgentProvider | "development";
@@ -41,6 +42,8 @@ export type AgentProviderMetadata = {
   label: string;
   auth_mode: string;
   status: ProviderConnectionStatus;
+  connection: ProviderConnectionStatus;
+  readiness: ProviderReadiness;
   description: string;
   supports_chatgpt_login: boolean;
   supports_api_key: boolean;

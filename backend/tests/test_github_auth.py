@@ -9,6 +9,7 @@ from app.config import Settings, get_settings
 from app.github_auth import GitHubAuthService, GitHubAuthStore, redact_token
 from app.github_client import GitPushResult
 from app.main import app
+from app.agent_providers import AgentProviderConnectionStore, provider_metadata
 
 
 class GitHubAuthTests(unittest.TestCase):
@@ -102,6 +103,32 @@ class GitHubAuthTests(unittest.TestCase):
             self.assertEqual(repos[0].full_name, "acme/demo")
             self.assertTrue(repos[0].can_read)
 
+    def test_github_app_flow_does_not_connect_ai_providers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+            store.save_app_installation(
+                session_id=session_id,
+                installation_id=123,
+                account_login="acme",
+                account_type="Organization",
+                selected_repositories=["acme/demo"],
+                permissions={"contents": "read"},
+            )
+            service = StubGitHubAppService(settings)
+
+            service.run_list_app_repositories(session_id)
+
+            self.assertEqual(
+                AgentProviderConnectionStore(settings).connected_auth_modes(),
+                {},
+            )
+            providers = {provider.id: provider for provider in provider_metadata(settings)}
+            self.assertTrue(
+                all(provider.connection.value == "disconnected" for provider in providers.values())
+            )
+
     def test_auth_state_persists_account_without_exposing_token(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir))
@@ -128,6 +155,34 @@ class GitHubAuthTests(unittest.TestCase):
             self.assertEqual(restarted_session.account.login, "octocat")
             self.assertEqual(restarted_session.access_token, "gho_secret-token")
             self.assertFalse(hasattr(restarted_session.account, "access_token"))
+
+    def test_github_oauth_flow_does_not_connect_ai_providers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+
+            store.save_authenticated_session(
+                session_id=session_id,
+                account_data={
+                    "id": 42,
+                    "login": "octocat",
+                    "name": "The Octocat",
+                    "avatar_url": "https://avatars.githubusercontent.com/u/42",
+                    "html_url": "https://github.com/octocat",
+                },
+                access_token="gho_secret-token",
+                scopes="repo,read:user",
+            )
+
+            self.assertEqual(
+                AgentProviderConnectionStore(settings).connected_auth_modes(),
+                {},
+            )
+            providers = {provider.id: provider for provider in provider_metadata(settings)}
+            self.assertTrue(
+                all(provider.connection.value == "disconnected" for provider in providers.values())
+            )
 
     def test_token_redaction_handles_known_prefixes_and_push_logs(self) -> None:
         self.assertNotIn(

@@ -73,6 +73,16 @@ class AgentProviderConnectionStatus(str, Enum):
     coming_soon = "coming_soon"
 
 
+class AgentProviderReadiness(str, Enum):
+    """
+    Technical readiness for a provider, independent from user connection state.
+    """
+
+    ready = "ready"
+    unavailable = "unavailable"
+    not_configured = "not_configured"
+
+
 class AgentProviderMetadataResponse(BaseModel):
     """
     Public provider metadata and local connection state for launcher UI.
@@ -82,6 +92,8 @@ class AgentProviderMetadataResponse(BaseModel):
     label: str
     auth_mode: str
     status: AgentProviderConnectionStatus
+    connection: AgentProviderConnectionStatus
+    readiness: AgentProviderReadiness
     description: str
     supports_chatgpt_login: bool = False
     supports_api_key: bool = False
