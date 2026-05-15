@@ -39,7 +39,7 @@ class GitHubClientTests(unittest.TestCase):
                 "https://x-access-token:secret-token@github.com/acme/demo.git",
             )
 
-            remote_info = GitHubClient(Settings()).get_remote_info(repo, "main")
+            remote_info = GitHubClient(Settings(ALLOW_PUSH=False)).get_remote_info(repo, "main")
 
             self.assertTrue(remote_info.has_valid_origin)
             self.assertEqual(

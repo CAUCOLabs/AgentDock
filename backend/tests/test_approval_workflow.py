@@ -13,7 +13,7 @@ from app.task_store import TaskStore
 
 
 class ApprovalWorkflowTests(unittest.TestCase):
-    def test_approve_commits_workspace_without_push(self) -> None:
+    def test_commit_only_flow_commits_workspace_without_push(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir))
             task_id = "task_approvetest"
@@ -35,7 +35,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
                 app.dependency_overrides.clear()
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["status"], "completed")
+            self.assertEqual(response.json()["status"], "committed")
 
             repo = Repo(repo_path)
             self.assertFalse(repo.is_dirty(untracked_files=True))
@@ -47,7 +47,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertIsNotNone(task.commit_sha)
             self.assertFalse(task.pushed)
             self.assertIn(
-                "Push skipped because disabled.",
+                "Push unavailable because ALLOW_PUSH=false.",
                 [event.message for event in TaskStore(settings).get_logs(task_id)],
             )
 
@@ -60,7 +60,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             repo.create_remote("origin", "https://github.com/example/repo.git")
             task = self._save_waiting_task(settings, task_id).get_task(task_id)
             self.assertIsNotNone(task)
-            task.status = TaskStatus.completed
+            task.status = TaskStatus.committed
             TaskStore(settings).save_task(task)
 
             app.dependency_overrides[get_settings] = lambda: settings
@@ -145,7 +145,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertFalse((settings.workspace_root / task_id).exists())
             self.assertIsNone(TaskStore(settings).get_task(task_id))
 
-    def test_approve_pushes_task_branch_when_enabled(self) -> None:
+    def test_push_enabled_after_commit_pushes_task_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), allow_push=True)
             task_id = "task_pushtest"
@@ -167,12 +167,17 @@ class ApprovalWorkflowTests(unittest.TestCase):
                     f"/tasks/{task_id}/approval",
                     json={"approve": True},
                 )
+                push_response = client.post(f"/tasks/{task_id}/push")
             finally:
                 app.dependency_overrides.clear()
 
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "committed")
+            self.assertEqual(push_response.status_code, 200)
+            self.assertEqual(push_response.json()["status"], "pushed")
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pushed)
             self.assertTrue(task.pushed)
             self.assertIsNotNone(task.pushed_at)
             self.assertEqual(task.remote_branch, f"origin/{branch}")
@@ -181,7 +186,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             remote_repo = Repo(remote_path)
             self.assertIn(branch, [head.name for head in remote_repo.heads])
 
-    def test_push_enabled_rejects_protected_branch_without_undoing_commit(self) -> None:
+    def test_push_failure_keeps_committed_task_for_protected_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), allow_push=True)
             task_id = "task_mainpush"
@@ -201,16 +206,50 @@ class ApprovalWorkflowTests(unittest.TestCase):
                     f"/tasks/{task_id}/approval",
                     json={"approve": True},
                 )
+                push_response = client.post(f"/tasks/{task_id}/push")
             finally:
                 app.dependency_overrides.clear()
 
-            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
             self.assertIn("AgentDock task: task_mainpush", repo.head.commit.message)
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.committed)
             self.assertFalse(task.pushed)
             self.assertIn("protected branch", task.last_push_result or "")
+
+    def test_push_disabled_keeps_committed_task_with_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=False)
+            task_id = "task_pushdisabled"
+            branch = f"agentdock/{task_id}"
+            repo_path = settings.workspace_root / task_id / "repo"
+            repo = self._create_repo(repo_path)
+            repo.git.checkout("-b", branch)
+            (repo_path / "push-disabled.txt").write_text("commit only\n", encoding="utf-8")
+            store = self._save_waiting_task(settings, task_id)
+            store.save_diff(task_id, "diff snapshot")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    f"/tasks/{task_id}/approval",
+                    json={"approve": True},
+                )
+                push_response = client.post(f"/tasks/{task_id}/push")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(push_response.status_code, 403)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.committed)
+            self.assertFalse(task.pushed)
+            self.assertIn("ALLOW_PUSH=true", task.last_push_result or "")
 
     def test_push_enabled_missing_origin_fails_without_undoing_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -231,14 +270,17 @@ class ApprovalWorkflowTests(unittest.TestCase):
                     f"/tasks/{task_id}/approval",
                     json={"approve": True},
                 )
+                push_response = client.post(f"/tasks/{task_id}/push")
             finally:
                 app.dependency_overrides.clear()
 
-            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
             self.assertIn("AgentDock task: task_noorigin", repo.head.commit.message)
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.committed)
             self.assertFalse(task.pushed)
             self.assertIn("origin remote is missing", task.last_push_result or "")
 
@@ -262,19 +304,30 @@ class ApprovalWorkflowTests(unittest.TestCase):
                     f"/tasks/{task_id}/approval",
                     json={"approve": True},
                 )
+                push_response = client.post(f"/tasks/{task_id}/push")
             finally:
                 app.dependency_overrides.clear()
 
-            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
             self.assertIn("AgentDock task: task_pushfail", repo.head.commit.message)
             restarted_store = TaskStore(settings)
             task = restarted_store.get_task(task_id)
             self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.committed)
             self.assertFalse(task.pushed)
             self.assertEqual(task.remote_branch, f"origin/{branch}")
             self.assertIn("Push failed", task.last_push_result or "")
             self.assertIsNone(task.pushed_at)
+
+    def test_ui_does_not_show_approve_text(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        self.assertNotIn("Approve", web_app)
+        self.assertNotIn("Approve", mobile_app)
 
     def _settings(self, temp_path: Path, allow_push: bool = False) -> Settings:
         return Settings(

@@ -39,7 +39,7 @@ class TaskRunnerTests(unittest.TestCase):
                 base_branch="main",
                 working_branch="agentdock/task_target",
                 instruction="Append a safe marker to the selected file.",
-                agent=AgentProvider.codex,
+                agent=AgentProvider.mock,
                 target_file="src/App.tsx",
                 change_scope="only_selected_file",
             )
@@ -73,7 +73,7 @@ class TaskRunnerTests(unittest.TestCase):
                 base_branch="main",
                 working_branch="agentdock/task_markdown",
                 instruction="Add review note.",
-                agent=AgentProvider.codex,
+                agent=AgentProvider.mock,
                 target_file="README.md",
                 change_scope="only_selected_file",
             )
@@ -106,7 +106,7 @@ class TaskRunnerTests(unittest.TestCase):
                 base_branch="main",
                 working_branch="agentdock/task_css",
                 instruction="Add review note.",
-                agent=AgentProvider.codex,
+                agent=AgentProvider.mock,
                 target_file="src/styles.css",
                 change_scope="only_selected_file",
             )
@@ -132,7 +132,7 @@ class TaskRunnerTests(unittest.TestCase):
                 base_branch="main",
                 working_branch="agentdock/task_fallback",
                 instruction="Create the default development note.",
-                agent=AgentProvider.codex,
+                agent=AgentProvider.mock,
                 change_scope="only_selected_file",
             )
 
@@ -188,7 +188,10 @@ class TaskRunnerTests(unittest.TestCase):
                 command=command,
             )
 
-            with self.assertRaises(TaskRunnerError) as context:
+            with (
+                self.assertLogs("app.task_runner", level="ERROR"),
+                self.assertRaises(TaskRunnerError) as context,
+            ):
                 TaskRunner(settings).run_task(
                     task_id="task_fail",
                     repo_url=str(source_repo.working_tree_dir),
@@ -218,9 +221,11 @@ class TaskRunnerTests(unittest.TestCase):
         return Settings(
             WORKSPACES_DIR=workspace_root / "workspaces",
             LOGS_DIR=workspace_root / "logs",
+            AGENTDOCK_DB_PATH=workspace_root / "data" / "agentdock.sqlite3",
             AGENT_RUNNER=agent_runner,
             LOCAL_RUNNER_COMMAND=command,
             LOCAL_RUNNER_TIMEOUT_SECONDS=5,
+            CODEX_ENABLED=False,
         )
 
     def _create_source_repo(self, repo_path: Path) -> Repo:

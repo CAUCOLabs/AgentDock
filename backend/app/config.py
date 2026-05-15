@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     codex_cli_command: str = Field(default="codex", alias="CODEX_CLI_COMMAND")
     codex_enabled: bool = Field(default=False, alias="CODEX_ENABLED")
     codex_timeout_seconds: int = Field(default=900, alias="CODEX_TIMEOUT_SECONDS")
-
     # Safety
     allow_push: bool = Field(default=False, alias="ALLOW_PUSH")
     allow_pr_creation: bool = Field(default=False, alias="ALLOW_PR_CREATION")

@@ -561,7 +561,9 @@ dt {
   border-color: rgba(245, 158, 11, 0.28);
 }
 
-.status-pill.completed {
+.status-pill.completed,
+.status-pill.committed,
+.status-pill.pushed {
   color: #86efac;
   background: rgba(22, 101, 52, 0.16);
   border-color: rgba(34, 197, 94, 0.26);
@@ -706,6 +708,14 @@ form {
   color: var(--success);
 }
 
+.provider-status-badge.connecting {
+  color: #7dd3fc;
+}
+
+.provider-status-badge.active {
+  color: var(--success);
+}
+
 .provider-status-badge.ready {
   color: var(--success);
 }
@@ -721,6 +731,13 @@ form {
 
 .provider-status-badge.disconnected {
   color: var(--muted);
+}
+
+.provider-readiness {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .provider-card-actions {
@@ -743,6 +760,50 @@ form {
 
 .provider-details-panel p {
   margin-top: 8px;
+}
+
+.codex-auth-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.codex-auth-panel p,
+.codex-auth-panel label,
+.codex-auth-panel a {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.codex-auth-panel input {
+  min-height: 40px;
+}
+
+.codex-auth-panel label {
+  color: var(--text);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.codex-auth-panel a {
+  color: #7dd3fc;
+  font-weight: 800;
+}
+
+.codex-auth-panel code {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-strong);
+  background: rgba(2, 6, 23, 0.7);
 }
 
 .scope-option small {

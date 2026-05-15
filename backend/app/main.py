@@ -1,15 +1,19 @@
 from datetime import datetime, timezone
+import logging
+import re
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.agent_providers import (
     AgentProviderError,
+    connect_provider_api_key,
     connect_provider,
     disconnect_provider,
     provider_metadata,
     provider_statuses,
+    verify_provider_connection,
 )
 from app.config import Settings, get_settings
 from app.diff_service import DiffService, DiffServiceError
@@ -22,8 +26,11 @@ from app.github_auth import (
 )
 from app.models import (
     AgentProviderStatusResponse,
+    AgentProviderApiKeyRequest,
+    AgentProviderAuthFlowResponse,
     AgentProviderConnectionRequest,
     AgentProviderMetadataResponse,
+    AgentProviderVerificationResponse,
     GitHubAccountResponse,
     GitHubAuthStartResponse,
     GitHubInstallationResponse,
@@ -52,11 +59,45 @@ from app.task_runner import TaskRunner, TaskRunnerError
 from app.task_store import TaskStore
 from app.workspace import WorkspaceError, WorkspaceManager
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="AgentDock API",
     description="Mobile-first command center for AI coding agents.",
     version="0.1.0",
 )
+
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s]+"),
+    re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
+]
+
+
+def _redact_error_message(message: str) -> str:
+    redacted = message
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(r"\1[REDACTED]" if pattern.groups else "[REDACTED]", redacted)
+    return redacted
+
+
+def _task_creation_error_response(
+    *,
+    detail: str,
+    error_type: str,
+    provider: str,
+    task_id: str | None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": _redact_error_message(detail),
+            "error_type": error_type,
+            "provider": provider,
+            "task_id": task_id,
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,13 +150,19 @@ def list_agent_providers(
     return provider_metadata(settings)
 
 
-@app.post("/agent-providers/connect", response_model=AgentProviderMetadataResponse)
+@app.post(
+    "/agent-providers/connect",
+    response_model=AgentProviderMetadataResponse | AgentProviderAuthFlowResponse,
+)
 def connect_agent_provider(
     payload: AgentProviderConnectionRequest,
     settings: Settings = Depends(get_settings),
-) -> AgentProviderMetadataResponse:
+) -> AgentProviderMetadataResponse | AgentProviderAuthFlowResponse:
     """
-    Simulate connecting an agent provider and persist the local connection state.
+    Start provider connection.
+
+    Codex returns setup instructions first and is only marked connected after
+    verification succeeds.
     """
 
     try:
@@ -127,7 +174,62 @@ def connect_agent_provider(
     except AgentProviderError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=_redact_error_message(str(exc)),
+        ) from exc
+
+
+@app.post(
+    "/agent-providers/verify",
+    response_model=AgentProviderVerificationResponse,
+)
+def verify_agent_provider(
+    payload: AgentProviderConnectionRequest,
+    settings: Settings = Depends(get_settings),
+) -> AgentProviderVerificationResponse:
+    """
+    Verify a provider connection before persisting activation state.
+    """
+
+    try:
+        result = verify_provider_connection(
+            settings,
+            provider_id=payload.provider_id,
+            auth_mode=payload.auth_mode,
+        )
+    except AgentProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_redact_error_message(str(exc)),
+        ) from exc
+
+    if not result.connected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_redact_error_message(result.message),
+        )
+
+    return result
+
+
+@app.post("/agent-providers/api-key", response_model=AgentProviderMetadataResponse)
+def connect_agent_provider_api_key(
+    payload: AgentProviderApiKeyRequest,
+    settings: Settings = Depends(get_settings),
+) -> AgentProviderMetadataResponse:
+    """
+    Accept a provider API key and persist provider auth server-side.
+    """
+
+    try:
+        return connect_provider_api_key(
+            settings,
+            provider_id=payload.provider_id,
+            api_key=payload.api_key,
+        )
+    except AgentProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_redact_error_message(str(exc)),
         ) from exc
 
 
@@ -145,7 +247,7 @@ def disconnect_agent_provider(
     except AgentProviderError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=_redact_error_message(str(exc)),
         ) from exc
 
 
@@ -485,7 +587,7 @@ def create_task(
     settings: Settings = Depends(get_settings),
     task_store: TaskStore = Depends(get_task_store),
     github_token: str | None = Depends(get_optional_github_token),
-) -> TaskCreateResponse:
+) -> TaskCreateResponse | JSONResponse:
     """
     Create and run a new agent task.
 
@@ -534,16 +636,33 @@ def create_task(
         updated_at=now,
     )
 
-    task_store.save_task(task)
-    task_store.append_log(task_id, "info", "Task created.")
-    if target_file:
-        task_store.append_log(task_id, "info", f"Target file selected: {target_file}")
-    task_store.append_log(
-        task_id,
-        "info",
-        f"Change scope selected: {payload.change_scope.value}",
-    )
-    task_store.append_log(task_id, "info", "Task running.")
+    try:
+        task_store.save_task(task)
+        task_store.append_log(task_id, "info", "Task created.")
+        if target_file:
+            task_store.append_log(
+                task_id,
+                "info",
+                f"Target file selected: {target_file}",
+            )
+        task_store.append_log(
+            task_id,
+            "info",
+            f"Change scope selected: {payload.change_scope.value}",
+        )
+        task_store.append_log(task_id, "info", "Task running.")
+    except Exception as exc:
+        logger.exception(
+            "Task creation persistence failed for task_id=%s provider=%s",
+            task_id,
+            payload.agent.value,
+        )
+        return _task_creation_error_response(
+            detail="Task creation failed before runner startup.",
+            error_type=exc.__class__.__name__,
+            provider=payload.agent.value,
+            task_id=task_id,
+        )
 
     try:
         runner = TaskRunner(settings, github_token=github_token)
@@ -577,23 +696,69 @@ def create_task(
         )
 
     except TaskRunnerError as exc:
+        logger.exception(
+            "Task creation runner failed for task_id=%s provider=%s",
+            task_id,
+            exc.provider or payload.agent.value,
+        )
         task.status = TaskStatus.failed
-        task.error = str(exc)
+        task.error = _redact_error_message(str(exc))
         task.updated_at = datetime.now(timezone.utc)
 
-        task_store.save_task(task)
-        task_store.save_diff(task_id, "")
-        for level, message in exc.log_messages:
-            task_store.append_log(task_id, level, message)
-        task_store.append_log(task_id, "error", f"Task runner failed: {exc}")
+        try:
+            task_store.save_task(task)
+            task_store.save_diff(task_id, "")
+            for level, message in exc.log_messages:
+                task_store.append_log(task_id, level, _redact_error_message(message))
+            task_store.append_log(
+                task_id,
+                "error",
+                f"Task runner failed: {_redact_error_message(str(exc))}",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist task failure for task_id=%s provider=%s",
+                task_id,
+                exc.provider or payload.agent.value,
+            )
 
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "task_id": task_id,
-                "error": str(exc),
-            },
-        ) from exc
+        return _task_creation_error_response(
+            detail=str(exc),
+            error_type=exc.error_type,
+            provider=exc.provider or payload.agent.value,
+            task_id=task_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Unexpected task creation failure for task_id=%s provider=%s",
+            task_id,
+            payload.agent.value,
+        )
+        task.status = TaskStatus.failed
+        task.error = _redact_error_message(str(exc))
+        task.updated_at = datetime.now(timezone.utc)
+
+        try:
+            task_store.save_task(task)
+            task_store.save_diff(task_id, "")
+            task_store.append_log(
+                task_id,
+                "error",
+                f"Unexpected task creation failure: {_redact_error_message(str(exc))}",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist unexpected task failure for task_id=%s provider=%s",
+                task_id,
+                payload.agent.value,
+            )
+
+        return _task_creation_error_response(
+            detail=str(exc),
+            error_type=exc.__class__.__name__,
+            provider=payload.agent.value,
+            task_id=task_id,
+        )
 
 
 @app.get("/tasks", response_model=list[TaskSummary])
@@ -932,18 +1097,6 @@ async def approve_or_reject_task(
             message=payload.message or "Task rejected.",
         )
 
-    if settings.allow_pr_creation and not settings.allow_push:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "task_id": task_id,
-                "error": (
-                    "PR creation requires ALLOW_PUSH=true because the branch "
-                    "must exist on remote."
-                ),
-            },
-        )
-
     try:
         workspace_manager = WorkspaceManager(settings)
         repo_path = workspace_manager.repo_path(task_id)
@@ -960,13 +1113,14 @@ async def approve_or_reject_task(
             },
         ) from exc
 
-    task.status = TaskStatus.completed
+    task.status = TaskStatus.committed
     task.commit_sha = commit_sha
     task.pushed = False
     task.pushed_at = None
     task.remote_branch = None
     task.last_push_result = "Push not attempted."
     task.pr_url = None
+    task.error = None
     task.updated_at = now
     task.completed_at = now
     task_store.append_log(task_id, "info", f"Task locally committed: {commit_sha}.")
@@ -986,7 +1140,7 @@ async def approve_or_reject_task(
             default_branch=remote_info.default_branch,
             push_enabled=remote_info.push_enabled,
             pr_creation_enabled=remote_info.pr_creation_enabled,
-            commit_sha=commit_sha,
+            commit_sha=task.commit_sha,
             pushed=False,
             pushed_at=None,
             remote_branch=None,
@@ -997,17 +1151,65 @@ async def approve_or_reject_task(
         task_store.append_log(
             task_id,
             "warning",
-            f"Workspace snapshot failed after approval: {exc}",
+            f"Workspace snapshot failed after commit: {exc}",
+        )
+
+    task_store.save_task(task)
+    if not settings.allow_push:
+        task_store.append_log(task_id, "info", "Push unavailable because ALLOW_PUSH=false.")
+
+    return TaskApprovalResponse(
+        task_id=task_id,
+        status=task.status,
+        message=f"Task committed locally: {commit_sha}.",
+    )
+
+
+@app.post("/tasks/{task_id}/push", response_model=TaskApprovalResponse)
+async def push_committed_task(
+    task_id: str,
+    settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskApprovalResponse:
+    """
+    Push an already committed task branch to origin.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
         )
 
     if not settings.allow_push:
+        message = "Push is disabled. Set ALLOW_PUSH=true to enable it."
+        task.last_push_result = message
+        task.updated_at = datetime.now(timezone.utc)
         task_store.save_task(task)
-        task_store.append_log(task_id, "info", "Push skipped because disabled.")
+        task_store.append_log(task_id, "warning", message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "task_id": task_id,
+                "error": message,
+            },
+        )
 
-        return TaskApprovalResponse(
-            task_id=task_id,
-            status=task.status,
-            message=f"Task approved and committed locally: {commit_sha}. Push is disabled.",
+    if task.status != TaskStatus.committed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Task {task_id} is not committed and ready to push. "
+                f"Current status: {task.status}."
+            ),
+        )
+
+    if not task.commit_sha:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} has no commit to push.",
         )
 
     if not task.working_branch:
@@ -1023,6 +1225,11 @@ async def approve_or_reject_task(
         )
 
     try:
+        workspace_manager = WorkspaceManager(settings)
+        repo_path = workspace_manager.repo_path(task_id)
+        github_client = GitHubClient(settings)
+        repo = github_client.open_repository(repo_path)
+        remote_info = github_client.get_remote_info(repo, task.base_branch)
         push_result = github_client.push_branch(
             repo,
             task.working_branch,
@@ -1038,6 +1245,8 @@ async def approve_or_reject_task(
         if not push_result.success:
             task.pushed = False
             task.error = push_result.message
+            task.status = TaskStatus.committed
+            task.updated_at = datetime.now(timezone.utc)
             task_store.save_task(task)
             task_store.append_log(
                 task_id,
@@ -1053,8 +1262,12 @@ async def approve_or_reject_task(
                 },
             )
 
+        now = datetime.now(timezone.utc)
+        task.status = TaskStatus.pushed
         task.pushed = True
-        task.pushed_at = datetime.now(timezone.utc)
+        task.pushed_at = now
+        task.error = None
+        task.updated_at = now
         task_store.append_log(
             task_id,
             "info",
@@ -1062,8 +1275,10 @@ async def approve_or_reject_task(
         )
     except GitHubClientError as exc:
         task.pushed = False
+        task.status = TaskStatus.committed
         task.error = str(exc)
         task.last_push_result = str(exc)
+        task.updated_at = datetime.now(timezone.utc)
         task_store.save_task(task)
         task_store.append_log(task_id, "error", f"Push failed: {exc}")
 
@@ -1090,7 +1305,7 @@ async def approve_or_reject_task(
             default_branch=remote_info.default_branch,
             push_enabled=remote_info.push_enabled,
             pr_creation_enabled=remote_info.pr_creation_enabled,
-            commit_sha=commit_sha,
+            commit_sha=task.commit_sha,
             pushed=task.pushed,
             pushed_at=task.pushed_at,
             remote_branch=task.remote_branch,
@@ -1112,8 +1327,8 @@ async def approve_or_reject_task(
             task_id=task_id,
             status=task.status,
             message=(
-                "Task approved, committed locally, and pushed branch "
-                f"{task.working_branch}: {commit_sha}. PR creation is disabled."
+                "Task pushed branch "
+                f"{task.working_branch}: {task.commit_sha}. PR creation is disabled."
             ),
         )
 
@@ -1126,7 +1341,7 @@ async def approve_or_reject_task(
             body=(
                 "Automated AgentDock task.\n\n"
                 f"Instruction:\n{task.instruction}\n\n"
-                f"Commit:\n{commit_sha}"
+                f"Commit:\n{task.commit_sha}"
             ),
         )
     except GitHubClientError as exc:
@@ -1150,7 +1365,7 @@ async def approve_or_reject_task(
         task_id=task_id,
         status=task.status,
         message=(
-            "Task approved, committed locally, pushed branch "
+            "Task pushed branch "
             f"{task.working_branch}, and opened PR: {pr_url}"
         ),
     )

@@ -15,6 +15,8 @@ class TaskStatus(str, Enum):
     running = "running"
     waiting_for_approval = "waiting_for_approval"
     approved = "approved"
+    committed = "committed"
+    pushed = "pushed"
     rejected = "rejected"
     completed = "completed"
     failed = "failed"
@@ -68,6 +70,7 @@ class AgentProviderConnectionStatus(str, Enum):
     """
 
     connected = "connected"
+    connecting = "connecting"
     disconnected = "disconnected"
     not_configured = "not_configured"
     coming_soon = "coming_soon"
@@ -78,6 +81,21 @@ class AgentProviderReadiness(str, Enum):
     Technical readiness for a provider, independent from user connection state.
     """
 
+    ready = "ready"
+    auth_required = "auth_required"
+    unavailable = "unavailable"
+    not_configured = "not_configured"
+
+
+class AgentProviderPrimaryStatus(str, Enum):
+    """
+    Single user-facing provider card status.
+    """
+
+    connected = "connected"
+    connecting = "connecting"
+    active = "active"
+    disconnected = "disconnected"
     ready = "ready"
     unavailable = "unavailable"
     not_configured = "not_configured"
@@ -94,6 +112,7 @@ class AgentProviderMetadataResponse(BaseModel):
     status: AgentProviderConnectionStatus
     connection: AgentProviderConnectionStatus
     readiness: AgentProviderReadiness
+    primary_status: AgentProviderPrimaryStatus
     description: str
     supports_chatgpt_login: bool = False
     supports_api_key: bool = False
@@ -106,6 +125,44 @@ class AgentProviderConnectionRequest(BaseModel):
 
     provider_id: str
     auth_mode: str | None = None
+
+
+class AgentProviderApiKeyRequest(BaseModel):
+    """
+    Request to connect a provider using a server-side API key credential.
+    """
+
+    provider_id: str
+    api_key: str = Field(..., min_length=1)
+
+
+class AgentProviderAuthFlowResponse(BaseModel):
+    """
+    Setup guidance returned before a provider can be marked connected.
+    """
+
+    provider_id: str
+    status: str = "auth_required"
+    message: str
+    command: str | None = None
+    fallback_command: str | None = None
+    auth_url: str | None = None
+    verification_url: str | None = None
+    device_code: str | None = None
+    user_code: str | None = None
+    instructions: list[str] = Field(default_factory=list)
+    metadata: AgentProviderMetadataResponse
+
+
+class AgentProviderVerificationResponse(BaseModel):
+    """
+    Result of verifying a provider connection.
+    """
+
+    provider_id: str
+    connected: bool
+    message: str
+    metadata: AgentProviderMetadataResponse
 
 
 class ChangeScope(str, Enum):

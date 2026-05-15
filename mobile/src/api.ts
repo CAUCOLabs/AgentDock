@@ -1,7 +1,9 @@
 import { API_BASE_URL } from "./config";
 import type {
   AgentProviderStatus,
+  AgentProviderAuthFlowResponse,
   AgentProviderMetadata,
+  AgentProviderVerificationResponse,
   TaskApprovalRequest,
   TaskApprovalResponse,
   TaskCreateRequest,
@@ -104,9 +106,23 @@ export function getAgentProviders() {
 }
 
 export function connectAgentProvider(providerId: string, authMode?: string | null) {
-  return request<AgentProviderMetadata>("/agent-providers/connect", {
+  return request<AgentProviderMetadata | AgentProviderAuthFlowResponse>("/agent-providers/connect", {
     method: "POST",
     body: JSON.stringify({ provider_id: providerId, auth_mode: authMode ?? null }),
+  });
+}
+
+export function verifyAgentProvider(providerId: string, authMode?: string | null) {
+  return request<AgentProviderVerificationResponse>("/agent-providers/verify", {
+    method: "POST",
+    body: JSON.stringify({ provider_id: providerId, auth_mode: authMode ?? null }),
+  });
+}
+
+export function connectAgentProviderApiKey(providerId: string, apiKey: string) {
+  return request<AgentProviderMetadata>("/agent-providers/api-key", {
+    method: "POST",
+    body: JSON.stringify({ provider_id: providerId, api_key: apiKey }),
   });
 }
 
@@ -197,6 +213,12 @@ export function approveTask(taskId: string, payload: TaskApprovalRequest) {
   return request<TaskApprovalResponse>(`/tasks/${taskId}/approval`, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function pushTask(taskId: string) {
+  return request<TaskApprovalResponse>(`/tasks/${taskId}/push`, {
+    method: "POST",
   });
 }
 

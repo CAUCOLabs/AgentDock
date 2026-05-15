@@ -15,6 +15,7 @@ from app.agent_runner import (
     get_agent_runner,
 )
 from app.agent_providers import AgentProviderConnectionStore
+from app.agent_providers import CODEX_CHATGPT_OAUTH_AUTH_MODE
 from app.config import Settings
 from app.models import AgentProvider
 
@@ -199,27 +200,59 @@ class LocalAgentRunnerTests(unittest.TestCase):
 
             args = run.call_args.args[0]
             prompt = args[-1]
+            self.assertNotIn("--ask-for-approval", args)
             self.assertIn("Selected target file: src/App.tsx", prompt)
             self.assertIn("Change scope: only_selected_file", prompt)
             self.assertIn("Modify only the selected target file", prompt)
             self.assertIn("Leave all changes as working tree edits", prompt)
             self.assertIn("Do not commit, push", prompt)
 
-    def test_codex_provider_is_selected_when_ready(self) -> None:
+    def test_codex_exec_command_uses_supported_cli_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            repo_path = workspace_root / "task_123" / "repo"
+            self._create_repo(repo_path)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+            completed = subprocess.CompletedProcess(
+                args=["codex"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+            with (
+                patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"),
+                patch("app.agent_runner.subprocess.run", return_value=completed) as run,
+            ):
+                CodexCliProvider(settings).run(repo_path, "Do real work.")
+
+            args = run.call_args.args[0]
+            self.assertEqual(args[:4], ["codex", "exec", "--sandbox", "workspace-write"])
+            self.assertNotIn("--ask-for-approval", args)
+            self.assertNotIn("never", args)
+
+    def test_codex_cli_provider_is_selected_for_local_fallback_auth(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(
                 Path(temp_dir) / "workspaces",
                 codex_enabled=True,
                 openai_api_key="openai-key",
             )
-            AgentProviderConnectionStore(settings).connect("codex", "codex_cli")
+            AgentProviderConnectionStore(settings).connect(
+                "codex",
+                CODEX_CHATGPT_OAUTH_AUTH_MODE,
+            )
 
             with patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"):
                 runner = get_agent_runner(AgentProvider.codex, settings)
 
             self.assertIsInstance(runner, CodexCliProvider)
 
-    def test_codex_provider_falls_back_without_stored_connection(self) -> None:
+    def test_codex_provider_does_not_fallback_without_stored_connection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(
                 Path(temp_dir) / "workspaces",
@@ -228,9 +261,8 @@ class LocalAgentRunnerTests(unittest.TestCase):
             )
 
             with patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"):
-                runner = get_agent_runner(AgentProvider.codex, settings)
-
-            self.assertIsInstance(runner, MockAgentRunner)
+                with self.assertRaises(AgentRunnerError):
+                    get_agent_runner(AgentProvider.codex, settings)
 
     def _settings(
         self,

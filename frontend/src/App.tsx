@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Terminal,
   Trash2,
+  UploadCloud,
   XCircle,
 } from 'lucide-react'
 import './App.css'
@@ -22,6 +23,8 @@ type TaskStatus =
   | 'running'
   | 'waiting_for_approval'
   | 'approved'
+  | 'committed'
+  | 'pushed'
   | 'rejected'
   | 'completed'
   | 'failed'
@@ -38,10 +41,19 @@ type AgentProvider =
 type ChangeScope = 'only_selected_file' | 'allow_related_files'
 type ProviderConnectionStatus =
   | 'connected'
+  | 'connecting'
   | 'disconnected'
   | 'not_configured'
   | 'coming_soon'
-type ProviderReadiness = 'ready' | 'unavailable' | 'not_configured'
+type ProviderReadiness = 'ready' | 'auth_required' | 'unavailable' | 'not_configured'
+type ProviderPrimaryStatus =
+  | 'connected'
+  | 'connecting'
+  | 'active'
+  | 'disconnected'
+  | 'ready'
+  | 'unavailable'
+  | 'not_configured'
 
 type ChangedFile = {
   path: string
@@ -122,9 +134,31 @@ type AgentProviderMetadata = {
   status: ProviderConnectionStatus
   connection: ProviderConnectionStatus
   readiness: ProviderReadiness
+  primary_status: ProviderPrimaryStatus
   description: string
   supports_chatgpt_login: boolean
   supports_api_key: boolean
+}
+
+type AgentProviderAuthFlowResponse = {
+  provider_id: AgentProvider
+  status: 'auth_required' | 'waiting_for_auth'
+  message: string
+  command?: string | null
+  fallback_command?: string | null
+  auth_url?: string | null
+  verification_url?: string | null
+  device_code?: string | null
+  user_code?: string | null
+  instructions: string[]
+  metadata: AgentProviderMetadata
+}
+
+type AgentProviderVerificationResponse = {
+  provider_id: AgentProvider
+  connected: boolean
+  message: string
+  metadata: AgentProviderMetadata
 }
 
 type TaskSummary = {
@@ -283,6 +317,17 @@ function App() {
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([])
   const [githubRepoFilter, setGithubRepoFilter] = useState('')
   const [agentProviders, setAgentProviders] = useState<AgentProviderMetadata[]>([])
+  const [codexCloudNotice, setCodexCloudNotice] = useState<string | null>(null)
+  const [codexPendingAuth, setCodexPendingAuth] = useState(false)
+  const [codexAuthFlow, setCodexAuthFlow] =
+    useState<AgentProviderAuthFlowResponse | null>(null)
+  const [codexCopyStatus, setCodexCopyStatus] = useState<'copied' | 'failed' | null>(
+    null,
+  )
+  const [isCodexApiKeyPanelOpen, setIsCodexApiKeyPanelOpen] = useState(false)
+  const [codexApiKey, setCodexApiKey] = useState('')
+  const [connectingProviderId, setConnectingProviderId] =
+    useState<AgentProvider | null>(null)
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
@@ -455,12 +500,69 @@ function App() {
     }
   }
 
-  async function connectAgentProvider(providerId: AgentProvider) {
-    await request<AgentProviderMetadata>('/agent-providers/connect', {
-      method: 'POST',
-      body: JSON.stringify({ provider_id: providerId }),
-    })
-    await loadAgentProviders()
+  async function connectAgentProvider(
+    providerId: AgentProvider,
+    authMode?: string | null,
+  ) {
+    setConnectingProviderId(providerId)
+    setError(null)
+
+    try {
+      const response = await request<
+        AgentProviderMetadata | AgentProviderAuthFlowResponse
+      >('/agent-providers/connect', {
+        method: 'POST',
+        body: JSON.stringify({ provider_id: providerId, auth_mode: authMode ?? null }),
+      })
+
+      if (providerId === 'codex') {
+        const flow = isCodexAuthFlowResponse(response)
+          ? response
+          : fallbackCodexAuthFlow(response)
+        setForm((current) => ({ ...current, agent: 'codex' }))
+        setCodexCloudNotice(flow.message)
+        setCodexAuthFlow(flow)
+        setCodexPendingAuth(true)
+      } else {
+        setCodexCloudNotice(null)
+        setCodexAuthFlow(null)
+        setCodexPendingAuth(false)
+      }
+
+      await loadAgentProviders()
+    } catch (err) {
+      setCodexPendingAuth(false)
+      setError(formatError(err))
+    } finally {
+      setConnectingProviderId(null)
+    }
+  }
+
+  async function submitCodexApiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const apiKey = codexApiKey
+    setConnectingProviderId('codex')
+    setError(null)
+    setNotice(null)
+
+    try {
+      await request<AgentProviderMetadata>('/agent-providers/api-key', {
+        method: 'POST',
+        body: JSON.stringify({ provider_id: 'codex', api_key: apiKey }),
+      })
+      setIsCodexApiKeyPanelOpen(false)
+      setCodexCloudNotice(null)
+      setCodexAuthFlow(null)
+      setCodexPendingAuth(false)
+      setNotice('OpenAI API key accepted. Codex is connected.')
+      await loadAgentProviders()
+    } catch (err) {
+      setError(formatError(err))
+      await loadAgentProviders()
+    } finally {
+      setCodexApiKey('')
+      setConnectingProviderId(null)
+    }
   }
 
   async function disconnectAgentProvider(providerId: AgentProvider) {
@@ -468,7 +570,54 @@ function App() {
       method: 'POST',
       body: JSON.stringify({ provider_id: providerId }),
     })
+    if (providerId === 'codex') {
+      setCodexCloudNotice(null)
+      setCodexAuthFlow(null)
+      setCodexPendingAuth(false)
+      setIsCodexApiKeyPanelOpen(false)
+      setCodexApiKey('')
+    }
     await loadAgentProviders()
+  }
+
+  async function verifyCodexConnection(authMode?: string | null) {
+    setConnectingProviderId('codex')
+    setError(null)
+    setNotice(null)
+
+    try {
+      const result = await request<AgentProviderVerificationResponse>(
+        '/agent-providers/verify',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            provider_id: 'codex',
+            auth_mode: authMode ?? codexAuthFlow?.metadata.auth_mode ?? 'chatgpt',
+          }),
+        },
+      )
+      setCodexPendingAuth(false)
+      setCodexCloudNotice(result.message)
+      setCodexAuthFlow(null)
+      setNotice(result.message)
+      await loadAgentProviders()
+    } catch (err) {
+      setCodexCloudNotice('Verification failed.')
+      setError(formatError(err))
+      await loadAgentProviders()
+    } finally {
+      setConnectingProviderId(null)
+    }
+  }
+
+  async function copyCodexCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCodexCopyStatus('copied')
+    } catch {
+      setCodexCopyStatus('failed')
+    }
+    window.setTimeout(() => setCodexCopyStatus(null), 1600)
   }
 
   async function loadTaskBundle(taskId: string) {
@@ -725,7 +874,7 @@ function App() {
     window.setTimeout(() => setDiffCopyStatus(null), 1600)
   }
 
-  async function approveTask(approve: boolean) {
+  async function commitOrRejectTask(approve: boolean) {
     if (!selectedTaskId) return
 
     setNotice(null)
@@ -745,6 +894,30 @@ function App() {
       await loadTaskBundle(selectedTaskId)
     } catch (err) {
       setError(formatError(err))
+    }
+  }
+
+  async function pushTask() {
+    if (!selectedTaskId) return
+
+    setNotice(null)
+    setError(null)
+
+    try {
+      const result = await request<TaskApprovalResponse>(
+        `/tasks/${selectedTaskId}/push`,
+        {
+          method: 'POST',
+        },
+      )
+
+      setNotice(result.message)
+      await loadTasks()
+      await loadTaskBundle(selectedTaskId)
+    } catch (err) {
+      setError(formatError(err))
+      await loadTasks()
+      await loadTaskBundle(selectedTaskId)
     }
   }
 
@@ -969,10 +1142,23 @@ function App() {
               <div className="provider-options">
                 {providerOptions.map((provider) => {
                   const metadata = agentProviderById.get(provider.value)
-                  const connection = metadata?.connection ?? metadata?.status ?? 'disconnected'
+                  const connection =
+                    provider.value === 'codex' &&
+                    (codexPendingAuth || connectingProviderId === 'codex')
+                      ? 'connecting'
+                      : metadata?.connection ?? metadata?.status ?? 'disconnected'
                   const readiness = metadata?.readiness ?? 'not_configured'
-                  const isConnected = connection === 'connected'
-                  const canConnect = readiness === 'ready' && connection === 'disconnected'
+                  const primaryStatus =
+                    connection === 'connecting'
+                      ? 'connecting'
+                      : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness)
+                  const isCodex = provider.value === 'codex'
+                  const isActive = primaryStatus === 'active' || connection === 'connected'
+                  const canConnect =
+                    connection === 'disconnected' &&
+                    (isCodex
+                      ? readiness === 'auth_required' || readiness === 'ready'
+                      : readiness === 'ready')
 
                   return (
                   <div
@@ -992,33 +1178,153 @@ function App() {
                       }
                     />
                     <span>{metadata?.label ?? provider.label}</span>
-                    <small className={`provider-status-badge ${connection}`}>
-                      {formatConnectionStatus(connection)}
+                    <small className={`provider-status-badge ${primaryStatus}`}>
+                      {formatPrimaryStatus(provider.value, primaryStatus)}
                     </small>
-                    <small className={`provider-status-badge ${readiness}`}>
-                      {formatReadinessStatus(readiness)}
+                    <small className="provider-readiness">
+                      {formatReadinessStatus(provider.value, readiness)}
                     </small>
                     <small>{metadata?.description ?? 'Provider metadata is loading.'}</small>
                     <div className="provider-card-actions">
-                      {isConnected ? (
-                        <button
-                          type="button"
-                          className="mini-action"
-                          onClick={() => void disconnectAgentProvider(provider.value)}
-                        >
-                          Disconnect
-                        </button>
+                      {isActive ? (
+                        <>
+                          {isCodex && (
+                            <button
+                              type="button"
+                              className="mini-action secondary"
+                              disabled={connectingProviderId === 'codex'}
+                              onClick={() => void verifyCodexConnection(metadata?.auth_mode)}
+                            >
+                              Check connection
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="mini-action"
+                            onClick={() => void disconnectAgentProvider(provider.value)}
+                          >
+                            Disconnect
+                          </button>
+                        </>
+                      ) : isCodex ? (
+                        <>
+                          <button
+                            type="button"
+                            className="mini-action"
+                            disabled={!canConnect || connectingProviderId === 'codex'}
+                            onClick={() => void connectAgentProvider('codex', 'chatgpt')}
+                          >
+                            Sign in with ChatGPT
+                          </button>
+                          <button
+                            type="button"
+                            className="mini-action secondary"
+                            disabled={connectingProviderId === 'codex'}
+                            onClick={() => {
+                              setCodexPendingAuth(false)
+                              setCodexCloudNotice(null)
+                              setCodexAuthFlow(null)
+                              setCodexApiKey('')
+                              setIsCodexApiKeyPanelOpen(true)
+                            }}
+                          >
+                            Use API Key
+                          </button>
+                        </>
                       ) : (
                         <button
                           type="button"
                           className="mini-action"
-                          disabled={!canConnect}
+                          disabled={!canConnect || connectingProviderId === provider.value}
                           onClick={() => void connectAgentProvider(provider.value)}
                         >
                           Connect
                         </button>
                       )}
                     </div>
+                    {isCodex && codexCloudNotice && (
+                      <div className="codex-auth-panel">
+                        <strong>OpenAI account connection</strong>
+                        <p>{codexCloudNotice}</p>
+                        {codexAuthFlow?.verification_url && (
+                          <a
+                            href={codexAuthFlow.verification_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mini-action"
+                          >
+                            Open verification URL
+                          </a>
+                        )}
+                        {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
+                          <button
+                            type="button"
+                            className="mini-action secondary"
+                            onClick={() =>
+                              void copyCodexCode(
+                                codexAuthFlow.user_code ??
+                                  codexAuthFlow.device_code ??
+                                  '',
+                              )
+                            }
+                          >
+                            {codexCopyStatus === 'copied' ? 'Copied' : 'Copy code'}
+                          </button>
+                        )}
+                        {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
+                          <code>
+                            {codexAuthFlow.user_code ?? codexAuthFlow.device_code}
+                          </code>
+                        )}
+                        <button
+                          type="button"
+                          className="mini-action"
+                          disabled={connectingProviderId === 'codex'}
+                          onClick={() => void verifyCodexConnection('chatgpt')}
+                        >
+                          Check connection
+                        </button>
+                      </div>
+                    )}
+                    {isCodex && isCodexApiKeyPanelOpen && (
+                      <form className="codex-auth-panel" onSubmit={submitCodexApiKey}>
+                        <strong>Enter your OpenAI API key</strong>
+                        <input
+                          type="password"
+                          value={codexApiKey}
+                          onChange={(event) => setCodexApiKey(event.target.value)}
+                          autoComplete="off"
+                          spellCheck={false}
+                          placeholder="sk-..."
+                        />
+                        <a
+                          href="https://platform.openai.com/api-keys"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Get API Key
+                        </a>
+                        <div className="provider-card-actions">
+                          <button
+                            type="button"
+                            className="mini-action secondary"
+                            onClick={() => {
+                              setCodexApiKey('')
+                              setIsCodexApiKeyPanelOpen(false)
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="mini-action"
+                            disabled={!codexApiKey.trim() || connectingProviderId === 'codex'}
+                          >
+                            OK
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
                   )
                 })}
@@ -1033,7 +1339,7 @@ function App() {
               </details>
               {!hasConnectedProvider && (
                 <p className="provider-mode-note">
-                  Development agent active: tasks currently run using the local development agent.
+                  Connect a provider before launching tasks.
                 </p>
               )}
             </div>
@@ -1427,23 +1733,36 @@ function App() {
               </div>
 
               <div className="actions">
-                <button
-                  type="button"
-                  disabled={activeTask.status !== 'waiting_for_approval'}
-                  onClick={() => void approveTask(true)}
-                >
-                  <CheckCircle2 size={16} />
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={activeTask.status !== 'waiting_for_approval'}
-                  onClick={() => void approveTask(false)}
-                >
-                  <XCircle size={16} />
-                  Reject
-                </button>
+                {activeTask.status === 'waiting_for_approval' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void commitOrRejectTask(true)}
+                    >
+                      <CheckCircle2 size={16} />
+                      Commit
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => void commitOrRejectTask(false)}
+                    >
+                      <XCircle size={16} />
+                      Reject
+                    </button>
+                  </>
+                )}
+                {activeTask.status === 'committed' &&
+                  workspaceStatus?.push_enabled &&
+                  workspaceStatus.has_valid_origin && (
+                    <button
+                      type="button"
+                      onClick={() => void pushTask()}
+                    >
+                      <UploadCloud size={16} />
+                      Push
+                    </button>
+                  )}
                 <button
                   type="button"
                   className="secondary danger"
@@ -1453,6 +1772,21 @@ function App() {
                   Delete
                 </button>
               </div>
+              {activeTask.status === 'committed' && (
+                <p className="empty-state">
+                  {workspaceStatus?.push_enabled
+                    ? workspaceStatus.has_valid_origin
+                      ? `Committed ${shortSha(activeTask.commit_sha)}. Push when ready.`
+                      : 'Committed locally. Add or restore an origin remote before pushing.'
+                    : 'Committed locally. Push is disabled because ALLOW_PUSH=false.'}
+                </p>
+              )}
+              {activeTask.status === 'pushed' && (
+                <p className="console-ok">
+                  Pushed {activeTask.remote_branch ?? 'remote branch'}
+                  {activeTask.pushed_at ? ` at ${formatTimestamp(activeTask.pushed_at)}` : ''}.
+                </p>
+              )}
             </>
           )}
         </section>
@@ -1656,6 +1990,8 @@ function formatConnectionStatus(status?: ProviderConnectionStatus) {
   switch (status) {
     case 'connected':
       return 'CONNECTED'
+    case 'connecting':
+      return 'CONNECTING'
     case 'disconnected':
       return 'DISCONNECTED'
     case 'not_configured':
@@ -1667,8 +2003,60 @@ function formatConnectionStatus(status?: ProviderConnectionStatus) {
   }
 }
 
-function formatReadinessStatus(readiness?: ProviderReadiness) {
+function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
+  if (providerId === 'local_model') {
+    return readiness === 'ready' ? 'LOCAL RUNNER READY' : 'LOCAL RUNNER REQUIRED'
+  }
+
+  if (providerId === 'codex') {
+    switch (readiness) {
+      case 'ready':
+        return 'AUTH STORED'
+      case 'auth_required':
+        return 'AUTH REQUIRED'
+      case 'unavailable':
+        return 'UNAVAILABLE'
+      case 'not_configured':
+        return 'CONFIG MISSING'
+      default:
+        return 'UNKNOWN'
+    }
+  }
+
   switch (readiness) {
+    case 'ready':
+      return 'READY'
+    case 'auth_required':
+      return 'AUTH REQUIRED'
+    case 'unavailable':
+      return 'UNAVAILABLE'
+    case 'not_configured':
+      return 'NOT CONFIGURED'
+    default:
+      return 'UNKNOWN'
+  }
+}
+
+function providerPrimaryStatus(
+  connection: ProviderConnectionStatus,
+  readiness: ProviderReadiness,
+): ProviderPrimaryStatus {
+  if (connection === 'connected') return 'connected'
+  if (readiness === 'ready' || readiness === 'auth_required') return 'disconnected'
+  if (readiness === 'unavailable') return 'unavailable'
+  return 'not_configured'
+}
+
+function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimaryStatus) {
+  switch (status) {
+    case 'connected':
+      return 'CONNECTED'
+    case 'connecting':
+      return 'CONNECTING'
+    case 'active':
+      return providerId === 'codex' ? 'CONNECTED' : 'ACTIVE'
+    case 'disconnected':
+      return 'DISCONNECTED'
     case 'ready':
       return 'READY'
     case 'unavailable':
@@ -1681,11 +2069,60 @@ function formatReadinessStatus(readiness?: ProviderReadiness) {
 }
 
 function providerConnectionMessage(provider: AgentProviderMetadata) {
-  return [
+  if (provider.id === 'codex') {
+    const details = [
+      `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
+      `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
+      provider.description,
+    ]
+
+    if (provider.readiness === 'auth_required') {
+      details.push('Choose ChatGPT sign-in or API key authentication')
+    }
+
+    if (provider.readiness === 'ready') {
+      details.push('Codex auth is stored server-side')
+    }
+
+    return details.join(' · ')
+  }
+
+  const details = [
     `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-    `Readiness: ${formatReadinessStatus(provider.readiness)}`,
+    `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
     provider.description,
-  ].join(' · ')
+  ]
+
+  return details.join(' · ')
+}
+
+function isCodexAuthFlowResponse(
+  response: AgentProviderMetadata | AgentProviderAuthFlowResponse,
+): response is AgentProviderAuthFlowResponse {
+  return (
+    'command' in response || 'provider_id' in response
+  )
+}
+
+function fallbackCodexAuthFlow(
+  metadata: AgentProviderMetadata,
+): AgentProviderAuthFlowResponse {
+  return {
+    provider_id: 'codex',
+    status: 'auth_required',
+    message: 'OpenAI account connection is not enabled yet.',
+    command: null,
+    fallback_command: null,
+    auth_url: null,
+    verification_url: null,
+    device_code: null,
+    user_code: null,
+    instructions: [
+      'AgentDock does not collect your OpenAI password.',
+      'Codex auth completes only after the backend accepts a callback or API key.',
+    ],
+    metadata,
+  }
 }
 
 function formatError(error: unknown) {

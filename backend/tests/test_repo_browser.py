@@ -132,7 +132,7 @@ class RepoBrowserTests(unittest.TestCase):
             self.assertEqual(approval_response.status_code, 200)
             approved_task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(approved_task)
-            self.assertEqual(approved_task.status.value, "completed")
+            self.assertEqual(approved_task.status.value, "committed")
 
     def test_task_creation_persists_change_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

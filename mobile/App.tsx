@@ -21,12 +21,14 @@ import {
   RefreshCw,
   Send,
   Trash2,
+  UploadCloud,
   XCircle,
 } from "lucide-react-native";
 
 import {
   approveTask,
   connectAgentProvider,
+  connectAgentProviderApiKey,
   createTask,
   deleteTask,
   disconnectAgentProvider,
@@ -42,14 +44,18 @@ import {
   getTasks,
   getWorkspaceStatus,
   logout,
+  pushTask,
   startGitHubAuth,
   subscribeToApiConnectivity,
+  verifyAgentProvider,
 } from "./src/api";
 import { API_BASE_URL } from "./src/config";
 import type {
   AgentProvider,
+  AgentProviderAuthFlowResponse,
   AgentProviderMetadata,
   ProviderConnectionStatus,
+  ProviderPrimaryStatus,
   ProviderReadiness,
   TaskDiffResponse,
   ChangeScope,
@@ -137,6 +143,8 @@ function formatConnectionStatus(status?: ProviderConnectionStatus) {
   switch (status) {
     case "connected":
       return "CONNECTED";
+    case "connecting":
+      return "CONNECTING";
     case "disconnected":
       return "DISCONNECTED";
     case "not_configured":
@@ -148,8 +156,61 @@ function formatConnectionStatus(status?: ProviderConnectionStatus) {
   }
 }
 
-function formatReadinessStatus(readiness?: ProviderReadiness) {
+function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
+  if (providerId === "local_model") {
+    return readiness === "ready" ? "LOCAL RUNNER READY" : "LOCAL RUNNER REQUIRED";
+  }
+
+  if (providerId === "codex") {
+    switch (readiness) {
+      case "ready":
+        return "AUTH STORED";
+      case "auth_required":
+        return "AUTH REQUIRED";
+      case "unavailable":
+        return "UNAVAILABLE";
+      case "not_configured":
+        return "CONFIG MISSING";
+      default:
+        return "UNKNOWN";
+    }
+  }
+
   switch (readiness) {
+    case "ready":
+      return "READY";
+    case "auth_required":
+      return "AUTH REQUIRED";
+    case "unavailable":
+      return "UNAVAILABLE";
+    case "not_configured":
+      return "NOT CONFIGURED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function providerPrimaryStatus(
+  connection: ProviderConnectionStatus,
+  readiness: ProviderReadiness
+): ProviderPrimaryStatus {
+  if (connection === "connected") return "connected";
+  if (connection === "connecting") return "connecting";
+  if (readiness === "ready" || readiness === "auth_required") return "disconnected";
+  if (readiness === "unavailable") return "unavailable";
+  return "not_configured";
+}
+
+function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimaryStatus) {
+  switch (status) {
+    case "connected":
+      return "CONNECTED";
+    case "connecting":
+      return "CONNECTING";
+    case "active":
+      return providerId === "codex" ? "CONNECTED" : "ACTIVE";
+    case "disconnected":
+      return "DISCONNECTED";
     case "ready":
       return "READY";
     case "unavailable":
@@ -162,17 +223,66 @@ function formatReadinessStatus(readiness?: ProviderReadiness) {
 }
 
 function providerConnectionMessage(provider: AgentProviderMetadata) {
-  return [
+  if (provider.id === "codex") {
+    const details = [
+      `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
+      `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
+      provider.description,
+    ];
+
+    if (provider.readiness === "auth_required") {
+      details.push("Choose ChatGPT sign-in or API key authentication");
+    }
+
+    if (provider.readiness === "ready") {
+      details.push("Codex auth is stored server-side");
+    }
+
+    return details.join(" · ");
+  }
+
+  const details = [
     `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-    `Readiness: ${formatReadinessStatus(provider.readiness)}`,
+    `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
     provider.description,
-  ].join(" · ");
+  ];
+
+  return details.join(" · ");
+}
+
+function isCodexAuthFlowResponse(
+  response: AgentProviderMetadata | AgentProviderAuthFlowResponse
+): response is AgentProviderAuthFlowResponse {
+  return (
+    "command" in response || "provider_id" in response
+  );
+}
+
+function fallbackCodexAuthFlow(metadata: AgentProviderMetadata): AgentProviderAuthFlowResponse {
+  return {
+    provider_id: "codex",
+    status: "auth_required",
+    message: "OpenAI account connection is not enabled yet.",
+    command: null,
+    fallback_command: null,
+    auth_url: null,
+    verification_url: null,
+    device_code: null,
+    user_code: null,
+    instructions: [
+      "AgentDock does not collect your OpenAI password.",
+      "Codex auth completes only after the backend accepts a callback or API key.",
+    ],
+    metadata,
+  };
 }
 
 function statusTone(status: TaskStatus) {
   switch (status) {
     case "completed":
     case "approved":
+    case "committed":
+    case "pushed":
       return styles.statusSuccess;
     case "waiting_for_approval":
       return styles.statusWarning;
@@ -222,6 +332,13 @@ export default function App() {
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
   const [isProviderDetailsOpen, setIsProviderDetailsOpen] = useState(false);
+  const [codexCloudNotice, setCodexCloudNotice] = useState<string | null>(null);
+  const [codexPendingAuth, setCodexPendingAuth] = useState(false);
+  const [codexAuthFlow, setCodexAuthFlow] = useState<AgentProviderAuthFlowResponse | null>(null);
+  const [codexCopyStatus, setCodexCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const [isCodexApiKeyPanelOpen, setIsCodexApiKeyPanelOpen] = useState(false);
+  const [codexApiKey, setCodexApiKey] = useState("");
+  const [connectingProviderId, setConnectingProviderId] = useState<AgentProvider | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [diffCopyStatus, setDiffCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -355,22 +472,105 @@ export default function App() {
     })();
   }, []);
 
-  async function handleConnectAgentProvider(providerId: AgentProvider) {
+  async function handleConnectAgentProvider(providerId: AgentProvider, authMode?: string | null) {
+    setConnectingProviderId(providerId);
+    setError(null);
+
     try {
-      await connectAgentProvider(providerId);
+      const response = await connectAgentProvider(providerId, authMode);
+
+      if (providerId === "codex") {
+        const flow = isCodexAuthFlowResponse(response)
+          ? response
+          : fallbackCodexAuthFlow(response);
+        setAgentProvider("codex");
+        setCodexCloudNotice(flow.message);
+        setCodexAuthFlow(flow);
+        setCodexPendingAuth(true);
+      } else {
+        setCodexCloudNotice(null);
+        setCodexAuthFlow(null);
+        setCodexPendingAuth(false);
+      }
+
       setAgentProviders(await getAgentProviders());
     } catch (connectError) {
+      setCodexPendingAuth(false);
       setError(connectError instanceof Error ? connectError.message : "Unable to connect provider.");
+    } finally {
+      setConnectingProviderId(null);
+    }
+  }
+
+  async function handleSubmitCodexApiKey() {
+    const apiKey = codexApiKey;
+    setConnectingProviderId("codex");
+    setError(null);
+
+    try {
+      await connectAgentProviderApiKey("codex", apiKey);
+      setIsCodexApiKeyPanelOpen(false);
+      setCodexCloudNotice(null);
+      setCodexAuthFlow(null);
+      setCodexPendingAuth(false);
+      setCodexApiKey("");
+      setAgentProviders(await getAgentProviders());
+    } catch (apiKeyError) {
+      setError(apiKeyError instanceof Error ? apiKeyError.message : "Unable to connect Codex with API key.");
+      setAgentProviders(await getAgentProviders());
+    } finally {
+      setCodexApiKey("");
+      setConnectingProviderId(null);
     }
   }
 
   async function handleDisconnectAgentProvider(providerId: AgentProvider) {
     try {
       await disconnectAgentProvider(providerId);
+      if (providerId === "codex") {
+        setCodexCloudNotice(null);
+        setCodexAuthFlow(null);
+        setCodexPendingAuth(false);
+        setIsCodexApiKeyPanelOpen(false);
+        setCodexApiKey("");
+      }
       setAgentProviders(await getAgentProviders());
     } catch (disconnectError) {
       setError(disconnectError instanceof Error ? disconnectError.message : "Unable to disconnect provider.");
     }
+  }
+
+  async function handleVerifyCodexConnection(authMode?: string | null) {
+    setConnectingProviderId("codex");
+    setError(null);
+
+    try {
+      const result = await verifyAgentProvider(
+        "codex",
+        authMode ?? codexAuthFlow?.metadata.auth_mode ?? "chatgpt"
+      );
+      setCodexPendingAuth(false);
+      setCodexCloudNotice(result.message);
+      setCodexAuthFlow(null);
+      setAgentProviders(await getAgentProviders());
+    } catch (verifyError) {
+      setCodexCloudNotice("Verification failed.");
+      setError(verifyError instanceof Error ? verifyError.message : "Unable to verify Codex connection.");
+      setAgentProviders(await getAgentProviders());
+    } finally {
+      setConnectingProviderId(null);
+    }
+  }
+
+  async function handleCopyCodexCode(code: string) {
+    try {
+      await Clipboard.setStringAsync(code);
+      setCodexCopyStatus("copied");
+    } catch {
+      setCodexCopyStatus("failed");
+    }
+
+    setTimeout(() => setCodexCopyStatus(null), 1600);
   }
 
   async function handleLaunch() {
@@ -442,7 +642,7 @@ export default function App() {
     }
   }
 
-  async function handleApproval(approve: boolean) {
+  async function handleCommitOrReject(approve: boolean) {
     if (!selectedTask) {
       return;
     }
@@ -452,12 +652,32 @@ export default function App() {
     try {
       await approveTask(selectedTask.task_id, {
         approve,
-        message: approve ? "Approved from AgentDock mobile." : "Rejected from AgentDock mobile.",
+        message: approve ? "Committed from AgentDock mobile." : "Rejected from AgentDock mobile.",
       });
       await refreshTasks();
       await loadTaskDetail(selectedTask.task_id);
     } catch (approvalError) {
       setError(approvalError instanceof Error ? approvalError.message : "Unable to update approval.");
+    } finally {
+      setIsActing(false);
+    }
+  }
+
+  async function handlePush() {
+    if (!selectedTask) {
+      return;
+    }
+
+    setIsActing(true);
+    setError(null);
+    try {
+      await pushTask(selectedTask.task_id);
+      await refreshTasks();
+      await loadTaskDetail(selectedTask.task_id);
+    } catch (pushError) {
+      setError(pushError instanceof Error ? pushError.message : "Unable to push task.");
+      await refreshTasks();
+      await loadTaskDetail(selectedTask.task_id);
     } finally {
       setIsActing(false);
     }
@@ -712,10 +932,21 @@ export default function App() {
             <View style={styles.providerGrid}>
               {providerOptions.map((provider) => {
                 const metadata = agentProviderById.get(provider.value);
-                const connection = metadata?.connection ?? metadata?.status ?? "disconnected";
+                const connection =
+                  provider.value === "codex" &&
+                  (codexPendingAuth || connectingProviderId === "codex")
+                    ? "connecting"
+                    : metadata?.connection ?? metadata?.status ?? "disconnected";
                 const readiness = metadata?.readiness ?? "not_configured";
-                const isConnected = connection === "connected";
-                const canConnect = readiness === "ready" && connection === "disconnected";
+                const primaryStatus =
+                  connection === "connecting"
+                    ? "connecting"
+                    : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness);
+                const isCodex = provider.value === "codex";
+                const isActive = primaryStatus === "active" || connection === "connected";
+                const canConnect =
+                  connection === "disconnected" &&
+                  (isCodex ? readiness === "auth_required" || readiness === "ready" : readiness === "ready");
 
                 return (
                   <View
@@ -733,44 +964,178 @@ export default function App() {
                       <Text
                         style={[
                           styles.providerStatusBadge,
-                          isConnected && styles.providerStatusAvailable,
+                          primaryStatus === "connecting" && styles.providerStatusConnecting,
+                          primaryStatus === "active" && styles.providerStatusAvailable,
+                          primaryStatus === "connected" && styles.providerStatusAvailable,
+                          primaryStatus === "ready" && styles.providerStatusAvailable,
+                          primaryStatus === "unavailable" && styles.providerStatusUnavailable,
                         ]}
                       >
-                        {formatConnectionStatus(connection)}
+                        {formatPrimaryStatus(provider.value, primaryStatus)}
                       </Text>
-                      <Text
-                        style={[
-                          styles.providerStatusBadge,
-                          readiness === "ready" && styles.providerStatusAvailable,
-                          readiness === "unavailable" && styles.providerStatusUnavailable,
-                        ]}
-                      >
-                        {formatReadinessStatus(readiness)}
+                      <Text style={styles.providerDescription}>
+                        {formatReadinessStatus(provider.value, readiness)}
                       </Text>
                       <Text style={styles.providerDescription}>
                         {metadata?.description ?? "Provider metadata is loading."}
                       </Text>
                     </Pressable>
-                    {isConnected ? (
-                      <Pressable
-                        onPress={() => void handleDisconnectAgentProvider(provider.value)}
-                        style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
-                      >
-                        <Text style={styles.providerActionText}>Disconnect</Text>
-                      </Pressable>
+                    {isActive ? (
+                      <View style={styles.providerCardActions}>
+                        {isCodex ? (
+                          <Pressable
+                            disabled={connectingProviderId === "codex"}
+                            onPress={() => void handleVerifyCodexConnection(metadata?.auth_mode)}
+                            style={({ pressed }) => [
+                              styles.providerActionButton,
+                              connectingProviderId === "codex" && styles.disabledButton,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.providerActionText}>Check connection</Text>
+                          </Pressable>
+                        ) : null}
+                        <Pressable
+                          onPress={() => void handleDisconnectAgentProvider(provider.value)}
+                          style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.providerActionText}>Disconnect</Text>
+                        </Pressable>
+                      </View>
+                    ) : isCodex ? (
+                      <View style={styles.providerCardActions}>
+                        <Pressable
+                          disabled={!canConnect || connectingProviderId === "codex"}
+                          onPress={() => void handleConnectAgentProvider("codex", "chatgpt")}
+                          style={({ pressed }) => [
+                            styles.providerActionButton,
+                            (!canConnect || connectingProviderId === "codex") && styles.disabledButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.providerActionText}>Sign in with ChatGPT</Text>
+                        </Pressable>
+                        <Pressable
+                          disabled={connectingProviderId === "codex"}
+                          onPress={() => {
+                            setCodexPendingAuth(false);
+                            setCodexCloudNotice(null);
+                            setCodexAuthFlow(null);
+                            setCodexApiKey("");
+                            setIsCodexApiKeyPanelOpen(true);
+                          }}
+                          style={({ pressed }) => [
+                            styles.providerActionButton,
+                            connectingProviderId === "codex" && styles.disabledButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.providerActionText}>Use API Key</Text>
+                        </Pressable>
+                      </View>
                     ) : (
                       <Pressable
-                        disabled={!canConnect}
+                        disabled={!canConnect || connectingProviderId === provider.value}
                         onPress={() => void handleConnectAgentProvider(provider.value)}
                         style={({ pressed }) => [
                           styles.providerActionButton,
-                          !canConnect && styles.disabledButton,
+                          (!canConnect || connectingProviderId === provider.value) && styles.disabledButton,
                           pressed && styles.pressed,
                         ]}
                       >
                         <Text style={styles.providerActionText}>Connect</Text>
                       </Pressable>
                     )}
+                    {isCodex && codexCloudNotice ? (
+                      <View style={styles.codexAuthPanel}>
+                        <Text style={styles.providerOptionText}>OpenAI account connection</Text>
+                        <Text style={styles.providerDescription}>{codexCloudNotice}</Text>
+                        {codexAuthFlow?.verification_url ? (
+                          <Pressable
+                            onPress={() => void Linking.openURL(codexAuthFlow.verification_url ?? "")}
+                            style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                          >
+                            <Text style={styles.providerActionText}>Open verification URL</Text>
+                          </Pressable>
+                        ) : null}
+                        {codexAuthFlow?.user_code || codexAuthFlow?.device_code ? (
+                          <>
+                            <Text style={styles.providerDescription}>
+                              {codexAuthFlow.user_code ?? codexAuthFlow.device_code}
+                            </Text>
+                            <Pressable
+                              onPress={() =>
+                                void handleCopyCodexCode(
+                                  codexAuthFlow.user_code ?? codexAuthFlow.device_code ?? ""
+                                )
+                              }
+                              style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                            >
+                              <Text style={styles.providerActionText}>
+                                {codexCopyStatus === "copied" ? "Copied" : "Copy code"}
+                              </Text>
+                            </Pressable>
+                          </>
+                        ) : null}
+                        <Pressable
+                          disabled={connectingProviderId === "codex"}
+                          onPress={() => void handleVerifyCodexConnection("chatgpt")}
+                          style={({ pressed }) => [
+                            styles.providerActionButton,
+                            connectingProviderId === "codex" && styles.disabledButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.providerActionText}>Check connection</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+                    {isCodex && isCodexApiKeyPanelOpen ? (
+                      <View style={styles.codexAuthPanel}>
+                        <Text style={styles.providerOptionText}>Enter your OpenAI API key</Text>
+                        <TextInput
+                          value={codexApiKey}
+                          onChangeText={setCodexApiKey}
+                          placeholder="sk-..."
+                          placeholderTextColor="#6f7f92"
+                          secureTextEntry
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          style={styles.input}
+                        />
+                        <Pressable
+                          onPress={() => void Linking.openURL("https://platform.openai.com/api-keys")}
+                          style={({ pressed }) => [pressed && styles.pressed]}
+                        >
+                          <Text style={styles.linkText}>Get API Key</Text>
+                        </Pressable>
+                        <View style={styles.providerCardActions}>
+                          <Pressable
+                            onPress={() => {
+                              setCodexApiKey("");
+                              setIsCodexApiKeyPanelOpen(false);
+                            }}
+                            style={({ pressed }) => [
+                              styles.providerActionButton,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.providerActionText}>Cancel</Text>
+                          </Pressable>
+                          <Pressable
+                            disabled={!codexApiKey.trim() || connectingProviderId === "codex"}
+                            onPress={() => void handleSubmitCodexApiKey()}
+                            style={({ pressed }) => [
+                              styles.providerActionButton,
+                              (!codexApiKey.trim() || connectingProviderId === "codex") && styles.disabledButton,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Text style={styles.providerActionText}>OK</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : null}
                   </View>
                 );
               })}
@@ -792,7 +1157,7 @@ export default function App() {
             </Pressable>
             {!hasConnectedProvider ? (
               <Text style={styles.providerModeNote}>
-                Development agent active: tasks currently run using the local development agent.
+                Connect a provider before launching tasks.
               </Text>
             ) : null}
           </View>
@@ -1089,20 +1454,33 @@ export default function App() {
               <InfoRow label="Agent" value={selectedTaskAgentLabel ?? "Unknown"} />
               {selectedTask.error ? <Text style={styles.errorText}>{selectedTask.error}</Text> : null}
               <View style={styles.actionRow}>
-                <ActionButton
-                  label="Approve"
-                  icon={<CheckCircle2 size={18} color="#031014" />}
-                  disabled={isActing}
-                  onPress={() => handleApproval(true)}
-                  tone="approve"
-                />
-                <ActionButton
-                  label="Reject"
-                  icon={<XCircle size={18} color="#ffd4d8" />}
-                  disabled={isActing}
-                  onPress={() => handleApproval(false)}
-                  tone="reject"
-                />
+                {selectedTask.status === "waiting_for_approval" ? (
+                  <>
+                    <ActionButton
+                      label="Commit"
+                      icon={<CheckCircle2 size={18} color="#031014" />}
+                      disabled={isActing}
+                      onPress={() => handleCommitOrReject(true)}
+                      tone="approve"
+                    />
+                    <ActionButton
+                      label="Reject"
+                      icon={<XCircle size={18} color="#ffd4d8" />}
+                      disabled={isActing}
+                      onPress={() => handleCommitOrReject(false)}
+                      tone="reject"
+                    />
+                  </>
+                ) : null}
+                {selectedTask.status === "committed" && workspace?.push_enabled && workspace.has_valid_origin ? (
+                  <ActionButton
+                    label="Push"
+                    icon={<UploadCloud size={18} color="#031014" />}
+                    disabled={isActing}
+                    onPress={handlePush}
+                    tone="approve"
+                  />
+                ) : null}
                 <ActionButton
                   label="Delete"
                   icon={<Trash2 size={18} color="#ffd4d8" />}
@@ -1111,6 +1489,21 @@ export default function App() {
                   tone="delete"
                 />
               </View>
+              {selectedTask.status === "committed" ? (
+                <Text style={styles.emptyText}>
+                  {workspace?.push_enabled
+                    ? workspace.has_valid_origin
+                      ? `Committed ${shortSha(selectedTask.commit_sha)}. Push when ready.`
+                      : "Committed locally. Add or restore an origin remote before pushing."
+                    : "Committed locally. Push is disabled because ALLOW_PUSH=false."}
+                </Text>
+              ) : null}
+              {selectedTask.status === "pushed" ? (
+                <Text style={styles.successText}>
+                  Pushed {selectedTask.remote_branch ?? "remote branch"}
+                  {selectedTask.pushed_at ? ` at ${formatDate(selectedTask.pushed_at)}` : ""}.
+                </Text>
+              ) : null}
             </View>
           ) : (
             <Text style={styles.emptyText}>Select a task to inspect it.</Text>
@@ -1529,6 +1922,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  successText: {
+    color: "#95e6bd",
+    fontSize: 14,
+    lineHeight: 20,
+  },
   taskList: {
     gap: 10,
   },
@@ -1816,6 +2214,9 @@ const styles = StyleSheet.create({
   providerStatusAvailable: {
     color: "#7ee5bf",
   },
+  providerStatusConnecting: {
+    color: "#58dfff",
+  },
   providerStatusUnavailable: {
     color: "#ffb8c0",
   },
@@ -1834,6 +2235,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(56, 217, 255, 0.28)",
     justifyContent: "center",
   },
+  providerCardActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   providerActionText: {
     color: "#9eefff",
     fontSize: 12,
@@ -1843,6 +2249,29 @@ const styles = StyleSheet.create({
     color: "#8ea7bd",
     fontSize: 12,
     lineHeight: 18,
+  },
+  codexAuthPanel: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.52)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.2)",
+  },
+  commandText: {
+    color: "#edf8ff",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
+    padding: 8,
+    borderRadius: 6,
+    backgroundColor: "rgba(2, 6, 23, 0.64)",
+  },
+  commandLabel: {
+    color: "#edf8ff",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
   },
   selectedRepoCard: {
     gap: 8,

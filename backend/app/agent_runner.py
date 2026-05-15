@@ -9,6 +9,7 @@ from app.agent_providers import (
     AgentProviderConnectionStore,
     AgentProviderError,
     AgentRunResult,
+    CODEX_CONNECTED_AUTH_MODES,
     MockProvider,
 )
 from app.config import Settings
@@ -171,10 +172,8 @@ class LocalRunner(AgentProviderBase):
 
 class CodexCliProvider(AgentProviderBase):
     """
-    Runs the local Codex CLI inside an isolated task repository.
+    Runs the Codex CLI runtime inside an isolated task repository.
     """
-
-    AUTH_CHECK_TIMEOUT_SECONDS = 5
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -187,11 +186,9 @@ class CodexCliProvider(AgentProviderBase):
         change_scope: str = "only_selected_file",
     ) -> AgentRunResult:
         if not self.is_ready(self.settings):
-            return MockProvider().run(
-                repo_path=repo_path,
-                instruction=instruction,
-                target_file=target_file,
-                change_scope=change_scope,
+            return AgentRunResult(
+                success=False,
+                message="Codex CLI is not ready. Connect Codex before launching a Codex task.",
             )
 
         safe_repo_path = self._validate_repo_path(repo_path)
@@ -256,7 +253,6 @@ class CodexCliProvider(AgentProviderBase):
         return (
             settings.codex_enabled
             and cls.cli_available(settings)
-            and cls.is_authenticated(settings)
         )
 
     @classmethod
@@ -267,32 +263,6 @@ class CodexCliProvider(AgentProviderBase):
             return False
 
         return bool(args and shutil.which(args[0]))
-
-    @classmethod
-    def is_authenticated(cls, settings: Settings) -> bool:
-        if settings.openai_api_key:
-            return True
-
-        try:
-            command = shlex.split(settings.codex_cli_command)
-        except ValueError:
-            return False
-
-        if not command or not shutil.which(command[0]):
-            return False
-
-        try:
-            completed = subprocess.run(
-                [*command, "auth", "status"],
-                capture_output=True,
-                text=True,
-                timeout=cls.AUTH_CHECK_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-
-        return completed.returncode == 0
 
     def _command_args(self, prompt: str) -> list[str]:
         try:
@@ -308,8 +278,6 @@ class CodexCliProvider(AgentProviderBase):
             "exec",
             "--sandbox",
             "workspace-write",
-            "--ask-for-approval",
-            "never",
             prompt,
         ]
 
@@ -384,13 +352,16 @@ def get_agent_runner(provider: AgentProvider, settings: Settings) -> AgentProvid
     if (
         provider == AgentProvider.codex
         and CodexCliProvider.is_ready(settings)
-        and "codex" in AgentProviderConnectionStore(settings).connected_auth_modes()
+        and AgentProviderConnectionStore(settings).connected_auth_modes().get("codex")
+        in CODEX_CONNECTED_AUTH_MODES
     ):
         return CodexCliProvider(settings)
 
+    if provider == AgentProvider.codex:
+        raise AgentRunnerError("Codex is disconnected. Connect Codex before launching a Codex task.")
+
     if provider in {
         AgentProvider.mock,
-        AgentProvider.codex,
         AgentProvider.claude,
         AgentProvider.ollama,
         AgentProvider.local_model,

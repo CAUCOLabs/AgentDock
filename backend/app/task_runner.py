@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import logging
 
 from app.agent_providers import AgentProviderError
 from app.agent_runner import AgentRunnerError, get_agent_runner
@@ -7,6 +8,8 @@ from app.diff_service import DiffService, DiffServiceError
 from app.github_client import GitHubClient, GitHubClientError
 from app.models import AgentProvider, ChangedFile
 from app.workspace import WorkspaceError, WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 
 class TaskRunnerError(Exception):
@@ -18,9 +21,13 @@ class TaskRunnerError(Exception):
         self,
         message: str,
         log_messages: list[tuple[str, str]] | None = None,
+        error_type: str | None = None,
+        provider: AgentProvider | str | None = None,
     ) -> None:
         super().__init__(message)
         self.log_messages = log_messages or []
+        self.error_type = error_type or self.__class__.__name__
+        self.provider = provider.value if isinstance(provider, AgentProvider) else provider
 
 
 @dataclass
@@ -96,6 +103,8 @@ class TaskRunner:
                 raise TaskRunnerError(
                     agent_result.message,
                     log_messages=agent_result.log_messages(),
+                    error_type="ProviderExecutionError",
+                    provider=agent,
                 )
 
             diff_service = DiffService(repo_path)
@@ -107,6 +116,8 @@ class TaskRunner:
                 raise TaskRunnerError(
                     "Agent completed but produced no changes.",
                     log_messages=agent_result.log_messages(),
+                    error_type="ProviderNoChangesError",
+                    provider=agent,
                 )
 
             return TaskRunResult(
@@ -123,7 +134,36 @@ class TaskRunner:
             AgentRunnerError,
             DiffServiceError,
         ) as exc:
-            raise TaskRunnerError(str(exc)) from exc
+            logger.exception(
+                "Task runner failed for task_id=%s provider=%s",
+                task_id,
+                agent.value,
+            )
+            raise TaskRunnerError(
+                str(exc),
+                log_messages=[("error", f"Task runner error: {exc}")],
+                error_type=exc.__class__.__name__,
+                provider=agent,
+            ) from exc
+        except TaskRunnerError:
+            logger.exception(
+                "Task runner failed for task_id=%s provider=%s",
+                task_id,
+                agent.value,
+            )
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Unexpected task runner failure for task_id=%s provider=%s",
+                task_id,
+                agent.value,
+            )
+            raise TaskRunnerError(
+                str(exc),
+                log_messages=[("error", f"Unexpected task runner error: {exc}")],
+                error_type=exc.__class__.__name__,
+                provider=agent,
+            ) from exc
 
     def cleanup_task_workspace(self, task_id: str) -> None:
         """

@@ -3,6 +3,8 @@ export type TaskStatus =
   | "running"
   | "waiting_for_approval"
   | "approved"
+  | "committed"
+  | "pushed"
   | "rejected"
   | "completed"
   | "failed"
@@ -24,10 +26,19 @@ export type ProviderStatus =
   | "local_required";
 export type ProviderConnectionStatus =
   | "connected"
+  | "connecting"
   | "disconnected"
   | "not_configured"
   | "coming_soon";
-export type ProviderReadiness = "ready" | "unavailable" | "not_configured";
+export type ProviderReadiness = "ready" | "auth_required" | "unavailable" | "not_configured";
+export type ProviderPrimaryStatus =
+  | "connected"
+  | "connecting"
+  | "active"
+  | "disconnected"
+  | "ready"
+  | "unavailable"
+  | "not_configured";
 
 export type AgentProviderStatus = {
   id: AgentProvider | "development";
@@ -44,9 +55,31 @@ export type AgentProviderMetadata = {
   status: ProviderConnectionStatus;
   connection: ProviderConnectionStatus;
   readiness: ProviderReadiness;
+  primary_status: ProviderPrimaryStatus;
   description: string;
   supports_chatgpt_login: boolean;
   supports_api_key: boolean;
+};
+
+export type AgentProviderAuthFlowResponse = {
+  provider_id: AgentProvider;
+  status: "auth_required" | "waiting_for_auth";
+  message: string;
+  command?: string | null;
+  fallback_command?: string | null;
+  auth_url?: string | null;
+  verification_url?: string | null;
+  device_code?: string | null;
+  user_code?: string | null;
+  instructions: string[];
+  metadata: AgentProviderMetadata;
+};
+
+export type AgentProviderVerificationResponse = {
+  provider_id: AgentProvider;
+  connected: boolean;
+  message: string;
+  metadata: AgentProviderMetadata;
 };
 
 export type ChangedFile = {
