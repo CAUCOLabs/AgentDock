@@ -17,7 +17,9 @@ import {
 import {
   CheckCircle2,
   CircleAlert,
+  ExternalLink,
   GitBranch,
+  GitPullRequest,
   RefreshCw,
   Send,
   Trash2,
@@ -29,6 +31,7 @@ import {
   approveTask,
   connectAgentProvider,
   connectAgentProviderApiKey,
+  createPullRequest,
   createTask,
   deleteTask,
   disconnectAgentProvider,
@@ -107,6 +110,21 @@ function shortRepoName(repoUrl: string) {
   const trimmed = repoUrl.replace(/\/$/, "");
   const name = trimmed.split("/").slice(-2).join("/");
   return name.replace(/\.git$/, "") || repoUrl;
+}
+
+function buildGitHubBranchUrl(repoUrl: string, branch: string) {
+  try {
+    const url = new URL(repoUrl);
+    if (url.hostname !== "github.com") return null;
+
+    const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, "").split("/");
+    if (!owner || !repo) return null;
+
+    const encodedBranch = encodeURIComponent(branch).replaceAll("%2F", "/");
+    return `https://github.com/${owner}/${repo}/tree/${encodedBranch}`;
+  } catch {
+    return null;
+  }
 }
 
 function shortSha(sha?: string | null) {
@@ -283,6 +301,7 @@ function statusTone(status: TaskStatus) {
     case "approved":
     case "committed":
     case "pushed":
+    case "pull_request_opened":
       return styles.statusSuccess;
     case "waiting_for_approval":
       return styles.statusWarning;
@@ -370,6 +389,17 @@ export default function App() {
   );
   const showScopeWarning =
     selectedTask?.change_scope === "only_selected_file" && outsideTargetFiles.length > 0;
+  const pushedBranchName =
+    selectedTask?.working_branch ?? selectedTask?.remote_branch?.replace(/^origin\//, "");
+  const pushedBranchUrl =
+    selectedTask?.branch_url ??
+    (selectedTask && pushedBranchName
+      ? buildGitHubBranchUrl(selectedTask.repo_url, pushedBranchName)
+      : null);
+  const canCreatePullRequest =
+    selectedTask?.status === "pushed" && Boolean(workspace?.pr_creation_enabled);
+  const prCreationDisabled =
+    selectedTask?.status === "pushed" && workspace?.pr_creation_enabled === false;
   const filteredRepoFiles = useMemo(
     () =>
       repoFiles
@@ -676,6 +706,26 @@ export default function App() {
       await loadTaskDetail(selectedTask.task_id);
     } catch (pushError) {
       setError(pushError instanceof Error ? pushError.message : "Unable to push task.");
+      await refreshTasks();
+      await loadTaskDetail(selectedTask.task_id);
+    } finally {
+      setIsActing(false);
+    }
+  }
+
+  async function handleCreatePullRequest() {
+    if (!selectedTask) {
+      return;
+    }
+
+    setIsActing(true);
+    setError(null);
+    try {
+      await createPullRequest(selectedTask.task_id);
+      await refreshTasks();
+      await loadTaskDetail(selectedTask.task_id);
+    } catch (prError) {
+      setError(prError instanceof Error ? prError.message : "Unable to create pull request.");
       await refreshTasks();
       await loadTaskDetail(selectedTask.task_id);
     } finally {
@@ -1481,6 +1531,33 @@ export default function App() {
                     tone="approve"
                   />
                 ) : null}
+                {selectedTask.status === "pushed" && pushedBranchUrl ? (
+                  <ActionButton
+                    label="Open Branch"
+                    icon={<ExternalLink size={18} color="#031014" />}
+                    disabled={false}
+                    onPress={() => void Linking.openURL(pushedBranchUrl)}
+                    tone="approve"
+                  />
+                ) : null}
+                {canCreatePullRequest ? (
+                  <ActionButton
+                    label="Create Pull Request"
+                    icon={<GitPullRequest size={18} color="#031014" />}
+                    disabled={isActing}
+                    onPress={handleCreatePullRequest}
+                    tone="approve"
+                  />
+                ) : null}
+                {selectedTask.status === "pull_request_opened" && selectedTask.pr_url ? (
+                  <ActionButton
+                    label="Open Pull Request"
+                    icon={<ExternalLink size={18} color="#031014" />}
+                    disabled={false}
+                    onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                    tone="approve"
+                  />
+                ) : null}
                 <ActionButton
                   label="Delete"
                   icon={<Trash2 size={18} color="#ffd4d8" />}
@@ -1499,10 +1576,30 @@ export default function App() {
                 </Text>
               ) : null}
               {selectedTask.status === "pushed" ? (
-                <Text style={styles.successText}>
-                  Pushed {selectedTask.remote_branch ?? "remote branch"}
-                  {selectedTask.pushed_at ? ` at ${formatDate(selectedTask.pushed_at)}` : ""}.
-                </Text>
+                <View style={styles.detailStack}>
+                  <Text style={styles.successText}>
+                    Pushed {pushedBranchName ?? selectedTask.remote_branch ?? "remote branch"}
+                    {selectedTask.pushed_at ? ` at ${formatDate(selectedTask.pushed_at)}` : ""}.
+                  </Text>
+                  {prCreationDisabled ? (
+                    <Text style={styles.emptyText}>
+                      Pull request creation is disabled because ALLOW_PR_CREATION=false.
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+              {selectedTask.status === "pull_request_opened" ? (
+                <View style={styles.detailStack}>
+                  <Text style={styles.successText}>
+                    Pull request #{selectedTask.pr_number ?? "opened"}
+                    {selectedTask.pr_state ? ` is ${selectedTask.pr_state}` : ""}.
+                  </Text>
+                  {pushedBranchUrl ? (
+                    <Pressable onPress={() => void Linking.openURL(pushedBranchUrl)}>
+                      <Text style={styles.linkText}>View pushed branch</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : null}
             </View>
           ) : (
@@ -1529,7 +1626,10 @@ export default function App() {
                   <InfoRow label="Change scope" value={(selectedTask.change_scope ?? "only_selected_file").replaceAll("_", " ")} />
                   <InfoRow label="Commit sha" value={shortSha(selectedTask.commit_sha ?? workspace?.commit_sha)} />
                   <InfoRow label="Pushed" value={selectedTask.pushed ? "Yes" : "No"} />
+                  <InfoRow label="Branch URL" value={selectedTask.branch_url ?? "None"} link={selectedTask.branch_url} />
                   <InfoRow label="PR URL" value={selectedTask.pr_url ?? "None"} link={selectedTask.pr_url} />
+                  <InfoRow label="PR number" value={selectedTask.pr_number ? `#${selectedTask.pr_number}` : "None"} />
+                  <InfoRow label="PR state" value={selectedTask.pr_state ?? "None"} />
                 </View>
               ) : (
                 <Text style={styles.emptyText}>Select a task to inspect metadata.</Text>
@@ -1552,6 +1652,8 @@ export default function App() {
                   <InfoRow label="Pushed at" value={workspace.pushed_at ? formatDate(workspace.pushed_at) : "None"} />
                   <InfoRow label="Last push" value={workspace.last_push_result ?? "None"} />
                   <InfoRow label="PRs" value={workspace.pr_creation_enabled ? "Enabled" : "Disabled"} />
+                  <InfoRow label="PR number" value={workspace.pr_number ? `#${workspace.pr_number}` : "None"} />
+                  <InfoRow label="PR state" value={workspace.pr_state ?? "None"} />
                   <InfoRow label="Dirty" value={workspace.is_dirty ? "Yes" : "No"} />
                   <InfoRow label="Untracked" value={workspace.has_untracked_files ? "Yes" : "No"} />
                   <InfoRow label="Path" value={workspace.repo_path} />

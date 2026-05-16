@@ -48,6 +48,7 @@ from app.models import (
     TaskDeleteResponse,
     TaskDiffResponse,
     TaskLogsResponse,
+    TaskPullRequestResponse,
     TaskStatus,
     TaskSummary,
     WorkspaceStatusResponse,
@@ -979,7 +980,10 @@ def get_workspace_status(
         pushed_at=task.pushed_at,
         remote_branch=task.remote_branch,
         last_push_result=task.last_push_result,
+        branch_url=task.branch_url,
         pr_url=task.pr_url,
+        pr_number=task.pr_number,
+        pr_state=task.pr_state,
     )
     task_store.save_workspace_snapshot(
         task_id=task_id,
@@ -1000,6 +1004,8 @@ def get_workspace_status(
         remote_branch=response.remote_branch,
         last_push_result=response.last_push_result,
         pr_url=response.pr_url,
+        pr_number=response.pr_number,
+        pr_state=response.pr_state,
     )
 
     return response
@@ -1068,6 +1074,8 @@ async def approve_or_reject_task(
                 remote_branch=task.remote_branch,
                 last_push_result=task.last_push_result,
                 pr_url=task.pr_url,
+                pr_number=task.pr_number,
+                pr_state=task.pr_state,
             )
         except (DiffServiceError, GitHubClientError, WorkspaceError) as exc:
             task.status = TaskStatus.failed
@@ -1120,6 +1128,8 @@ async def approve_or_reject_task(
     task.remote_branch = None
     task.last_push_result = "Push not attempted."
     task.pr_url = None
+    task.pr_number = None
+    task.pr_state = None
     task.error = None
     task.updated_at = now
     task.completed_at = now
@@ -1146,6 +1156,8 @@ async def approve_or_reject_task(
             remote_branch=None,
             last_push_result=task.last_push_result,
             pr_url=None,
+            pr_number=None,
+            pr_state=None,
         )
     except DiffServiceError as exc:
         task_store.append_log(
@@ -1311,6 +1323,8 @@ async def push_committed_task(
             remote_branch=task.remote_branch,
             last_push_result=task.last_push_result,
             pr_url=task.pr_url,
+            pr_number=task.pr_number,
+            pr_state=task.pr_state,
         )
     except DiffServiceError as exc:
         task_store.append_log(
@@ -1319,33 +1333,92 @@ async def push_committed_task(
             f"Workspace snapshot failed after push: {exc}",
         )
 
-    if not settings.allow_pr_creation:
-        task_store.save_task(task)
-        task_store.append_log(task_id, "info", "PR skipped because disabled.")
+    task_store.save_task(task)
 
-        return TaskApprovalResponse(
-            task_id=task_id,
-            status=task.status,
-            message=(
-                "Task pushed branch "
-                f"{task.working_branch}: {task.commit_sha}. PR creation is disabled."
+    return TaskApprovalResponse(
+        task_id=task_id,
+        status=task.status,
+        message=(
+            "Task pushed branch "
+            f"{task.working_branch}: {task.commit_sha}."
+        ),
+    )
+
+
+@app.post("/tasks/{task_id}/pull-request", response_model=TaskPullRequestResponse)
+async def create_task_pull_request(
+    task_id: str,
+    settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskPullRequestResponse:
+    """
+    Create a pull request from a pushed AgentDock task branch.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    if task.status != TaskStatus.pushed or not task.pushed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Task {task_id} is not pushed and ready for PR creation. "
+                f"Current status: {task.status}."
             ),
         )
 
+    if not settings.allow_pr_creation:
+        message = "PR creation is disabled. Set ALLOW_PR_CREATION=true to enable it."
+        task.error = message
+        task.updated_at = datetime.now(timezone.utc)
+        task_store.save_task(task)
+        task_store.append_log(task_id, "warning", message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "task_id": task_id,
+                "error": message,
+            },
+        )
+
+    if not task.working_branch:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} has no pushed branch.",
+        )
+
+    if not task.commit_sha:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} has no commit SHA for PR metadata.",
+        )
+
+    github_client = GitHubClient(settings)
+    body = (
+        "Automated AgentDock task.\n\n"
+        f"Task prompt:\n{task.instruction}\n\n"
+        f"Target file:\n{task.target_file or 'None'}\n\n"
+        f"Agent provider:\n{task.agent.value}\n\n"
+        f"Commit SHA:\n{task.commit_sha}"
+    )
+
     try:
-        pr_url = await github_client.create_pull_request(
+        pr_result = await github_client.create_pull_request(
             repo_url=task.repo_url,
             head_branch=task.working_branch,
             base_branch=task.base_branch,
             title=f"AgentDock task: {task_id}",
-            body=(
-                "Automated AgentDock task.\n\n"
-                f"Instruction:\n{task.instruction}\n\n"
-                f"Commit:\n{task.commit_sha}"
-            ),
+            body=body,
         )
     except GitHubClientError as exc:
+        task.status = TaskStatus.pushed
         task.error = str(exc)
+        task.updated_at = datetime.now(timezone.utc)
         task_store.save_task(task)
         task_store.append_log(task_id, "error", f"PR creation failed: {exc}")
 
@@ -1357,15 +1430,20 @@ async def push_committed_task(
             },
         ) from exc
 
-    task.pr_url = pr_url
+    task.status = TaskStatus.pull_request_opened
+    task.pr_url = pr_result.url
+    task.pr_number = pr_result.number
+    task.pr_state = pr_result.state
+    task.error = None
+    task.updated_at = datetime.now(timezone.utc)
     task_store.save_task(task)
-    task_store.append_log(task_id, "info", f"PR created: {pr_url}")
+    task_store.append_log(task_id, "info", f"PR created: {pr_result.url}")
 
-    return TaskApprovalResponse(
+    return TaskPullRequestResponse(
         task_id=task_id,
         status=task.status,
-        message=(
-            "Task pushed branch "
-            f"{task.working_branch}, and opened PR: {pr_url}"
-        ),
+        message=f"Pull request #{pr_result.number} opened: {pr_result.url}",
+        pr_url=pr_result.url,
+        pr_number=pr_result.number,
+        pr_state=pr_result.state,
     )

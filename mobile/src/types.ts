@@ -5,6 +5,7 @@ export type TaskStatus =
   | "approved"
   | "committed"
   | "pushed"
+  | "pull_request_opened"
   | "rejected"
   | "completed"
   | "failed"
@@ -105,7 +106,10 @@ export type TaskSummary = {
   pushed_at?: string | null;
   remote_branch?: string | null;
   last_push_result?: string | null;
+  branch_url?: string | null;
   pr_url: string | null;
+  pr_number?: number | null;
+  pr_state?: string | null;
   created_at: string;
   updated_at: string;
   error: string | null;
@@ -136,7 +140,10 @@ export type WorkspaceStatusResponse = {
   pushed_at?: string | null;
   remote_branch?: string | null;
   last_push_result?: string | null;
+  branch_url?: string | null;
   pr_url: string | null;
+  pr_number?: number | null;
+  pr_state?: string | null;
 };
 
 export type TaskLogEvent = {
@@ -196,6 +203,15 @@ export type TaskApprovalResponse = {
   task_id: string;
   status: TaskStatus;
   message: string;
+};
+
+export type TaskPullRequestResponse = {
+  task_id: string;
+  status: TaskStatus;
+  message: string;
+  pr_url: string;
+  pr_number: number;
+  pr_state: string;
 };
 
 export type GitHubAuthStartResponse = {

@@ -62,6 +62,17 @@ class GitHubClientTests(unittest.TestCase):
             self.assertIsNone(remote_info.remote_url)
             self.assertEqual(remote_info.default_branch, "main")
 
+    def test_branch_url_generation_uses_owner_repo_and_branch(self) -> None:
+        branch_url = GitHubClient(Settings()).build_branch_url(
+            "https://github.com/acme/demo.git",
+            "agentdock/task_123",
+        )
+
+        self.assertEqual(
+            branch_url,
+            "https://github.com/acme/demo/tree/agentdock/task_123",
+        )
+
     def _create_repo(self, repo_path: Path) -> Repo:
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path)

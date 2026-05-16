@@ -108,6 +108,8 @@ class TaskStore:
                         pushed_at,
                         remote_branch,
                         last_push_result,
+                        pr_number,
+                        pr_state,
                         pr_url,
                         created_at,
                         updated_at,
@@ -116,7 +118,7 @@ class TaskStore:
                         deleted_at,
                         error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_url = excluded.repo_url,
                         repo_owner = excluded.repo_owner,
@@ -135,6 +137,8 @@ class TaskStore:
                         pushed_at = excluded.pushed_at,
                         remote_branch = excluded.remote_branch,
                         last_push_result = excluded.last_push_result,
+                        pr_number = excluded.pr_number,
+                        pr_state = excluded.pr_state,
                         pr_url = excluded.pr_url,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
@@ -162,6 +166,8 @@ class TaskStore:
                         self._datetime_to_text(task.pushed_at),
                         task.remote_branch,
                         task.last_push_result,
+                        task.pr_number,
+                        task.pr_state,
                         task.pr_url,
                         self._datetime_to_text(task.created_at),
                         self._datetime_to_text(task.updated_at),
@@ -308,6 +314,8 @@ class TaskStore:
         remote_branch: str | None = None,
         last_push_result: str | None = None,
         pr_url: str | None = None,
+        pr_number: int | None = None,
+        pr_state: str | None = None,
     ) -> None:
         """
         Persist the latest workspace status for audit after restarts.
@@ -336,9 +344,11 @@ class TaskStore:
                         remote_branch,
                         last_push_result,
                         pr_url,
+                        pr_number,
+                        pr_state,
                         captured_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_path = excluded.repo_path,
                         branch = excluded.branch,
@@ -357,6 +367,8 @@ class TaskStore:
                         remote_branch = excluded.remote_branch,
                         last_push_result = excluded.last_push_result,
                         pr_url = excluded.pr_url,
+                        pr_number = excluded.pr_number,
+                        pr_state = excluded.pr_state,
                         captured_at = excluded.captured_at
                     """,
                     (
@@ -378,6 +390,8 @@ class TaskStore:
                         remote_branch,
                         last_push_result,
                         pr_url,
+                        pr_number,
+                        pr_state,
                         self._datetime_to_text(datetime.now(timezone.utc)),
                     ),
                 )
@@ -424,7 +438,13 @@ class TaskStore:
             pushed_at=snapshot["pushed_at"],
             remote_branch=snapshot["remote_branch"],
             last_push_result=snapshot["last_push_result"],
+            branch_url=self._branch_url_from_parts(
+                self._repo_owner_and_name_from_url(snapshot["remote_url"] or ""),
+                snapshot["branch"],
+            ),
             pr_url=snapshot["pr_url"],
+            pr_number=snapshot["pr_number"],
+            pr_state=snapshot["pr_state"],
         )
 
     def _initialize_database(self) -> None:
@@ -454,6 +474,8 @@ class TaskStore:
                                 pushed_at TEXT,
                                 remote_branch TEXT,
                                 last_push_result TEXT,
+                                pr_number INTEGER,
+                                pr_state TEXT,
                                 pr_url TEXT,
                                 created_at TEXT NOT NULL,
                                 updated_at TEXT NOT NULL,
@@ -504,6 +526,8 @@ class TaskStore:
                                 remote_branch TEXT,
                                 last_push_result TEXT,
                                 pr_url TEXT,
+                                pr_number INTEGER,
+                                pr_state TEXT,
                                 captured_at TEXT NOT NULL,
                                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
                                     ON DELETE CASCADE
@@ -655,7 +679,13 @@ class TaskStore:
             "pushed_at": row["pushed_at"],
             "remote_branch": row["remote_branch"],
             "last_push_result": row["last_push_result"],
+            "branch_url": self._branch_url_from_parts(
+                (row["repo_owner"], row["repo_name"]),
+                row["working_branch"],
+            ),
             "pr_url": row["pr_url"],
+            "pr_number": row["pr_number"],
+            "pr_state": row["pr_state"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "completed_at": row["completed_at"],
@@ -694,6 +724,8 @@ class TaskStore:
             "remote_branch": "TEXT",
             "last_push_result": "TEXT",
             "target_file": "TEXT",
+            "pr_number": "INTEGER",
+            "pr_state": "TEXT",
         }
 
         for column_name, column_type in desired_columns.items():
@@ -721,6 +753,8 @@ class TaskStore:
             "remote_branch": "TEXT",
             "last_push_result": "TEXT",
             "pr_url": "TEXT",
+            "pr_number": "INTEGER",
+            "pr_state": "TEXT",
             "completed_at": "TEXT",
             "rejected_at": "TEXT",
             "deleted_at": "TEXT",
@@ -749,6 +783,27 @@ class TaskStore:
             return None, Path(task.repo_url).name
 
         return task.repo_owner, task.repo_name
+
+    def _repo_owner_and_name_from_url(self, repo_url: str) -> tuple[str | None, str | None]:
+        parsed = urlparse(repo_url)
+        path_parts = parsed.path.strip("/").split("/")
+
+        if len(path_parts) >= 2 and parsed.hostname == "github.com":
+            return path_parts[0], path_parts[1].removesuffix(".git")
+
+        return None, None
+
+    def _branch_url_from_parts(
+        self,
+        repo_parts: tuple[str | None, str | None],
+        branch: str | None,
+    ) -> str | None:
+        owner, repo_name = repo_parts
+
+        if not owner or not repo_name or not branch:
+            return None
+
+        return f"https://github.com/{owner}/{repo_name}/tree/{branch}"
 
     def _changed_files_json(self, changed_files: list[ChangedFile]) -> str:
         return json.dumps(

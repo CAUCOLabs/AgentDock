@@ -6,8 +6,10 @@ import {
   Bot,
   CheckCircle2,
   Code2,
+  ExternalLink,
   FileText,
   GitBranch,
+  GitPullRequest,
   RefreshCw,
   Rocket,
   ShieldCheck,
@@ -25,6 +27,7 @@ type TaskStatus =
   | 'approved'
   | 'committed'
   | 'pushed'
+  | 'pull_request_opened'
   | 'rejected'
   | 'completed'
   | 'failed'
@@ -177,7 +180,10 @@ type TaskSummary = {
   pushed_at?: string | null
   remote_branch?: string | null
   last_push_result?: string | null
+  branch_url?: string | null
   pr_url: string | null
+  pr_number?: number | null
+  pr_state?: string | null
   created_at: string
   updated_at: string
   error: string | null
@@ -193,6 +199,15 @@ type TaskApprovalResponse = {
   task_id: string
   status: TaskStatus
   message: string
+}
+
+type TaskPullRequestResponse = {
+  task_id: string
+  status: TaskStatus
+  message: string
+  pr_url: string
+  pr_number: number
+  pr_state: string
 }
 
 type TaskDiffResponse = {
@@ -220,7 +235,10 @@ type WorkspaceStatusResponse = {
   pushed_at?: string | null
   remote_branch?: string | null
   last_push_result?: string | null
+  branch_url?: string | null
   pr_url: string | null
+  pr_number?: number | null
+  pr_state?: string | null
 }
 
 type TaskLogEvent = {
@@ -921,6 +939,30 @@ function App() {
     }
   }
 
+  async function createPullRequest() {
+    if (!selectedTaskId) return
+
+    setNotice(null)
+    setError(null)
+
+    try {
+      const result = await request<TaskPullRequestResponse>(
+        `/tasks/${selectedTaskId}/pull-request`,
+        {
+          method: 'POST',
+        },
+      )
+
+      setNotice(result.message)
+      await loadTasks()
+      await loadTaskBundle(selectedTaskId)
+    } catch (err) {
+      setError(formatError(err))
+      await loadTasks()
+      await loadTaskBundle(selectedTaskId)
+    }
+  }
+
   async function deleteTask() {
     if (!selectedTaskId) return
 
@@ -953,6 +995,17 @@ function App() {
       instruction: prompt,
     }))
   }
+
+  const pushedBranchName = activeTask?.working_branch ?? activeTask?.remote_branch?.replace(/^origin\//, '')
+  const pushedBranchUrl =
+    activeTask?.branch_url ??
+    (activeTask && pushedBranchName
+      ? buildGitHubBranchUrl(activeTask.repo_url, pushedBranchName)
+      : null)
+  const canCreatePullRequest =
+    activeTask?.status === 'pushed' && Boolean(workspaceStatus?.pr_creation_enabled)
+  const prCreationDisabled =
+    activeTask?.status === 'pushed' && workspaceStatus?.pr_creation_enabled === false
 
   return (
     <main className="app-shell">
@@ -1763,6 +1816,37 @@ function App() {
                       Push
                     </button>
                   )}
+                {activeTask.status === 'pushed' && pushedBranchUrl && (
+                  <a
+                    className="action-link secondary"
+                    href={pushedBranchUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink size={16} />
+                    Open Branch
+                  </a>
+                )}
+                {canCreatePullRequest && (
+                  <button
+                    type="button"
+                    onClick={() => void createPullRequest()}
+                  >
+                    <GitPullRequest size={16} />
+                    Create Pull Request
+                  </button>
+                )}
+                {activeTask.status === 'pull_request_opened' && activeTask.pr_url && (
+                  <a
+                    className="action-link secondary"
+                    href={activeTask.pr_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink size={16} />
+                    Open Pull Request
+                  </a>
+                )}
                 <button
                   type="button"
                   className="secondary danger"
@@ -1782,10 +1866,38 @@ function App() {
                 </p>
               )}
               {activeTask.status === 'pushed' && (
-                <p className="console-ok">
-                  Pushed {activeTask.remote_branch ?? 'remote branch'}
-                  {activeTask.pushed_at ? ` at ${formatTimestamp(activeTask.pushed_at)}` : ''}.
-                </p>
+                <div className="push-result-panel">
+                  <p className="console-ok">
+                    Pushed {pushedBranchName ?? activeTask.remote_branch ?? 'remote branch'}
+                    {activeTask.pushed_at ? ` at ${formatTimestamp(activeTask.pushed_at)}` : ''}.
+                  </p>
+                  {prCreationDisabled && (
+                    <p className="empty-state">
+                      Pull request creation is disabled because ALLOW_PR_CREATION=false.
+                    </p>
+                  )}
+                  {activeTask.error && (
+                    <p className="error">{activeTask.error}</p>
+                  )}
+                </div>
+              )}
+              {activeTask.status === 'pull_request_opened' && (
+                <div className="push-result-panel">
+                  <p className="console-ok">
+                    Pull request #{activeTask.pr_number ?? 'opened'}
+                    {activeTask.pr_state ? ` is ${activeTask.pr_state}` : ''}.
+                  </p>
+                  {pushedBranchUrl && (
+                    <a
+                      className="text-link"
+                      href={pushedBranchUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View pushed branch
+                    </a>
+                  )}
+                </div>
               )}
             </>
           )}
@@ -1828,8 +1940,28 @@ function App() {
                     <dd>{activeTask.pushed ? 'Yes' : 'No'}</dd>
                   </div>
                   <div>
+                    <dt>Branch URL</dt>
+                    <dd>
+                      {activeTask.branch_url ? (
+                        <a href={activeTask.branch_url} target="_blank" rel="noreferrer">
+                          {activeTask.branch_url}
+                        </a>
+                      ) : (
+                        'None'
+                      )}
+                    </dd>
+                  </div>
+                  <div>
                     <dt>PR URL</dt>
                     <dd>{activeTask.pr_url ?? 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>PR number</dt>
+                    <dd>{activeTask.pr_number ? `#${activeTask.pr_number}` : 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>PR state</dt>
+                    <dd>{activeTask.pr_state ?? 'None'}</dd>
                   </div>
                 </dl>
               ) : (
@@ -1905,6 +2037,14 @@ function App() {
                     <dd>{workspaceStatus.pr_creation_enabled ? 'Enabled' : 'Disabled'}</dd>
                   </div>
                   <div>
+                    <dt>PR number</dt>
+                    <dd>{workspaceStatus.pr_number ? `#${workspaceStatus.pr_number}` : 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>PR state</dt>
+                    <dd>{workspaceStatus.pr_state ?? 'None'}</dd>
+                  </div>
+                  <div>
                     <dt>Dirty</dt>
                     <dd>{workspaceStatus.is_dirty ? 'Yes' : 'No'}</dd>
                   </div>
@@ -1958,6 +2098,21 @@ function shortRepoName(repoUrl: string) {
     return url.pathname.replace(/^\/|\.git$/g, '') || repoUrl
   } catch {
     return repoUrl
+  }
+}
+
+function buildGitHubBranchUrl(repoUrl: string, branch: string) {
+  try {
+    const url = new URL(repoUrl)
+    if (url.hostname !== 'github.com') return null
+
+    const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/')
+    if (!owner || !repo) return null
+
+    const encodedBranch = encodeURIComponent(branch).replaceAll('%2F', '/')
+    return `https://github.com/${owner}/${repo}/tree/${encodedBranch}`
+  } catch {
+    return null
   }
 }
 

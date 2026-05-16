@@ -2,11 +2,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from git import Repo
 
 from app.config import Settings, get_settings
+from app.github_client import GitHubClientError, GitPullRequestResult
 from app.main import app
 from app.models import AgentProvider, TaskStatus, TaskSummary
 from app.task_store import TaskStore
@@ -182,9 +184,115 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertIsNotNone(task.pushed_at)
             self.assertEqual(task.remote_branch, f"origin/{branch}")
             self.assertIn("Push completed", task.last_push_result or "")
+            self.assertEqual(task.branch_url, f"https://github.com/example/repo/tree/{branch}")
 
             remote_repo = Repo(remote_path)
             self.assertIn(branch, [head.name for head in remote_repo.heads])
+
+    def test_pr_disabled_keeps_pushed_task_with_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=False)
+            task_id = "task_prdisabled"
+            self._save_pushed_task(settings, task_id)
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 403)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pushed)
+            self.assertIn("ALLOW_PR_CREATION=true", task.error or "")
+
+    def test_pr_success_saves_url_number_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_prsuccess"
+            self._save_pushed_task(settings, task_id)
+
+            async def fake_create_pull_request(*args, **kwargs):
+                self.assertEqual(kwargs["title"], f"AgentDock task: {task_id}")
+                self.assertIn("Task prompt:", kwargs["body"])
+                self.assertIn("Target file:", kwargs["body"])
+                self.assertIn("Agent provider:", kwargs["body"])
+                self.assertIn("Commit SHA:", kwargs["body"])
+                return GitPullRequestResult(
+                    url="https://github.com/example/repo/pull/7",
+                    number=7,
+                    state="open",
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.create_pull_request",
+                    side_effect=fake_create_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "pull_request_opened")
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pull_request_opened)
+            self.assertEqual(task.pr_url, "https://github.com/example/repo/pull/7")
+            self.assertEqual(task.pr_number, 7)
+            self.assertEqual(task.pr_state, "open")
+
+    def test_pr_failure_keeps_pushed_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_prfail"
+            self._save_pushed_task(settings, task_id)
+
+            async def fake_create_pull_request(*args, **kwargs):
+                raise GitHubClientError("GitHub API denied the pull request.")
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.create_pull_request",
+                    side_effect=fake_create_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 500)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pushed)
+            self.assertTrue(task.pushed)
+            self.assertIsNone(task.pr_url)
+            self.assertIn("GitHub API denied", task.error or "")
+
+    def test_create_pr_only_available_after_pushed_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_notpushed"
+            store = self._save_waiting_task(settings, task_id)
+            task = store.get_task(task_id)
+            self.assertIsNotNone(task)
+            task.status = TaskStatus.committed
+            task.commit_sha = "abc123"
+            store.save_task(task)
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 409)
 
     def test_push_failure_keeps_committed_task_for_protected_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -329,12 +437,19 @@ class ApprovalWorkflowTests(unittest.TestCase):
         self.assertNotIn("Approve", web_app)
         self.assertNotIn("Approve", mobile_app)
 
-    def _settings(self, temp_path: Path, allow_push: bool = False) -> Settings:
+    def _settings(
+        self,
+        temp_path: Path,
+        allow_push: bool = False,
+        allow_pr_creation: bool = False,
+    ) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",
             LOGS_DIR=temp_path / "logs",
             AGENTDOCK_DB_PATH=temp_path / "data" / "agentdock.sqlite3",
             ALLOW_PUSH=allow_push,
+            ALLOW_PR_CREATION=allow_pr_creation,
+            GITHUB_TOKEN="test-token",
         )
 
     def _save_waiting_task(
@@ -356,6 +471,33 @@ class ApprovalWorkflowTests(unittest.TestCase):
                 agent=AgentProvider.mock,
                 status=TaskStatus.waiting_for_approval,
                 changed_files=[],
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return store
+
+    def _save_pushed_task(self, settings: Settings, task_id: str) -> TaskStore:
+        store = TaskStore(settings)
+        now = datetime.now(timezone.utc)
+        branch = f"agentdock/{task_id}"
+        store.save_task(
+            TaskSummary(
+                task_id=task_id,
+                repo_url="https://github.com/example/repo",
+                base_branch="main",
+                working_branch=branch,
+                workspace_path=str(settings.workspace_root / task_id / "repo"),
+                instruction="Modify the repository for testing.",
+                target_file="src/App.tsx",
+                agent=AgentProvider.mock,
+                status=TaskStatus.pushed,
+                changed_files=[],
+                commit_sha="abc123",
+                pushed=True,
+                pushed_at=now,
+                remote_branch=f"origin/{branch}",
+                last_push_result=f"Push completed for branch {branch}.",
                 created_at=now,
                 updated_at=now,
             )

@@ -6,6 +6,7 @@ import type {
   AgentProviderVerificationResponse,
   TaskApprovalRequest,
   TaskApprovalResponse,
+  TaskPullRequestResponse,
   TaskCreateRequest,
   TaskCreateResponse,
   TaskDiffResponse,
@@ -218,6 +219,12 @@ export function approveTask(taskId: string, payload: TaskApprovalRequest) {
 
 export function pushTask(taskId: string) {
   return request<TaskApprovalResponse>(`/tasks/${taskId}/push`, {
+    method: "POST",
+  });
+}
+
+export function createPullRequest(taskId: string) {
+  return request<TaskPullRequestResponse>(`/tasks/${taskId}/pull-request`, {
     method: "POST",
   });
 }

@@ -17,6 +17,7 @@ class TaskStatus(str, Enum):
     approved = "approved"
     committed = "committed"
     pushed = "pushed"
+    pull_request_opened = "pull_request_opened"
     rejected = "rejected"
     completed = "completed"
     failed = "failed"
@@ -258,7 +259,10 @@ class TaskSummary(BaseModel):
     pushed_at: datetime | None = None
     remote_branch: str | None = None
     last_push_result: str | None = None
+    branch_url: str | None = None
     pr_url: str | None = None
+    pr_number: int | None = None
+    pr_state: str | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -419,7 +423,10 @@ class WorkspaceStatusResponse(BaseModel):
     pushed_at: datetime | None = None
     remote_branch: str | None = None
     last_push_result: str | None = None
+    branch_url: str | None = None
     pr_url: str | None = None
+    pr_number: int | None = None
+    pr_state: str | None = None
 
 
 class TaskLogEvent(BaseModel):
@@ -471,6 +478,19 @@ class TaskApprovalResponse(BaseModel):
     task_id: str
     status: TaskStatus
     message: str
+
+
+class TaskPullRequestResponse(BaseModel):
+    """
+    Response returned after creating a pull request for a pushed task.
+    """
+
+    task_id: str
+    status: TaskStatus
+    message: str
+    pr_url: str
+    pr_number: int
+    pr_state: str
 
 
 class ErrorResponse(BaseModel):

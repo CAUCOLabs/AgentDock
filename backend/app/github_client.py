@@ -65,6 +65,17 @@ class GitPushResult:
         return messages
 
 
+@dataclass(frozen=True)
+class GitPullRequestResult:
+    """
+    Metadata returned after opening a GitHub pull request.
+    """
+
+    url: str
+    number: int
+    state: str
+
+
 class GitHubClient:
     """
     GitHub and Git operations used by AgentDock.
@@ -270,6 +281,14 @@ class GitHubClient:
             ),
         )
 
+    def build_branch_url(self, repo_url: str, branch: str) -> str:
+        """
+        Build the canonical GitHub web URL for a repository branch.
+        """
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+        return f"https://github.com/{owner}/{repo_name}/tree/{branch}"
+
     async def create_pull_request(
         self,
         repo_url: str,
@@ -277,7 +296,7 @@ class GitHubClient:
         base_branch: str,
         title: str,
         body: str,
-    ) -> str:
+    ) -> GitPullRequestResult:
         """
         Create a GitHub pull request and return its URL.
 
@@ -320,7 +339,11 @@ class GitHubClient:
             )
 
         data = response.json()
-        return str(data["html_url"])
+        return GitPullRequestResult(
+            url=str(data["html_url"]),
+            number=int(data["number"]),
+            state=str(data["state"]),
+        )
 
     def _build_authenticated_url(self, repo_url: str) -> str:
         """
