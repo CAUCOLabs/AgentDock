@@ -207,6 +207,38 @@ class LocalAgentRunnerTests(unittest.TestCase):
             self.assertIn("Leave all changes as working tree edits", prompt)
             self.assertIn("Do not commit, push", prompt)
 
+    def test_codex_cli_prompt_allows_whole_project_without_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            repo_path = workspace_root / "task_123" / "repo"
+            self._create_repo(repo_path)
+            settings = self._settings(
+                workspace_root,
+                codex_enabled=True,
+                openai_api_key="openai-key",
+            )
+            completed = subprocess.CompletedProcess(
+                args=["codex"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+            with (
+                patch("app.agent_runner.shutil.which", return_value="/usr/bin/codex"),
+                patch("app.agent_runner.subprocess.run", return_value=completed) as run,
+            ):
+                CodexCliProvider(settings).run(
+                    repo_path,
+                    "Create a REST API and models.",
+                    change_scope="whole_project",
+                )
+
+            prompt = run.call_args.args[0][-1]
+            self.assertIn("Selected target file: none", prompt)
+            self.assertIn("Change scope: whole_project", prompt)
+            self.assertIn("any relevant files across the repository", prompt)
+
     def test_codex_exec_command_uses_supported_cli_flags(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace_root = Path(temp_dir) / "workspaces"

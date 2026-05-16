@@ -166,6 +166,64 @@ class RepoBrowserTests(unittest.TestCase):
                 TaskStore(settings).get_diff(task_id),
             )
 
+    def test_whole_project_task_creation_allows_no_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir))
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    "/tasks",
+                    json={
+                        "repo_url": str(source_repo.working_tree_dir),
+                        "base_branch": "main",
+                        "instruction": "Create a project scaffold from the README.",
+                        "agent": "mock",
+                        "change_scope": "whole_project",
+                    },
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 201)
+            task_id = response.json()["task_id"]
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertIsNone(task.target_file)
+            self.assertEqual(task.change_scope.value, "whole_project")
+            self.assertIn("AGENTDOCK_TASK.md", TaskStore(settings).get_diff(task_id))
+            self.assertIn(
+                "Change scope selected: whole_project",
+                [event.message for event in TaskStore(settings).get_logs(task_id)],
+            )
+
+    def test_single_file_task_still_rejects_invalid_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_repo = self._create_repo(Path(temp_dir) / "source")
+            settings = self._settings(Path(temp_dir))
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(
+                    "/tasks",
+                    json={
+                        "repo_url": str(source_repo.working_tree_dir),
+                        "base_branch": "main",
+                        "instruction": "Update the selected component safely.",
+                        "agent": "mock",
+                        "target_file": "../secret.txt",
+                        "change_scope": "only_selected_file",
+                    },
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("Invalid file path", response.json()["detail"])
+
     def _settings(self, temp_path: Path) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",

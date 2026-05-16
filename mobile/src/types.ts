@@ -13,7 +13,7 @@ export type TaskStatus =
   | "cancelled";
 
 export type AgentProvider = string;
-export type ChangeScope = "only_selected_file" | "allow_related_files";
+export type ChangeScope = "only_selected_file" | "allow_related_files" | "whole_project";
 export type ProviderStatus =
   | "available"
   | "not_configured"

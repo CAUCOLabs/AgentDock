@@ -313,13 +313,23 @@ class CodexCliProvider(AgentProviderBase):
             if target_file
             else "Selected target file: none"
         )
-        scope_instruction = (
-            "Change scope: only_selected_file. Modify only the selected target "
-            "file. Do not create, edit, delete, format, or rename any other "
-            "file."
-            if change_scope == "only_selected_file"
-            else "Change scope: allow_related_files. Keep related file changes minimal and necessary."
-        )
+        if change_scope == "whole_project":
+            scope_instruction = (
+                "Change scope: whole_project. You may create, modify, and "
+                "organize any relevant files across the repository to complete "
+                "the task. Keep the diff coherent for review."
+            )
+        elif change_scope == "allow_related_files":
+            scope_instruction = (
+                "Change scope: allow_related_files. Keep related file changes "
+                "minimal and necessary."
+            )
+        else:
+            scope_instruction = (
+                "Change scope: only_selected_file. Modify only the selected target "
+                "file. Do not create, edit, delete, format, or rename any other "
+                "file."
+            )
 
         return (
             "You are running inside an AgentDock task workspace.\n"

@@ -155,13 +155,22 @@ class RepoBrowserService:
         target_file: str | None,
         change_scope: str = "only_selected_file",
     ) -> str:
-        scope_instruction = (
-            "Change scope: only modify the selected target file unless the task "
-            "is impossible without related changes. If other files are needed, "
-            "keep them minimal and explain why."
-            if change_scope == "only_selected_file"
-            else "Change scope: related files may be modified when they are needed for a coherent implementation."
-        )
+        if change_scope == "whole_project":
+            scope_instruction = (
+                "Change scope: whole project. Create, modify, and organize any "
+                "relevant files across the repository to complete the task."
+            )
+        elif change_scope == "allow_related_files":
+            scope_instruction = (
+                "Change scope: related files may be modified when they are "
+                "needed for a coherent implementation."
+            )
+        else:
+            scope_instruction = (
+                "Change scope: only modify the selected target file unless the task "
+                "is impossible without related changes. If other files are needed, "
+                "keep them minimal and explain why."
+            )
 
         if not target_file:
             return f"{scope_instruction}\n\nUser instruction:\n{instruction}"

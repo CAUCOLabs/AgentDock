@@ -35,7 +35,7 @@ type TaskStatus =
   | 'cancelled'
 
 type AgentProvider = string
-type ChangeScope = 'only_selected_file' | 'allow_related_files'
+type ChangeScope = 'only_selected_file' | 'allow_related_files' | 'whole_project'
 type ProviderConnectionStatus =
   | 'connected'
   | 'connecting'
@@ -302,6 +302,39 @@ const initialForm: CreateTaskForm = {
   targetFile: '',
   changeScope: 'only_selected_file',
 }
+
+const promptPlaceholderExamples = [
+  'Create project scaffold',
+  'Build desktop app structure',
+  'Implement authentication flow',
+  'Refactor backend architecture',
+  'Create REST API and models',
+]
+
+const scopeOptions: Array<{
+  value: ChangeScope
+  label: string
+  description: string
+  broad?: boolean
+}> = [
+  {
+    value: 'only_selected_file',
+    label: 'Single file',
+    description: 'Modify only the selected file.',
+  },
+  {
+    value: 'allow_related_files',
+    label: 'Related files',
+    description: 'Allow nearby modules, tests, configs, and related files to change.',
+  },
+  {
+    value: 'whole_project',
+    label: 'Whole project',
+    description:
+      'Codex can create, modify, and organize files across the repository to complete larger development tasks.',
+    broad: true,
+  },
+]
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: 'OpenAI Codex', value: 'codex' },
@@ -1553,7 +1586,12 @@ function App() {
                 <span>4</span>
                 <div>
                   <strong>Target file</strong>
-                  <small>{form.targetFile || 'Select a target file'}</small>
+                  <small>
+                    {form.targetFile ||
+                      (form.changeScope === 'whole_project'
+                        ? 'Optional context for whole-project tasks'
+                        : 'Select a target file')}
+                  </small>
                 </div>
                 <button
                   type="button"
@@ -1660,39 +1698,41 @@ function App() {
                 ))}
               </div>
               <div className="scope-options">
-                <label className={form.changeScope === 'only_selected_file' ? 'scope-option selected' : 'scope-option'}>
-                  <input
-                    type="radio"
-                    name="changeScope"
-                    checked={form.changeScope === 'only_selected_file'}
-                    onChange={() =>
-                      setForm({ ...form, changeScope: 'only_selected_file' })
-                    }
-                  />
-                  <span>Only selected file</span>
-                  <small>Safest default. Other files should only change if unavoidable.</small>
-                </label>
-                <label className={form.changeScope === 'allow_related_files' ? 'scope-option selected' : 'scope-option'}>
-                  <input
-                    type="radio"
-                    name="changeScope"
-                    checked={form.changeScope === 'allow_related_files'}
-                    onChange={() =>
-                      setForm({ ...form, changeScope: 'allow_related_files' })
-                    }
-                  />
-                  <span>Allow related files</span>
-                  <small>Use when tests, types, or neighboring modules may need edits.</small>
-                </label>
+                {scopeOptions.map((option) => (
+                  <label
+                    key={option.value}
+                    className={[
+                      'scope-option',
+                      form.changeScope === option.value ? 'selected' : '',
+                      option.broad ? 'broad' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    <input
+                      type="radio"
+                      name="changeScope"
+                      checked={form.changeScope === option.value}
+                      onChange={() =>
+                        setForm({ ...form, changeScope: option.value })
+                      }
+                    />
+                    <span>{option.label}</span>
+                    <small>{option.description}</small>
+                    {option.broad && (
+                      <em>
+                        Broader repository access. More files may appear in diff review.
+                      </em>
+                    )}
+                  </label>
+                ))}
               </div>
 
               <label className="prompt-field">
-                What should Codex change?
+                What should Codex build or modify?
                 <textarea
                   required
                   minLength={10}
                   rows={7}
-                  placeholder="Paste your coding prompt here. Example: Fix the indexing issue, keep the change minimal, run tests, and show the diff before approval."
+                  placeholder={`Describe the task. Examples:\n- ${promptPlaceholderExamples.join('\n- ')}`}
                   value={form.instruction}
                   onChange={(event) =>
                     setForm({ ...form, instruction: event.target.value })

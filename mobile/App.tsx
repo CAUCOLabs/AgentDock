@@ -83,6 +83,34 @@ const templates = [
   { label: "Write tests", value: "Add tests for the behavior described below without changing production logic." },
 ];
 
+const promptPlaceholder =
+  "Describe the task. Examples:\n- Create project scaffold\n- Build desktop app structure\n- Implement authentication flow\n- Refactor backend architecture\n- Create REST API and models";
+
+const scopeOptions: Array<{
+  value: ChangeScope;
+  label: string;
+  description: string;
+  broad?: boolean;
+}> = [
+  {
+    value: "only_selected_file",
+    label: "Single file",
+    description: "Modify only the selected file.",
+  },
+  {
+    value: "allow_related_files",
+    label: "Related files",
+    description: "Allow nearby modules, tests, configs, and related files to change.",
+  },
+  {
+    value: "whole_project",
+    label: "Whole project",
+    description:
+      "Codex can create, modify, and organize files across the repository to complete larger development tasks.",
+    broad: true,
+  },
+];
+
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "OpenAI Codex", value: "codex" },
 ];
@@ -1265,7 +1293,12 @@ export default function App() {
             <View style={styles.filePickerHeader}>
               <View style={styles.flex}>
                 <Text style={styles.label}>Repository Explorer</Text>
-                <Text style={styles.filePath}>{targetFile || "No file selected"}</Text>
+                <Text style={styles.filePath}>
+                  {targetFile ||
+                    (changeScope === "whole_project"
+                      ? "Optional context for whole-project tasks"
+                      : "No file selected")}
+                </Text>
               </View>
               <Pressable
                 onPress={() => void handleLoadFiles()}
@@ -1350,33 +1383,32 @@ export default function App() {
           <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
           <View style={styles.scopeBox}>
             <Text style={styles.label}>Change scope</Text>
-            <Pressable
-              onPress={() => setChangeScope("only_selected_file")}
-              style={[
-                styles.scopeOption,
-                changeScope === "only_selected_file" && styles.scopeOptionSelected,
-              ]}
-            >
-              <Text style={styles.scopeTitle}>Only selected file</Text>
-              <Text style={styles.fileOptionMeta}>Safest default. Related edits should be rare.</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setChangeScope("allow_related_files")}
-              style={[
-                styles.scopeOption,
-                changeScope === "allow_related_files" && styles.scopeOptionSelected,
-              ]}
-            >
-              <Text style={styles.scopeTitle}>Allow related files</Text>
-              <Text style={styles.fileOptionMeta}>Use when tests, types, or adjacent modules may need edits.</Text>
-            </Pressable>
+            {scopeOptions.map((option) => (
+              <Pressable
+                key={option.value}
+                onPress={() => setChangeScope(option.value)}
+                style={[
+                  styles.scopeOption,
+                  changeScope === option.value && styles.scopeOptionSelected,
+                  option.broad && changeScope === option.value && styles.scopeOptionBroadSelected,
+                ]}
+              >
+                <Text style={styles.scopeTitle}>{option.label}</Text>
+                <Text style={styles.fileOptionMeta}>{option.description}</Text>
+                {option.broad ? (
+                  <Text style={styles.scopeBroadNote}>
+                    Broader repository access. More files may appear in diff review.
+                  </Text>
+                ) : null}
+              </Pressable>
+            ))}
           </View>
 
-          <Field label="What should Codex change?">
+          <Field label="What should Codex build or modify?">
             <TextInput
               value={instruction}
               onChangeText={setInstruction}
-              placeholder="Describe the coding task..."
+              placeholder={promptPlaceholder}
               placeholderTextColor="#6f7f92"
               multiline
               textAlignVertical="top"
@@ -2537,10 +2569,24 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(65, 230, 189, 0.18)",
     borderColor: "rgba(65, 230, 189, 0.38)",
   },
+  scopeOptionBroadSelected: {
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    borderColor: "rgba(245, 158, 11, 0.38)",
+  },
   scopeTitle: {
     color: "#edf8ff",
     fontSize: 13,
     fontWeight: "800",
+  },
+  scopeBroadNote: {
+    color: "#fde68a",
+    fontSize: 12,
+    lineHeight: 17,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.2)",
   },
   warningText: {
     color: "#fde68a",

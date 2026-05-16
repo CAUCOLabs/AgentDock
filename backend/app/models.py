@@ -174,6 +174,7 @@ class ChangeScope(str, Enum):
 
     only_selected_file = "only_selected_file"
     allow_related_files = "allow_related_files"
+    whole_project = "whole_project"
 
 
 class TaskCreateRequest(BaseModel):
@@ -210,7 +211,10 @@ class TaskCreateRequest(BaseModel):
     )
     change_scope: ChangeScope = Field(
         default=ChangeScope.only_selected_file,
-        description="Guidance for whether the agent should stay in the target file.",
+        description=(
+            "Guidance for whether the agent should stay in one file, use "
+            "related files, or work across the whole project."
+        ),
     )
 
 
