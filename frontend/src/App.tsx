@@ -33,14 +33,7 @@ type TaskStatus =
   | 'failed'
   | 'cancelled'
 
-type AgentProvider =
-  | 'codex'
-  | 'claude'
-  | 'ollama'
-  | 'local_model'
-  | 'mock'
-  | 'local'
-  | 'openai'
+type AgentProvider = string
 type ChangeScope = 'only_selected_file' | 'allow_related_files'
 type ProviderConnectionStatus =
   | 'connected'
@@ -283,10 +276,7 @@ const initialForm: CreateTaskForm = {
 }
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: 'Codex', value: 'codex' },
-  { label: 'Claude', value: 'claude' },
-  { label: 'Ollama', value: 'ollama' },
-  { label: 'Local model', value: 'local_model' },
+  { label: 'OpenAI Codex', value: 'codex' },
 ]
 
 const promptTemplates = [
@@ -382,15 +372,13 @@ function App() {
       ),
     [agentProviders],
   )
-  const selectedAgentProvider = agentProviderById.get(form.agent)
+  const codexProvider = agentProviderById.get('codex')
   const activeAgentLabel = activeTask
     ? agentProviderById.get(activeTask.agent)?.label ??
       providerOptions.find((provider) => provider.value === activeTask.agent)?.label ??
       activeTask.agent
     : null
-  const hasConnectedProvider = agentProviders.some(
-    (provider) => provider.status === 'connected',
-  )
+  const hasConnectedProvider = codexProvider?.status === 'connected'
 
   const filteredRepoFiles = useMemo(
     () =>
@@ -711,7 +699,7 @@ function App() {
           repo_url: form.repoUrl,
           base_branch: form.baseBranch,
           instruction: form.instruction,
-          agent: form.agent,
+          agent: 'codex',
           target_file: form.targetFile || null,
           change_scope: form.changeScope,
         }),
@@ -1131,9 +1119,8 @@ function App() {
                 Prompt Launcher
               </h2>
               <p>
-                Paste a prompt from ChatGPT, Claude, Codex, or your own
-                workflow. AgentDock will run it in a safe branch and wait for
-                approval.
+                Paste a task prompt, let OpenAI Codex prepare the diff, then
+                commit, push, and open a pull request from AgentDock.
               </p>
             </div>
           </div>
@@ -1188,16 +1175,15 @@ function App() {
               <div className="launcher-step">
                 <span>2</span>
                 <div>
-                  <strong>AI Agent</strong>
-                  <small>Select the agent profile for this task.</small>
+                  <strong>Codex</strong>
+                  <small>AgentDock uses OpenAI Codex to prepare code changes.</small>
                 </div>
               </div>
               <div className="provider-options">
-                {providerOptions.map((provider) => {
-                  const metadata = agentProviderById.get(provider.value)
+                {(() => {
+                  const metadata = codexProvider
                   const connection =
-                    provider.value === 'codex' &&
-                    (codexPendingAuth || connectingProviderId === 'codex')
+                    codexPendingAuth || connectingProviderId === 'codex'
                       ? 'connecting'
                       : metadata?.connection ?? metadata?.status ?? 'disconnected'
                   const readiness = metadata?.readiness ?? 'not_configured'
@@ -1205,61 +1191,42 @@ function App() {
                     connection === 'connecting'
                       ? 'connecting'
                       : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness)
-                  const isCodex = provider.value === 'codex'
                   const isActive = primaryStatus === 'active' || connection === 'connected'
                   const canConnect =
                     connection === 'disconnected' &&
-                    (isCodex
-                      ? readiness === 'auth_required' || readiness === 'ready'
-                      : readiness === 'ready')
+                    (readiness === 'auth_required' || readiness === 'ready')
 
                   return (
                   <div
-                    key={provider.value}
-                    className={
-                      form.agent === provider.value
-                        ? 'provider-option selected'
-                        : 'provider-option'
-                    }
+                    className="provider-option selected"
                   >
-                    <input
-                      type="radio"
-                      name="agentProvider"
-                      checked={form.agent === provider.value}
-                      onChange={() =>
-                        setForm({ ...form, agent: provider.value })
-                      }
-                    />
-                    <span>{metadata?.label ?? provider.label}</span>
+                    <span>OpenAI Codex</span>
                     <small className={`provider-status-badge ${primaryStatus}`}>
-                      {formatPrimaryStatus(provider.value, primaryStatus)}
+                      {formatPrimaryStatus('codex', primaryStatus)}
                     </small>
                     <small className="provider-readiness">
-                      {formatReadinessStatus(provider.value, readiness)}
+                      {formatReadinessStatus('codex', readiness)}
                     </small>
-                    <small>{metadata?.description ?? 'Provider metadata is loading.'}</small>
                     <div className="provider-card-actions">
                       {isActive ? (
                         <>
-                          {isCodex && (
-                            <button
-                              type="button"
-                              className="mini-action secondary"
-                              disabled={connectingProviderId === 'codex'}
-                              onClick={() => void verifyCodexConnection(metadata?.auth_mode)}
-                            >
-                              Check connection
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className="mini-action secondary"
+                            disabled={connectingProviderId === 'codex'}
+                            onClick={() => void verifyCodexConnection(metadata?.auth_mode)}
+                          >
+                            Check connection
+                          </button>
                           <button
                             type="button"
                             className="mini-action"
-                            onClick={() => void disconnectAgentProvider(provider.value)}
+                            onClick={() => void disconnectAgentProvider('codex')}
                           >
                             Disconnect
                           </button>
                         </>
-                      ) : isCodex ? (
+                      ) : (
                         <>
                           <button
                             type="button"
@@ -1284,18 +1251,9 @@ function App() {
                             Use API Key
                           </button>
                         </>
-                      ) : (
-                        <button
-                          type="button"
-                          className="mini-action"
-                          disabled={!canConnect || connectingProviderId === provider.value}
-                          onClick={() => void connectAgentProvider(provider.value)}
-                        >
-                          Connect
-                        </button>
                       )}
                     </div>
-                    {isCodex && codexCloudNotice && (
+                    {codexCloudNotice && (
                       <div className="codex-auth-panel">
                         <strong>OpenAI account connection</strong>
                         <p>{codexCloudNotice}</p>
@@ -1339,7 +1297,7 @@ function App() {
                         </button>
                       </div>
                     )}
-                    {isCodex && isCodexApiKeyPanelOpen && (
+                    {isCodexApiKeyPanelOpen && (
                       <form className="codex-auth-panel" onSubmit={submitCodexApiKey}>
                         <strong>Enter your OpenAI API key</strong>
                         <input
@@ -1380,19 +1338,11 @@ function App() {
                     )}
                   </div>
                   )
-                })}
+                })()}
               </div>
-              <details className="provider-details-panel">
-                <summary>Provider details</summary>
-                <p className="provider-mode-note">
-                  {selectedAgentProvider
-                    ? providerConnectionMessage(selectedAgentProvider)
-                    : 'Provider setup state is loading.'}
-                </p>
-              </details>
               {!hasConnectedProvider && (
                 <p className="provider-mode-note">
-                  Connect a provider before launching tasks.
+                  Connect Codex before launching tasks.
                 </p>
               )}
             </div>
@@ -1497,7 +1447,7 @@ function App() {
               <div className="launcher-step">
                 <span>4</span>
                 <div>
-                  <strong>Target Selection</strong>
+                  <strong>Target file</strong>
                   <small>{form.targetFile || 'Select a target file'}</small>
                 </div>
                 <button
@@ -1584,9 +1534,25 @@ function App() {
               <div className="launcher-step">
                 <span>5</span>
                 <div>
-                  <strong>Review & Approval</strong>
-                  <small>Choose how tightly the task should stay near the target file.</small>
+                  <strong>Task Prompt</strong>
+                  <small>Describe the code change Codex should prepare.</small>
                 </div>
+              </div>
+              <div className="template-strip" aria-label="Quick prompt templates">
+                {promptTemplates.map((template) => (
+                  <button
+                    type="button"
+                    className="template-button"
+                    key={template.label}
+                    onClick={() => applyPromptTemplate(
+                      form.targetFile
+                        ? `${template.prompt}\n\nFocus on ${form.targetFile}.`
+                        : template.prompt,
+                    )}
+                  >
+                    {template.label}
+                  </button>
+                ))}
               </div>
               <div className="scope-options">
                 <label className={form.changeScope === 'only_selected_file' ? 'scope-option selected' : 'scope-option'}>
@@ -1614,36 +1580,9 @@ function App() {
                   <small>Use when tests, types, or neighboring modules may need edits.</small>
                 </label>
               </div>
-            </div>
-
-            <div className="launcher-panel">
-              <div className="launcher-step">
-                <span>6</span>
-                <div>
-                  <strong>Task Prompt</strong>
-                  <small>Describe the code change the agent should prepare.</small>
-                </div>
-              </div>
-
-              <div className="template-strip" aria-label="Quick prompt templates">
-                {promptTemplates.map((template) => (
-                  <button
-                    type="button"
-                    className="template-button"
-                    key={template.label}
-                    onClick={() => applyPromptTemplate(
-                      form.targetFile
-                        ? `${template.prompt}\n\nFocus on ${form.targetFile}.`
-                        : template.prompt,
-                    )}
-                  >
-                    {template.label}
-                  </button>
-                ))}
-              </div>
 
               <label className="prompt-field">
-                What should the agent do?
+                What should Codex change?
                 <textarea
                   required
                   minLength={10}
@@ -1667,7 +1606,7 @@ function App() {
 
             <button type="submit" disabled={isCreating}>
               <Rocket size={17} />
-              {isCreating ? 'Launching Agent Task' : 'Launch Agent Task'}
+              {isCreating ? 'Launching Codex Task' : 'Launch Codex Task'}
             </button>
           </form>
         </section>
@@ -2141,28 +2080,7 @@ function formatBytes(value: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
 }
 
-function formatConnectionStatus(status?: ProviderConnectionStatus) {
-  switch (status) {
-    case 'connected':
-      return 'CONNECTED'
-    case 'connecting':
-      return 'CONNECTING'
-    case 'disconnected':
-      return 'DISCONNECTED'
-    case 'not_configured':
-      return 'NOT CONFIGURED'
-    case 'coming_soon':
-      return 'COMING SOON'
-    default:
-      return 'UNKNOWN'
-  }
-}
-
 function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
-  if (providerId === 'local_model') {
-    return readiness === 'ready' ? 'LOCAL RUNNER READY' : 'LOCAL RUNNER REQUIRED'
-  }
-
   if (providerId === 'codex') {
     switch (readiness) {
       case 'ready':
@@ -2221,34 +2139,6 @@ function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimary
     default:
       return 'UNKNOWN'
   }
-}
-
-function providerConnectionMessage(provider: AgentProviderMetadata) {
-  if (provider.id === 'codex') {
-    const details = [
-      `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-      `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
-      provider.description,
-    ]
-
-    if (provider.readiness === 'auth_required') {
-      details.push('Choose ChatGPT sign-in or API key authentication')
-    }
-
-    if (provider.readiness === 'ready') {
-      details.push('Codex auth is stored server-side')
-    }
-
-    return details.join(' · ')
-  }
-
-  const details = [
-    `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-    `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
-    provider.description,
-  ]
-
-  return details.join(' · ')
 }
 
 function isCodexAuthFlowResponse(

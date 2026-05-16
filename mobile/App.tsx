@@ -83,10 +83,7 @@ const templates = [
 ];
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: "Codex", value: "codex" },
-  { label: "Claude", value: "claude" },
-  { label: "Ollama", value: "ollama" },
-  { label: "Local model", value: "local_model" },
+  { label: "OpenAI Codex", value: "codex" },
 ];
 
 const emptyDiff: TaskDiffResponse = {
@@ -157,28 +154,7 @@ function formatBytes(value: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function formatConnectionStatus(status?: ProviderConnectionStatus) {
-  switch (status) {
-    case "connected":
-      return "CONNECTED";
-    case "connecting":
-      return "CONNECTING";
-    case "disconnected":
-      return "DISCONNECTED";
-    case "not_configured":
-      return "NOT CONFIGURED";
-    case "coming_soon":
-      return "COMING SOON";
-    default:
-      return "UNKNOWN";
-  }
-}
-
 function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
-  if (providerId === "local_model") {
-    return readiness === "ready" ? "LOCAL RUNNER READY" : "LOCAL RUNNER REQUIRED";
-  }
-
   if (providerId === "codex") {
     switch (readiness) {
       case "ready":
@@ -240,34 +216,6 @@ function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimary
   }
 }
 
-function providerConnectionMessage(provider: AgentProviderMetadata) {
-  if (provider.id === "codex") {
-    const details = [
-      `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-      `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
-      provider.description,
-    ];
-
-    if (provider.readiness === "auth_required") {
-      details.push("Choose ChatGPT sign-in or API key authentication");
-    }
-
-    if (provider.readiness === "ready") {
-      details.push("Codex auth is stored server-side");
-    }
-
-    return details.join(" · ");
-  }
-
-  const details = [
-    `Connection: ${formatConnectionStatus(provider.connection ?? provider.status)}`,
-    `Readiness: ${formatReadinessStatus(provider.id, provider.readiness)}`,
-    provider.description,
-  ];
-
-  return details.join(" · ");
-}
-
 function isCodexAuthFlowResponse(
   response: AgentProviderMetadata | AgentProviderAuthFlowResponse
 ): response is AgentProviderAuthFlowResponse {
@@ -320,7 +268,6 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
-  const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
@@ -350,7 +297,6 @@ export default function App() {
   const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
-  const [isProviderDetailsOpen, setIsProviderDetailsOpen] = useState(false);
   const [codexCloudNotice, setCodexCloudNotice] = useState<string | null>(null);
   const [codexPendingAuth, setCodexPendingAuth] = useState(false);
   const [codexAuthFlow, setCodexAuthFlow] = useState<AgentProviderAuthFlowResponse | null>(null);
@@ -373,13 +319,13 @@ export default function App() {
     () => new Map(agentProviders.map((provider) => [provider.id, provider])),
     [agentProviders]
   );
-  const selectedAgentMetadata = agentProviderById.get(agentProvider);
+  const selectedAgentMetadata = agentProviderById.get("codex");
   const selectedTaskAgentLabel = selectedTask
     ? agentProviderById.get(selectedTask.agent)?.label ??
       providerOptions.find((provider) => provider.value === selectedTask.agent)?.label ??
       selectedTask.agent
     : null;
-  const hasConnectedProvider = agentProviders.some((provider) => provider.status === "connected");
+  const hasConnectedProvider = selectedAgentMetadata?.status === "connected";
   const outsideTargetFiles = useMemo(
     () =>
       diff.changed_files.filter(
@@ -513,7 +459,6 @@ export default function App() {
         const flow = isCodexAuthFlowResponse(response)
           ? response
           : fallbackCodexAuthFlow(response);
-        setAgentProvider("codex");
         setCodexCloudNotice(flow.message);
         setCodexAuthFlow(flow);
         setCodexPendingAuth(true);
@@ -616,7 +561,7 @@ export default function App() {
         repo_url: repoUrl.trim(),
         base_branch: baseBranch.trim() || "main",
         instruction: instruction.trim(),
-        agent: agentProvider,
+        agent: "codex",
         target_file: targetFile || null,
         change_scope: changeScope,
       }, githubSessionId);
@@ -976,15 +921,14 @@ export default function App() {
             ) : null}
           </View>
 
-          <Text style={styles.launcherGroupTitle}>AI Agent</Text>
+          <Text style={styles.launcherGroupTitle}>Codex</Text>
           <View style={styles.agentProviderBox}>
-            <Text style={styles.fileOptionMeta}>Choose the agent profile for this task.</Text>
+            <Text style={styles.fileOptionMeta}>AgentDock uses OpenAI Codex to prepare code changes.</Text>
             <View style={styles.providerGrid}>
-              {providerOptions.map((provider) => {
-                const metadata = agentProviderById.get(provider.value);
+              {(() => {
+                const metadata = selectedAgentMetadata;
                 const connection =
-                  provider.value === "codex" &&
-                  (codexPendingAuth || connectingProviderId === "codex")
+                  codexPendingAuth || connectingProviderId === "codex"
                     ? "connecting"
                     : metadata?.connection ?? metadata?.status ?? "disconnected";
                 const readiness = metadata?.readiness ?? "not_configured";
@@ -992,25 +936,16 @@ export default function App() {
                   connection === "connecting"
                     ? "connecting"
                     : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness);
-                const isCodex = provider.value === "codex";
                 const isActive = primaryStatus === "active" || connection === "connected";
                 const canConnect =
-                  connection === "disconnected" &&
-                  (isCodex ? readiness === "auth_required" || readiness === "ready" : readiness === "ready");
+                  connection === "disconnected" && (readiness === "auth_required" || readiness === "ready");
 
                 return (
                   <View
-                    key={provider.value}
-                    style={[
-                      styles.providerOption,
-                      agentProvider === provider.value && styles.providerOptionSelected,
-                    ]}
+                    style={[styles.providerOption, styles.providerOptionSelected]}
                   >
-                    <Pressable
-                      onPress={() => setAgentProvider(provider.value)}
-                      style={({ pressed }) => [styles.providerSelectArea, pressed && styles.pressed]}
-                    >
-                      <Text style={styles.providerOptionText}>{metadata?.label ?? provider.label}</Text>
+                    <View style={styles.providerSelectArea}>
+                      <Text style={styles.providerOptionText}>OpenAI Codex</Text>
                       <Text
                         style={[
                           styles.providerStatusBadge,
@@ -1021,38 +956,33 @@ export default function App() {
                           primaryStatus === "unavailable" && styles.providerStatusUnavailable,
                         ]}
                       >
-                        {formatPrimaryStatus(provider.value, primaryStatus)}
+                        {formatPrimaryStatus("codex", primaryStatus)}
                       </Text>
                       <Text style={styles.providerDescription}>
-                        {formatReadinessStatus(provider.value, readiness)}
+                        {formatReadinessStatus("codex", readiness)}
                       </Text>
-                      <Text style={styles.providerDescription}>
-                        {metadata?.description ?? "Provider metadata is loading."}
-                      </Text>
-                    </Pressable>
+                    </View>
                     {isActive ? (
                       <View style={styles.providerCardActions}>
-                        {isCodex ? (
-                          <Pressable
-                            disabled={connectingProviderId === "codex"}
-                            onPress={() => void handleVerifyCodexConnection(metadata?.auth_mode)}
-                            style={({ pressed }) => [
-                              styles.providerActionButton,
-                              connectingProviderId === "codex" && styles.disabledButton,
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <Text style={styles.providerActionText}>Check connection</Text>
-                          </Pressable>
-                        ) : null}
                         <Pressable
-                          onPress={() => void handleDisconnectAgentProvider(provider.value)}
+                          disabled={connectingProviderId === "codex"}
+                          onPress={() => void handleVerifyCodexConnection(metadata?.auth_mode)}
+                          style={({ pressed }) => [
+                            styles.providerActionButton,
+                            connectingProviderId === "codex" && styles.disabledButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.providerActionText}>Check connection</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => void handleDisconnectAgentProvider("codex")}
                           style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
                         >
                           <Text style={styles.providerActionText}>Disconnect</Text>
                         </Pressable>
                       </View>
-                    ) : isCodex ? (
+                    ) : (
                       <View style={styles.providerCardActions}>
                         <Pressable
                           disabled={!canConnect || connectingProviderId === "codex"}
@@ -1083,20 +1013,8 @@ export default function App() {
                           <Text style={styles.providerActionText}>Use API Key</Text>
                         </Pressable>
                       </View>
-                    ) : (
-                      <Pressable
-                        disabled={!canConnect || connectingProviderId === provider.value}
-                        onPress={() => void handleConnectAgentProvider(provider.value)}
-                        style={({ pressed }) => [
-                          styles.providerActionButton,
-                          (!canConnect || connectingProviderId === provider.value) && styles.disabledButton,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Text style={styles.providerActionText}>Connect</Text>
-                      </Pressable>
                     )}
-                    {isCodex && codexCloudNotice ? (
+                    {codexCloudNotice ? (
                       <View style={styles.codexAuthPanel}>
                         <Text style={styles.providerOptionText}>OpenAI account connection</Text>
                         <Text style={styles.providerDescription}>{codexCloudNotice}</Text>
@@ -1140,7 +1058,7 @@ export default function App() {
                         </Pressable>
                       </View>
                     ) : null}
-                    {isCodex && isCodexApiKeyPanelOpen ? (
+                    {isCodexApiKeyPanelOpen ? (
                       <View style={styles.codexAuthPanel}>
                         <Text style={styles.providerOptionText}>Enter your OpenAI API key</Text>
                         <TextInput
@@ -1188,26 +1106,11 @@ export default function App() {
                     ) : null}
                   </View>
                 );
-              })}
+              })()}
             </View>
-            <Pressable
-              onPress={() => setIsProviderDetailsOpen((current) => !current)}
-              style={({ pressed }) => [styles.advancedToggle, pressed && styles.pressed]}
-            >
-              <Text style={styles.advancedToggleText}>
-                {isProviderDetailsOpen ? "Hide provider details" : "Provider details"}
-              </Text>
-              {isProviderDetailsOpen ? (
-                <Text style={styles.providerModeNote}>
-                  {selectedAgentMetadata
-                    ? providerConnectionMessage(selectedAgentMetadata)
-                    : "Provider setup state is loading."}
-                </Text>
-              ) : null}
-            </Pressable>
             {!hasConnectedProvider ? (
               <Text style={styles.providerModeNote}>
-                Connect a provider before launching tasks.
+                Connect Codex before launching tasks.
               </Text>
             ) : null}
           </View>
@@ -1269,7 +1172,7 @@ export default function App() {
             ) : null}
           </View>
 
-          <Text style={styles.launcherGroupTitle}>Target Selection</Text>
+          <Text style={styles.launcherGroupTitle}>Target file</Text>
           <View style={styles.filePicker}>
             <View style={styles.filePickerHeader}>
               <View style={styles.flex}>
@@ -1356,7 +1259,7 @@ export default function App() {
             ) : null}
           </View>
 
-          <Text style={styles.launcherGroupTitle}>Review & Approval</Text>
+          <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
           <View style={styles.scopeBox}>
             <Text style={styles.label}>Change scope</Text>
             <Pressable
@@ -1381,8 +1284,7 @@ export default function App() {
             </Pressable>
           </View>
 
-          <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
-          <Field label="What should the agent do?">
+          <Field label="What should Codex change?">
             <TextInput
               value={instruction}
               onChangeText={setInstruction}
@@ -1417,7 +1319,7 @@ export default function App() {
             >
               {isLaunching ? <ActivityIndicator size="small" color="#021016" /> : <Send size={18} color="#021016" />}
               <Text style={styles.primaryButtonText}>
-                {isLaunching ? "Launching..." : "Launch Agent Task"}
+                {isLaunching ? "Launching..." : "Launch Codex Task"}
               </Text>
             </Pressable>
           </View>

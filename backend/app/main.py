@@ -1398,7 +1398,16 @@ async def create_task_pull_request(
             detail=f"Task {task_id} has no commit SHA for PR metadata.",
         )
 
-    github_client = GitHubClient(settings)
+    try:
+        workspace_manager = WorkspaceManager(settings)
+        repo_path = workspace_manager.repo_path(task_id)
+        workspace_client = GitHubClient(settings)
+        repo = workspace_client.open_repository(repo_path)
+        github_token = workspace_client.token_from_origin_remote(repo)
+    except (GitHubClientError, WorkspaceError):
+        github_token = None
+
+    github_client = GitHubClient(settings, github_token=github_token)
     body = (
         "Automated AgentDock task.\n\n"
         f"Task prompt:\n{task.instruction}\n\n"

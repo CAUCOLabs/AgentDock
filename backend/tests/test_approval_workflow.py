@@ -294,6 +294,128 @@ class ApprovalWorkflowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 409)
 
+    def test_pr_creation_with_github_app_token_succeeds_without_github_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                allow_push=True,
+                allow_pr_creation=True,
+                github_token=None,
+            )
+            task_id = "task_apppr"
+            self._save_pushed_task(
+                settings,
+                task_id,
+                remote_token="ghs_installation_token",
+            )
+
+            async def fake_create_pull_request(client, *args, **kwargs):
+                self.assertEqual(client.github_token, "ghs_installation_token")
+                return GitPullRequestResult(
+                    url="https://github.com/example/repo/pull/8",
+                    number=8,
+                    state="open",
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.create_pull_request",
+                    autospec=True,
+                    side_effect=fake_create_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.pr_number, 8)
+
+    def test_pr_creation_falls_back_to_github_token_for_manual_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                allow_push=True,
+                allow_pr_creation=True,
+                github_token="ghp_manual_token",
+            )
+            task_id = "task_manualpr"
+            self._save_pushed_task(settings, task_id)
+
+            async def fake_create_pull_request(client, *args, **kwargs):
+                self.assertEqual(client.github_token, "ghp_manual_token")
+                return GitPullRequestResult(
+                    url="https://github.com/example/repo/pull/9",
+                    number=9,
+                    state="open",
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.create_pull_request",
+                    autospec=True,
+                    side_effect=fake_create_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.pr_number, 9)
+
+    def test_pr_permission_failure_returns_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                allow_push=True,
+                allow_pr_creation=True,
+                github_token=None,
+            )
+            task_id = "task_prpermissions"
+            self._save_pushed_task(
+                settings,
+                task_id,
+                remote_token="ghs_read_only_token",
+            )
+
+            async def fake_create_pull_request(client, *args, **kwargs):
+                self.assertEqual(client.github_token, "ghs_read_only_token")
+                raise GitHubClientError(
+                    "GitHub App needs pull request write permission."
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.create_pull_request",
+                    autospec=True,
+                    side_effect=fake_create_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(
+                response.json()["detail"]["error"],
+                "GitHub App needs pull request write permission.",
+            )
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pushed)
+            self.assertEqual(
+                task.error,
+                "GitHub App needs pull request write permission.",
+            )
+
     def test_push_failure_keeps_committed_task_for_protected_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), allow_push=True)
@@ -437,11 +559,35 @@ class ApprovalWorkflowTests(unittest.TestCase):
         self.assertNotIn("Approve", web_app)
         self.assertNotIn("Approve", mobile_app)
 
+    def test_primary_ui_is_codex_only(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        for source in (web_app, mobile_app):
+            self.assertIn("OpenAI Codex", source)
+            self.assertIn("AgentDock uses OpenAI Codex to prepare code changes.", source)
+            self.assertNotIn("Claude", source)
+            self.assertNotIn("Ollama", source)
+            self.assertNotIn("Local model", source)
+            self.assertNotIn("Choose the agent profile for this task.", source)
+
+    def test_task_launch_ui_pins_codex_agent(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        self.assertIn("agent: 'codex'", web_app)
+        self.assertIn('agent: "codex"', mobile_app)
+        self.assertNotIn("agent: form.agent", web_app)
+        self.assertNotIn("agent: agentProvider", mobile_app)
+
     def _settings(
         self,
         temp_path: Path,
         allow_push: bool = False,
         allow_pr_creation: bool = False,
+        github_token: str | None = None,
     ) -> Settings:
         return Settings(
             WORKSPACES_DIR=temp_path / "workspaces",
@@ -449,7 +595,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             AGENTDOCK_DB_PATH=temp_path / "data" / "agentdock.sqlite3",
             ALLOW_PUSH=allow_push,
             ALLOW_PR_CREATION=allow_pr_creation,
-            GITHUB_TOKEN="test-token",
+            GITHUB_TOKEN=github_token,
         )
 
     def _save_waiting_task(
@@ -477,17 +623,30 @@ class ApprovalWorkflowTests(unittest.TestCase):
         )
         return store
 
-    def _save_pushed_task(self, settings: Settings, task_id: str) -> TaskStore:
+    def _save_pushed_task(
+        self,
+        settings: Settings,
+        task_id: str,
+        remote_token: str | None = None,
+    ) -> TaskStore:
         store = TaskStore(settings)
         now = datetime.now(timezone.utc)
         branch = f"agentdock/{task_id}"
+        repo_path = settings.workspace_root / task_id / "repo"
+        repo = self._create_repo(repo_path)
+        repo.git.checkout("-b", branch)
+        if remote_token:
+            repo.create_remote(
+                "origin",
+                f"https://x-access-token:{remote_token}@github.com/example/repo.git",
+            )
         store.save_task(
             TaskSummary(
                 task_id=task_id,
                 repo_url="https://github.com/example/repo",
                 base_branch="main",
                 working_branch=branch,
-                workspace_path=str(settings.workspace_root / task_id / "repo"),
+                workspace_path=str(repo_path),
                 instruction="Modify the repository for testing.",
                 target_file="src/App.tsx",
                 agent=AgentProvider.mock,

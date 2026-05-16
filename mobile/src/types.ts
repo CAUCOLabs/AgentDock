@@ -11,14 +11,7 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type AgentProvider =
-  | "codex"
-  | "claude"
-  | "ollama"
-  | "local_model"
-  | "mock"
-  | "local"
-  | "openai";
+export type AgentProvider = string;
 export type ChangeScope = "only_selected_file" | "allow_related_files";
 export type ProviderStatus =
   | "available"

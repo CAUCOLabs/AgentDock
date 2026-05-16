@@ -309,7 +309,7 @@ class GitHubClient:
                 "Set ALLOW_PR_CREATION=true to enable it."
             )
 
-        if not self.settings.github_token:
+        if not self.github_token:
             raise GitHubClientError("GITHUB_TOKEN is required to create a PR.")
 
         owner, repo_name = self._parse_owner_and_repo(repo_url)
@@ -325,7 +325,7 @@ class GitHubClient:
 
         headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.settings.github_token}",
+            "Authorization": f"Bearer {self.github_token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
@@ -333,6 +333,11 @@ class GitHubClient:
             response = await client.post(api_url, json=payload, headers=headers)
 
         if response.status_code >= 400:
+            if response.status_code == 403 and self.github_token.startswith("ghs_"):
+                raise GitHubClientError(
+                    "GitHub App needs pull request write permission."
+                )
+
             raise GitHubClientError(
                 f"Failed to create pull request: "
                 f"{response.status_code} {response.text}"
@@ -375,6 +380,30 @@ class GitHubClient:
                 parsed.fragment,
             )
         )
+
+    def token_from_origin_remote(self, repo: Repo) -> str | None:
+        """
+        Return an x-access-token credential embedded in the origin remote URL.
+
+        GitHub App task workspaces are cloned with an installation token in
+        the origin remote so subsequent Git operations can push without a
+        classic personal access token.
+        """
+
+        remote_url = self._origin_url(repo)
+
+        if not remote_url:
+            return None
+
+        parsed = urlparse(remote_url)
+
+        if parsed.hostname != "github.com":
+            return None
+
+        if parsed.username != "x-access-token" or not parsed.password:
+            return None
+
+        return parsed.password
 
     def _origin_url(self, repo: Repo) -> str | None:
         for remote in repo.remotes:
