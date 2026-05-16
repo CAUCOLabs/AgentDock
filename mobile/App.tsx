@@ -47,6 +47,7 @@ import {
   getTasks,
   getWorkspaceStatus,
   logout,
+  mergePullRequest,
   pushTask,
   startGitHubAuth,
   subscribeToApiConnectivity,
@@ -103,6 +104,12 @@ type ApiConnectionState = {
   error: string | null;
 };
 
+type MergeAttemptState = {
+  taskId: string;
+  status: "loading" | "succeeded" | "failed";
+  message: string;
+};
+
 function shortRepoName(repoUrl: string) {
   const trimmed = repoUrl.replace(/\/$/, "");
   const name = trimmed.split("/").slice(-2).join("/");
@@ -126,6 +133,10 @@ function buildGitHubBranchUrl(repoUrl: string, branch: string) {
 
 function shortSha(sha?: string | null) {
   return sha ? sha.slice(0, 8) : "None";
+}
+
+function stripHttpStatus(message: string) {
+  return message.replace(/^\d{3}\s+/, "");
 }
 
 function formatDate(value: string) {
@@ -250,6 +261,7 @@ function statusTone(status: TaskStatus) {
     case "committed":
     case "pushed":
     case "pull_request_opened":
+    case "merged":
       return styles.statusSuccess;
     case "waiting_for_approval":
       return styles.statusWarning;
@@ -297,6 +309,7 @@ export default function App() {
   const [isConnectingGithub, setIsConnectingGithub] = useState(false);
   const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false);
   const [isManualRepoModeOpen, setIsManualRepoModeOpen] = useState(false);
+  const [mergeAttempt, setMergeAttempt] = useState<MergeAttemptState | null>(null);
   const [codexCloudNotice, setCodexCloudNotice] = useState<string | null>(null);
   const [codexPendingAuth, setCodexPendingAuth] = useState(false);
   const [codexAuthFlow, setCodexAuthFlow] = useState<AgentProviderAuthFlowResponse | null>(null);
@@ -346,6 +359,13 @@ export default function App() {
     selectedTask?.status === "pushed" && Boolean(workspace?.pr_creation_enabled);
   const prCreationDisabled =
     selectedTask?.status === "pushed" && workspace?.pr_creation_enabled === false;
+  const activeMergeAttempt =
+    mergeAttempt && selectedTask?.task_id === mergeAttempt.taskId ? mergeAttempt : null;
+  const isMergingPullRequest = activeMergeAttempt?.status === "loading";
+  const showPrOpenPanel =
+    selectedTask?.status === "pull_request_opened" &&
+    activeMergeAttempt?.status !== "loading" &&
+    activeMergeAttempt?.status !== "failed";
   const filteredRepoFiles = useMemo(
     () =>
       repoFiles
@@ -391,11 +411,13 @@ export default function App() {
       setDiff(nextDiff);
       setLogs(nextLogs);
       setWorkspace(nextWorkspace);
+      return task;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load task details.");
       setDiff(emptyDiff);
       setLogs(emptyLogs);
       setWorkspace(null);
+      return null;
     } finally {
       setIsLoadingTask(false);
     }
@@ -676,6 +698,72 @@ export default function App() {
     } finally {
       setIsActing(false);
     }
+  }
+
+  async function handleMergePullRequest() {
+    if (!selectedTask) {
+      return;
+    }
+
+    Alert.alert(
+      "Merge pull request?",
+      `Merge this pull request into ${selectedTask.base_branch}?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Merge",
+          onPress: async () => {
+            setIsActing(true);
+            setError(null);
+            setMergeAttempt({
+              taskId: selectedTask.task_id,
+              status: "loading",
+              message: "Merging pull request...",
+            });
+            try {
+              await mergePullRequest(selectedTask.task_id);
+              await refreshTasks();
+              const refreshedTask = await loadTaskDetail(selectedTask.task_id);
+
+              if (refreshedTask?.status === "merged") {
+                setMergeAttempt({
+                  taskId: selectedTask.task_id,
+                  status: "succeeded",
+                  message: "Pull request merged",
+                });
+                return;
+              }
+
+              const message =
+                refreshedTask?.pr_state === "open"
+                  ? "Pull request is still open. Merge was not completed."
+                  : "Merge failed: backend did not report the task as merged.";
+              setError(message);
+              setMergeAttempt({
+                taskId: selectedTask.task_id,
+                status: "failed",
+                message,
+              });
+            } catch (mergeError) {
+              const reason = stripHttpStatus(
+                mergeError instanceof Error ? mergeError.message : "Unable to merge pull request."
+              );
+              const message = `Merge failed: ${reason}`;
+              await refreshTasks();
+              await loadTaskDetail(selectedTask.task_id);
+              setMergeAttempt({
+                taskId: selectedTask.task_id,
+                status: "failed",
+                message,
+              });
+              setError(message);
+            } finally {
+              setIsActing(false);
+            }
+          },
+        },
+      ]
+    );
   }
 
   async function handleDelete() {
@@ -1452,13 +1540,42 @@ export default function App() {
                   />
                 ) : null}
                 {selectedTask.status === "pull_request_opened" && selectedTask.pr_url ? (
-                  <ActionButton
-                    label="Open Pull Request"
-                    icon={<ExternalLink size={18} color="#031014" />}
-                    disabled={false}
-                    onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
-                    tone="approve"
-                  />
+                  <>
+                    <ActionButton
+                      label="Open Pull Request"
+                      icon={<ExternalLink size={18} color="#031014" />}
+                      disabled={false}
+                      onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                      tone="approve"
+                    />
+                    <ActionButton
+                      label={isMergingPullRequest ? "Merging pull request..." : "Merge Pull Request"}
+                      icon={<GitPullRequest size={18} color="#031014" />}
+                      disabled={isActing || isMergingPullRequest}
+                      onPress={handleMergePullRequest}
+                      tone="approve"
+                    />
+                  </>
+                ) : null}
+                {selectedTask.status === "merged" ? (
+                  <>
+                    {selectedTask.pr_url ? (
+                      <ActionButton
+                        label="Open Pull Request"
+                        icon={<ExternalLink size={18} color="#031014" />}
+                        disabled={false}
+                        onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                        tone="approve"
+                      />
+                    ) : null}
+                    <ActionButton
+                      label="Open Repository"
+                      icon={<ExternalLink size={18} color="#031014" />}
+                      disabled={false}
+                      onPress={() => void Linking.openURL(selectedTask.repo_url)}
+                      tone="approve"
+                    />
+                  </>
                 ) : null}
                 <ActionButton
                   label="Delete"
@@ -1490,9 +1607,24 @@ export default function App() {
                   ) : null}
                 </View>
               ) : null}
-              {selectedTask.status === "pull_request_opened" ? (
+              {activeMergeAttempt?.status === "loading" ? (
+                <View style={styles.mergeStatePanel}>
+                  <Text style={styles.mergeStateTitle}>Merging pull request...</Text>
+                </View>
+              ) : null}
+              {activeMergeAttempt?.status === "failed" ? (
+                <View style={[styles.mergeStatePanel, styles.mergeStateErrorPanel]}>
+                  <Text style={[styles.mergeStateTitle, styles.mergeStateErrorTitle]}>
+                    {activeMergeAttempt.message}
+                  </Text>
+                  {selectedTask.error && selectedTask.error !== activeMergeAttempt.message ? (
+                    <Text style={styles.errorText}>{selectedTask.error}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+              {showPrOpenPanel ? (
                 <View style={styles.detailStack}>
-                  <Text style={styles.successText}>
+                  <Text style={styles.emptyText}>
                     Pull request #{selectedTask.pr_number ?? "opened"}
                     {selectedTask.pr_state ? ` is ${selectedTask.pr_state}` : ""}.
                   </Text>
@@ -1500,6 +1632,21 @@ export default function App() {
                     <Pressable onPress={() => void Linking.openURL(pushedBranchUrl)}>
                       <Text style={styles.linkText}>View pushed branch</Text>
                     </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
+              {selectedTask.status === "merged" ? (
+                <View style={styles.mergeStatePanel}>
+                  <Text style={styles.mergeStateTitle}>Pull request merged</Text>
+                  {selectedTask.merge_commit_sha ? (
+                    <Text style={styles.emptyText}>
+                      Merge commit {shortSha(selectedTask.merge_commit_sha)}.
+                    </Text>
+                  ) : null}
+                  {selectedTask.merged_at ? (
+                    <Text style={styles.emptyText}>
+                      Merged at {formatDate(selectedTask.merged_at)}.
+                    </Text>
                   ) : null}
                 </View>
               ) : null}
@@ -1930,6 +2077,27 @@ const styles = StyleSheet.create({
     color: "#95e6bd",
     fontSize: 14,
     lineHeight: 20,
+  },
+  mergeStatePanel: {
+    gap: 8,
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: "rgba(31, 111, 84, 0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(70, 201, 139, 0.26)",
+  },
+  mergeStateTitle: {
+    color: "#baf7d0",
+    fontSize: 18,
+    fontWeight: "700",
+    lineHeight: 24,
+  },
+  mergeStateErrorPanel: {
+    backgroundColor: "rgba(91, 25, 39, 0.38)",
+    borderColor: "rgba(255, 92, 118, 0.35)",
+  },
+  mergeStateErrorTitle: {
+    color: "#ffb8c0",
   },
   taskList: {
     gap: 10,

@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 from git import Repo
 
 from app.config import Settings, get_settings
-from app.github_client import GitHubClientError, GitPullRequestResult
+from app.github_client import (
+    GitHubClientError,
+    GitPullRequestMergeResult,
+    GitPullRequestResult,
+    GitPullRequestStatusResult,
+)
 from app.main import app
 from app.models import AgentProvider, TaskStatus, TaskSummary
 from app.task_store import TaskStore
@@ -416,6 +421,244 @@ class ApprovalWorkflowTests(unittest.TestCase):
                 "GitHub App needs pull request write permission.",
             )
 
+    def test_merge_disabled_unless_pr_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_mergenotopen"
+            self._save_pushed_task(settings, task_id)
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                response = client.post(f"/tasks/{task_id}/merge-pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 409)
+
+    def test_merge_with_github_app_token_succeeds_without_github_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                allow_push=True,
+                allow_pr_creation=True,
+                github_token=None,
+            )
+            task_id = "task_appmerge"
+            self._save_open_pr_task(
+                settings,
+                task_id,
+                remote_token="ghs_installation_token",
+            )
+
+            async def fake_merge_pull_request(client, *args, **kwargs):
+                self.assertEqual(client.github_token, "ghs_installation_token")
+                self.assertEqual(kwargs["merge_method"], "squash")
+                self.assertEqual(kwargs["commit_title"], f"AgentDock task: {task_id}")
+                self.assertIn("Task prompt:", kwargs["commit_message"])
+                self.assertIn("Target file or change scope:", kwargs["commit_message"])
+                self.assertIn("Agent provider:", kwargs["commit_message"])
+                self.assertIn("Commit SHA:", kwargs["commit_message"])
+                self.assertIn("PR number:", kwargs["commit_message"])
+                return GitPullRequestMergeResult(
+                    sha="merge123",
+                    merged=True,
+                    message="Pull Request successfully merged",
+                )
+
+            async def fake_get_pull_request_status(*args, **kwargs):
+                return GitPullRequestStatusResult(
+                    state="closed",
+                    merged=True,
+                    merge_commit_sha="merge123",
+                    merged_by="agentdock-app",
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.merge_pull_request",
+                    autospec=True,
+                    side_effect=fake_merge_pull_request,
+                ), patch(
+                    "app.github_client.GitHubClient.get_pull_request_status",
+                    side_effect=fake_get_pull_request_status,
+                ):
+                    response = client.post(f"/tasks/{task_id}/merge-pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "merged")
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.merged)
+            self.assertEqual(task.pr_state, "merged")
+            self.assertEqual(task.merge_commit_sha, "merge123")
+            self.assertIsNotNone(task.merged_at)
+            self.assertEqual(task.merged_by, "agentdock-app")
+            self.assertEqual(task.merged_source, "github_app")
+
+    def test_merge_conflict_preserves_pr_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_mergeconflict"
+            self._save_open_pr_task(settings, task_id)
+
+            async def fake_merge_pull_request(*args, **kwargs):
+                raise GitHubClientError(
+                    "Merge conflict: resolve conflicts on GitHub before merging."
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.merge_pull_request",
+                    side_effect=fake_merge_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/merge-pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("Merge conflict", response.json()["detail"]["error"])
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pull_request_opened)
+            self.assertEqual(task.pr_state, "open")
+            self.assertIsNone(task.merge_commit_sha)
+
+    def test_merge_verification_still_open_preserves_pr_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), allow_push=True, allow_pr_creation=True)
+            task_id = "task_mergestillopen"
+            self._save_open_pr_task(settings, task_id)
+
+            async def fake_merge_pull_request(*args, **kwargs):
+                return GitPullRequestMergeResult(
+                    sha="merge123",
+                    merged=True,
+                    message="Pull Request successfully merged",
+                )
+
+            async def fake_get_pull_request_status(*args, **kwargs):
+                return GitPullRequestStatusResult(
+                    state="open",
+                    merged=False,
+                    merge_commit_sha=None,
+                    merged_by=None,
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.merge_pull_request",
+                    side_effect=fake_merge_pull_request,
+                ), patch(
+                    "app.github_client.GitHubClient.get_pull_request_status",
+                    side_effect=fake_get_pull_request_status,
+                ):
+                    response = client.post(f"/tasks/{task_id}/merge-pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(
+                response.json()["detail"]["error"],
+                "Pull request is still open. Merge was not completed.",
+            )
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pull_request_opened)
+            self.assertEqual(task.pr_state, "open")
+            self.assertIsNone(task.merge_commit_sha)
+
+    def test_merge_permission_failure_returns_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(
+                Path(temp_dir),
+                allow_push=True,
+                allow_pr_creation=True,
+                github_token=None,
+            )
+            task_id = "task_mergepermission"
+            self._save_open_pr_task(
+                settings,
+                task_id,
+                remote_token="ghs_read_only_token",
+            )
+
+            async def fake_merge_pull_request(client, *args, **kwargs):
+                self.assertEqual(client.github_token, "ghs_read_only_token")
+                raise GitHubClientError(
+                    "GitHub App needs contents write and pull request write permission to merge."
+                )
+
+            app.dependency_overrides[get_settings] = lambda: settings
+            try:
+                client = TestClient(app)
+                with patch(
+                    "app.github_client.GitHubClient.merge_pull_request",
+                    autospec=True,
+                    side_effect=fake_merge_pull_request,
+                ):
+                    response = client.post(f"/tasks/{task_id}/merge-pull-request")
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(
+                response.json()["detail"]["error"],
+                "GitHub App needs contents write and pull request write permission to merge.",
+            )
+            task = TaskStore(settings).get_task(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, TaskStatus.pull_request_opened)
+            self.assertEqual(task.pr_state, "open")
+
+    def test_ui_shows_merge_pull_request_after_pr_creation(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        self.assertIn("Merge Pull Request", web_app)
+        self.assertIn("Merge Pull Request", mobile_app)
+
+    def test_ui_merge_attempt_has_clear_success_and_failure_states(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        for source in (web_app, mobile_app):
+            self.assertIn("Merging pull request...", source)
+            self.assertIn("Pull request merged", source)
+            self.assertIn("Merge failed:", source)
+            self.assertIn("Pull request is still open. Merge was not completed.", source)
+
+    def test_ui_does_not_show_pr_open_as_success_after_merge_action(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        self.assertIn("showPrOpenPanel", web_app)
+        self.assertIn("activeMergeAttempt?.status !== 'failed'", web_app)
+        self.assertIn("showPrOpenPanel", mobile_app)
+        self.assertIn('activeMergeAttempt?.status !== "failed"', mobile_app)
+
+    def test_ui_merge_button_visibility_tracks_merge_state(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        web_app = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        mobile_app = (repo_root / "mobile" / "App.tsx").read_text()
+
+        for source in (web_app, mobile_app):
+            self.assertIn("status === 'pull_request_opened'", source.replace('"', "'"))
+            self.assertIn("status === 'merged'", source.replace('"', "'"))
+            self.assertIn("Open Repository", source)
+
     def test_push_failure_keeps_committed_task_for_protected_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), allow_push=True)
@@ -661,6 +904,22 @@ class ApprovalWorkflowTests(unittest.TestCase):
                 updated_at=now,
             )
         )
+        return store
+
+    def _save_open_pr_task(
+        self,
+        settings: Settings,
+        task_id: str,
+        remote_token: str | None = None,
+    ) -> TaskStore:
+        store = self._save_pushed_task(settings, task_id, remote_token=remote_token)
+        task = store.get_task(task_id)
+        self.assertIsNotNone(task)
+        task.status = TaskStatus.pull_request_opened
+        task.pr_url = "https://github.com/example/repo/pull/12"
+        task.pr_number = 12
+        task.pr_state = "open"
+        store.save_task(task)
         return store
 
     def _create_repo(self, repo_path: Path) -> Repo:

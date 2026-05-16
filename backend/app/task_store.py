@@ -111,6 +111,10 @@ class TaskStore:
                         pr_number,
                         pr_state,
                         pr_url,
+                        merged_at,
+                        merge_commit_sha,
+                        merged_by,
+                        merged_source,
                         created_at,
                         updated_at,
                         completed_at,
@@ -118,7 +122,7 @@ class TaskStore:
                         deleted_at,
                         error
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_url = excluded.repo_url,
                         repo_owner = excluded.repo_owner,
@@ -140,6 +144,10 @@ class TaskStore:
                         pr_number = excluded.pr_number,
                         pr_state = excluded.pr_state,
                         pr_url = excluded.pr_url,
+                        merged_at = excluded.merged_at,
+                        merge_commit_sha = excluded.merge_commit_sha,
+                        merged_by = excluded.merged_by,
+                        merged_source = excluded.merged_source,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at,
                         completed_at = excluded.completed_at,
@@ -169,6 +177,10 @@ class TaskStore:
                         task.pr_number,
                         task.pr_state,
                         task.pr_url,
+                        self._datetime_to_text(task.merged_at),
+                        task.merge_commit_sha,
+                        task.merged_by,
+                        task.merged_source,
                         self._datetime_to_text(task.created_at),
                         self._datetime_to_text(task.updated_at),
                         self._datetime_to_text(task.completed_at),
@@ -316,6 +328,10 @@ class TaskStore:
         pr_url: str | None = None,
         pr_number: int | None = None,
         pr_state: str | None = None,
+        merged_at: datetime | None = None,
+        merge_commit_sha: str | None = None,
+        merged_by: str | None = None,
+        merged_source: str | None = None,
     ) -> None:
         """
         Persist the latest workspace status for audit after restarts.
@@ -346,9 +362,13 @@ class TaskStore:
                         pr_url,
                         pr_number,
                         pr_state,
+                        merged_at,
+                        merge_commit_sha,
+                        merged_by,
+                        merged_source,
                         captured_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         repo_path = excluded.repo_path,
                         branch = excluded.branch,
@@ -369,6 +389,10 @@ class TaskStore:
                         pr_url = excluded.pr_url,
                         pr_number = excluded.pr_number,
                         pr_state = excluded.pr_state,
+                        merged_at = excluded.merged_at,
+                        merge_commit_sha = excluded.merge_commit_sha,
+                        merged_by = excluded.merged_by,
+                        merged_source = excluded.merged_source,
                         captured_at = excluded.captured_at
                     """,
                     (
@@ -392,6 +416,10 @@ class TaskStore:
                         pr_url,
                         pr_number,
                         pr_state,
+                        self._datetime_to_text(merged_at),
+                        merge_commit_sha,
+                        merged_by,
+                        merged_source,
                         self._datetime_to_text(datetime.now(timezone.utc)),
                     ),
                 )
@@ -445,6 +473,10 @@ class TaskStore:
             pr_url=snapshot["pr_url"],
             pr_number=snapshot["pr_number"],
             pr_state=snapshot["pr_state"],
+            merged_at=snapshot["merged_at"],
+            merge_commit_sha=snapshot["merge_commit_sha"],
+            merged_by=snapshot["merged_by"],
+            merged_source=snapshot["merged_source"],
         )
 
     def _initialize_database(self) -> None:
@@ -477,6 +509,10 @@ class TaskStore:
                                 pr_number INTEGER,
                                 pr_state TEXT,
                                 pr_url TEXT,
+                                merged_at TEXT,
+                                merge_commit_sha TEXT,
+                                merged_by TEXT,
+                                merged_source TEXT,
                                 created_at TEXT NOT NULL,
                                 updated_at TEXT NOT NULL,
                                 completed_at TEXT,
@@ -528,6 +564,10 @@ class TaskStore:
                                 pr_url TEXT,
                                 pr_number INTEGER,
                                 pr_state TEXT,
+                                merged_at TEXT,
+                                merge_commit_sha TEXT,
+                                merged_by TEXT,
+                                merged_source TEXT,
                                 captured_at TEXT NOT NULL,
                                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
                                     ON DELETE CASCADE
@@ -686,6 +726,10 @@ class TaskStore:
             "pr_url": row["pr_url"],
             "pr_number": row["pr_number"],
             "pr_state": row["pr_state"],
+            "merged_at": row["merged_at"],
+            "merge_commit_sha": row["merge_commit_sha"],
+            "merged_by": row["merged_by"],
+            "merged_source": row["merged_source"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "completed_at": row["completed_at"],
@@ -726,6 +770,10 @@ class TaskStore:
             "target_file": "TEXT",
             "pr_number": "INTEGER",
             "pr_state": "TEXT",
+            "merged_at": "TEXT",
+            "merge_commit_sha": "TEXT",
+            "merged_by": "TEXT",
+            "merged_source": "TEXT",
         }
 
         for column_name, column_type in desired_columns.items():
@@ -755,6 +803,10 @@ class TaskStore:
             "pr_url": "TEXT",
             "pr_number": "INTEGER",
             "pr_state": "TEXT",
+            "merged_at": "TEXT",
+            "merge_commit_sha": "TEXT",
+            "merged_by": "TEXT",
+            "merged_source": "TEXT",
             "completed_at": "TEXT",
             "rejected_at": "TEXT",
             "deleted_at": "TEXT",

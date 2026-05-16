@@ -28,6 +28,7 @@ type TaskStatus =
   | 'committed'
   | 'pushed'
   | 'pull_request_opened'
+  | 'merged'
   | 'rejected'
   | 'completed'
   | 'failed'
@@ -177,6 +178,10 @@ type TaskSummary = {
   pr_url: string | null
   pr_number?: number | null
   pr_state?: string | null
+  merged_at?: string | null
+  merge_commit_sha?: string | null
+  merged_by?: string | null
+  merged_source?: string | null
   created_at: string
   updated_at: string
   error: string | null
@@ -201,6 +206,25 @@ type TaskPullRequestResponse = {
   pr_url: string
   pr_number: number
   pr_state: string
+}
+
+type TaskMergePullRequestResponse = {
+  task_id: string
+  status: TaskStatus
+  message: string
+  pr_url: string
+  pr_number: number
+  pr_state: string
+  merged_at: string
+  merge_commit_sha: string
+  merged_by?: string | null
+  merged_source?: string | null
+}
+
+type MergeAttemptState = {
+  taskId: string
+  status: 'loading' | 'succeeded' | 'failed'
+  message: string
 }
 
 type TaskDiffResponse = {
@@ -232,6 +256,10 @@ type WorkspaceStatusResponse = {
   pr_url: string | null
   pr_number?: number | null
   pr_state?: string | null
+  merged_at?: string | null
+  merge_commit_sha?: string | null
+  merged_by?: string | null
+  merged_source?: string | null
 }
 
 type TaskLogEvent = {
@@ -352,6 +380,7 @@ function App() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
+  const [mergeAttempt, setMergeAttempt] = useState<MergeAttemptState | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [apiConnectionError, setApiConnectionError] = useState<string | null>(
@@ -472,6 +501,11 @@ function App() {
         detail =
           typeof body.detail === 'string'
             ? body.detail
+            : typeof body.detail === 'object' &&
+                body.detail !== null &&
+                'error' in body.detail &&
+                typeof body.detail.error === 'string'
+              ? body.detail.error
             : JSON.stringify(body.detail ?? body)
       } catch {
         detail = await response.text()
@@ -626,7 +660,7 @@ function App() {
     window.setTimeout(() => setCodexCopyStatus(null), 1600)
   }
 
-  async function loadTaskBundle(taskId: string) {
+  async function loadTaskBundle(taskId: string): Promise<TaskSummary | null> {
     setError(null)
 
     try {
@@ -653,12 +687,15 @@ function App() {
       if (failedResult?.status === 'rejected') {
         setError(formatError(failedResult.reason))
       }
+
+      return task
     } catch (err) {
       setError(formatError(err))
       setSelectedTask(selectedTaskFromList)
       setTaskDiff(null)
       setWorkspaceStatus(null)
       setTaskLogs([])
+      return null
     }
   }
 
@@ -951,6 +988,67 @@ function App() {
     }
   }
 
+  async function mergePullRequest() {
+    if (!selectedTaskId || !activeTask) return
+
+    const shouldMerge = window.confirm(
+      `Merge this pull request into ${activeTask.base_branch}?`,
+    )
+
+    if (!shouldMerge) return
+
+    setNotice(null)
+    setError(null)
+    setMergeAttempt({
+      taskId: selectedTaskId,
+      status: 'loading',
+      message: 'Merging pull request...',
+    })
+
+    try {
+      await request<TaskMergePullRequestResponse>(
+        `/tasks/${selectedTaskId}/merge-pull-request`,
+        {
+          method: 'POST',
+        },
+      )
+
+      await loadTasks()
+      const refreshedTask = await loadTaskBundle(selectedTaskId)
+
+      if (refreshedTask?.status === 'merged') {
+        setMergeAttempt({
+          taskId: selectedTaskId,
+          status: 'succeeded',
+          message: 'Pull request merged',
+        })
+        return
+      }
+
+      const message =
+        refreshedTask?.pr_state === 'open'
+          ? 'Pull request is still open. Merge was not completed.'
+          : 'Merge failed: backend did not report the task as merged.'
+      setMergeAttempt({
+        taskId: selectedTaskId,
+        status: 'failed',
+        message,
+      })
+      setError(message)
+    } catch (err) {
+      const reason = formatError(err)
+      const message = `Merge failed: ${reason}`
+      await loadTasks()
+      await loadTaskBundle(selectedTaskId)
+      setMergeAttempt({
+        taskId: selectedTaskId,
+        status: 'failed',
+        message,
+      })
+      setError(message)
+    }
+  }
+
   async function deleteTask() {
     if (!selectedTaskId) return
 
@@ -994,6 +1092,13 @@ function App() {
     activeTask?.status === 'pushed' && Boolean(workspaceStatus?.pr_creation_enabled)
   const prCreationDisabled =
     activeTask?.status === 'pushed' && workspaceStatus?.pr_creation_enabled === false
+  const activeMergeAttempt =
+    mergeAttempt && activeTask?.task_id === mergeAttempt.taskId ? mergeAttempt : null
+  const isMergingPullRequest = activeMergeAttempt?.status === 'loading'
+  const showPrOpenPanel =
+    activeTask?.status === 'pull_request_opened' &&
+    activeMergeAttempt?.status !== 'loading' &&
+    activeMergeAttempt?.status !== 'failed'
 
   return (
     <main className="app-shell">
@@ -1776,15 +1881,49 @@ function App() {
                   </button>
                 )}
                 {activeTask.status === 'pull_request_opened' && activeTask.pr_url && (
-                  <a
-                    className="action-link secondary"
-                    href={activeTask.pr_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <ExternalLink size={16} />
-                    Open Pull Request
-                  </a>
+                  <>
+                    <a
+                      className="action-link secondary"
+                      href={activeTask.pr_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={16} />
+                      Open Pull Request
+                    </a>
+                    <button
+                      type="button"
+                      disabled={isMergingPullRequest}
+                      onClick={() => void mergePullRequest()}
+                    >
+                      <GitPullRequest size={16} />
+                      {isMergingPullRequest ? 'Merging pull request...' : 'Merge Pull Request'}
+                    </button>
+                  </>
+                )}
+                {activeTask.status === 'merged' && (
+                  <>
+                    {activeTask.pr_url && (
+                      <a
+                        className="action-link secondary"
+                        href={activeTask.pr_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink size={16} />
+                        Open Pull Request
+                      </a>
+                    )}
+                    <a
+                      className="action-link secondary"
+                      href={activeTask.repo_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={16} />
+                      Open Repository
+                    </a>
+                  </>
                 )}
                 <button
                   type="button"
@@ -1820,9 +1959,22 @@ function App() {
                   )}
                 </div>
               )}
-              {activeTask.status === 'pull_request_opened' && (
+              {activeMergeAttempt?.status === 'loading' && (
+                <div className="push-result-panel merge-state-panel">
+                  <h3>Merging pull request...</h3>
+                </div>
+              )}
+              {activeMergeAttempt?.status === 'failed' && (
+                <div className="push-result-panel merge-state-panel merge-state-panel-error">
+                  <h3>{activeMergeAttempt.message}</h3>
+                  {activeTask.error && activeTask.error !== activeMergeAttempt.message && (
+                    <p className="error">{activeTask.error}</p>
+                  )}
+                </div>
+              )}
+              {showPrOpenPanel && (
                 <div className="push-result-panel">
-                  <p className="console-ok">
+                  <p className="empty-state">
                     Pull request #{activeTask.pr_number ?? 'opened'}
                     {activeTask.pr_state ? ` is ${activeTask.pr_state}` : ''}.
                   </p>
@@ -1835,6 +1987,21 @@ function App() {
                     >
                       View pushed branch
                     </a>
+                  )}
+                </div>
+              )}
+              {activeTask.status === 'merged' && (
+                <div className="push-result-panel merge-state-panel">
+                  <h3>Pull request merged</h3>
+                  {activeTask.merge_commit_sha && (
+                    <p className="empty-state">
+                      Merge commit {shortSha(activeTask.merge_commit_sha)}.
+                    </p>
+                  )}
+                  {activeTask.merged_at && (
+                    <p className="empty-state">
+                      Merged at {formatTimestamp(activeTask.merged_at)}.
+                    </p>
                   )}
                 </div>
               )}

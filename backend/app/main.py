@@ -48,6 +48,7 @@ from app.models import (
     TaskDeleteResponse,
     TaskDiffResponse,
     TaskLogsResponse,
+    TaskMergePullRequestResponse,
     TaskPullRequestResponse,
     TaskStatus,
     TaskSummary,
@@ -1456,3 +1457,207 @@ async def create_task_pull_request(
         pr_number=pr_result.number,
         pr_state=pr_result.state,
     )
+
+
+@app.post(
+    "/tasks/{task_id}/merge-pull-request",
+    response_model=TaskMergePullRequestResponse,
+)
+async def merge_task_pull_request(
+    task_id: str,
+    settings: Settings = Depends(get_settings),
+    task_store: TaskStore = Depends(get_task_store),
+) -> TaskMergePullRequestResponse:
+    """
+    Merge an opened AgentDock pull request.
+    """
+
+    task = task_store.get_task(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+
+    if (
+        task.status != TaskStatus.pull_request_opened
+        or task.pr_number is None
+        or task.pr_state != "open"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Task {task_id} does not have an open pull request to merge. "
+                f"Current status: {task.status}; PR state: {task.pr_state or 'none'}."
+            ),
+        )
+
+    github_token, token_source = _task_github_token(task_id, settings)
+    github_client = GitHubClient(settings, github_token=github_token)
+    merge_method = settings.github_pr_merge_method.lower()
+    scope = task.target_file or task.change_scope.value
+    commit_message = (
+        f"Task prompt:\n{task.instruction}\n\n"
+        f"Target file or change scope:\n{scope}\n\n"
+        f"Agent provider:\n{task.agent.value}\n\n"
+        f"Commit SHA:\n{task.commit_sha or 'None'}\n\n"
+        f"PR number:\n#{task.pr_number}"
+    )
+
+    try:
+        merge_result = await github_client.merge_pull_request(
+            repo_url=task.repo_url,
+            pr_number=task.pr_number,
+            commit_title=f"AgentDock task: {task_id}",
+            commit_message=commit_message,
+            merge_method=merge_method,
+        )
+    except GitHubClientError as exc:
+        task.status = TaskStatus.pull_request_opened
+        task.pr_state = "open"
+        task.error = str(exc)
+        task.updated_at = datetime.now(timezone.utc)
+        task_store.save_task(task)
+        task_store.append_log(task_id, "error", f"PR merge failed: {exc}")
+        raise HTTPException(
+            status_code=_merge_error_status(str(exc)),
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    if not merge_result.merged or not merge_result.sha:
+        message = merge_result.message or "Pull request was not merged."
+        task.status = TaskStatus.pull_request_opened
+        task.pr_state = "open"
+        task.error = message
+        task.updated_at = datetime.now(timezone.utc)
+        task_store.save_task(task)
+        task_store.append_log(task_id, "error", f"PR merge failed: {message}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "task_id": task_id,
+                "error": message,
+            },
+        )
+
+    try:
+        pr_status = await github_client.get_pull_request_status(
+            task.repo_url,
+            task.pr_number,
+        )
+    except GitHubClientError as exc:
+        task.status = TaskStatus.pull_request_opened
+        task.pr_state = "open"
+        task.error = str(exc)
+        task.updated_at = datetime.now(timezone.utc)
+        task_store.save_task(task)
+        task_store.append_log(
+            task_id,
+            "error",
+            f"PR merge verification failed: {exc}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "task_id": task_id,
+                "error": str(exc),
+            },
+        ) from exc
+
+    if pr_status.state == "open" or not pr_status.merged:
+        message = "Pull request is still open. Merge was not completed."
+        task.status = TaskStatus.pull_request_opened
+        task.pr_state = pr_status.state or "open"
+        task.error = message
+        task.updated_at = datetime.now(timezone.utc)
+        task_store.save_task(task)
+        task_store.append_log(task_id, "error", f"PR merge incomplete: {message}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "task_id": task_id,
+                "error": message,
+            },
+        )
+
+    merged_at = datetime.now(timezone.utc)
+    task.status = TaskStatus.merged
+    task.pr_state = "merged"
+    task.merged_at = merged_at
+    task.merge_commit_sha = pr_status.merge_commit_sha or merge_result.sha
+    task.merged_by = pr_status.merged_by or "AgentDock"
+    task.merged_source = token_source
+    task.error = None
+    task.updated_at = merged_at
+    task_store.save_task(task)
+    task_store.append_log(
+        task_id,
+        "info",
+        f"PR #{task.pr_number} merged: {task.merge_commit_sha}",
+    )
+
+    if settings.delete_branch_after_merge and task.working_branch:
+        try:
+            await github_client.delete_remote_branch(task.repo_url, task.working_branch)
+            task_store.append_log(
+                task_id,
+                "info",
+                f"Deleted remote branch {task.working_branch}.",
+            )
+        except GitHubClientError as exc:
+            task_store.append_log(
+                task_id,
+                "warning",
+                f"Remote branch cleanup failed: {exc}",
+            )
+
+    return TaskMergePullRequestResponse(
+        task_id=task_id,
+        status=task.status,
+        message=f"Pull request #{task.pr_number} merged.",
+        pr_url=task.pr_url or "",
+        pr_number=task.pr_number,
+        pr_state=task.pr_state or "merged",
+        merged_at=merged_at,
+        merge_commit_sha=task.merge_commit_sha,
+        merged_by=task.merged_by,
+        merged_source=task.merged_source,
+    )
+
+
+def _task_github_token(task_id: str, settings: Settings) -> tuple[str | None, str | None]:
+    try:
+        workspace_manager = WorkspaceManager(settings)
+        repo_path = workspace_manager.repo_path(task_id)
+        workspace_client = GitHubClient(settings)
+        repo = workspace_client.open_repository(repo_path)
+        github_token = workspace_client.token_from_origin_remote(repo)
+        if github_token:
+            source = "github_app" if github_token.startswith("ghs_") else "remote"
+            return github_token, source
+    except (GitHubClientError, WorkspaceError):
+        pass
+
+    return settings.github_token, "github_token" if settings.github_token else None
+
+
+def _merge_error_status(message: str) -> int:
+    lowered = message.lower()
+
+    if "permission" in lowered or "github app needs" in lowered:
+        return status.HTTP_403_FORBIDDEN
+
+    if "conflict" in lowered or "not mergeable" in lowered:
+        return status.HTTP_409_CONFLICT
+
+    if "already merged" in lowered or "closed" in lowered:
+        return status.HTTP_409_CONFLICT
+
+    if "review required" in lowered or "branch protection" in lowered:
+        return status.HTTP_409_CONFLICT
+
+    return status.HTTP_500_INTERNAL_SERVER_ERROR

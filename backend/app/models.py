@@ -18,6 +18,7 @@ class TaskStatus(str, Enum):
     committed = "committed"
     pushed = "pushed"
     pull_request_opened = "pull_request_opened"
+    merged = "merged"
     rejected = "rejected"
     completed = "completed"
     failed = "failed"
@@ -263,6 +264,10 @@ class TaskSummary(BaseModel):
     pr_url: str | None = None
     pr_number: int | None = None
     pr_state: str | None = None
+    merged_at: datetime | None = None
+    merge_commit_sha: str | None = None
+    merged_by: str | None = None
+    merged_source: str | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -427,6 +432,10 @@ class WorkspaceStatusResponse(BaseModel):
     pr_url: str | None = None
     pr_number: int | None = None
     pr_state: str | None = None
+    merged_at: datetime | None = None
+    merge_commit_sha: str | None = None
+    merged_by: str | None = None
+    merged_source: str | None = None
 
 
 class TaskLogEvent(BaseModel):
@@ -491,6 +500,23 @@ class TaskPullRequestResponse(BaseModel):
     pr_url: str
     pr_number: int
     pr_state: str
+
+
+class TaskMergePullRequestResponse(BaseModel):
+    """
+    Response returned after merging an opened pull request.
+    """
+
+    task_id: str
+    status: TaskStatus
+    message: str
+    pr_url: str
+    pr_number: int
+    pr_state: str
+    merged_at: datetime
+    merge_commit_sha: str
+    merged_by: str | None = None
+    merged_source: str | None = None
 
 
 class ErrorResponse(BaseModel):

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import subprocess
 from time import perf_counter
@@ -10,6 +11,8 @@ from git.exc import GitCommandError
 
 from app.config import Settings
 from app.github_auth import redact_token
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClientError(Exception):
@@ -74,6 +77,29 @@ class GitPullRequestResult:
     url: str
     number: int
     state: str
+
+
+@dataclass(frozen=True)
+class GitPullRequestMergeResult:
+    """
+    Metadata returned after merging a GitHub pull request.
+    """
+
+    sha: str
+    merged: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class GitPullRequestStatusResult:
+    """
+    Current GitHub pull request state after an API lookup.
+    """
+
+    state: str
+    merged: bool
+    merge_commit_sha: str | None
+    merged_by: str | None
 
 
 class GitHubClient:
@@ -350,6 +376,102 @@ class GitHubClient:
             state=str(data["state"]),
         )
 
+    async def merge_pull_request(
+        self,
+        repo_url: str,
+        pr_number: int,
+        commit_title: str,
+        commit_message: str,
+        merge_method: str = "squash",
+    ) -> GitPullRequestMergeResult:
+        """
+        Merge a GitHub pull request and return merge metadata.
+        """
+
+        if merge_method not in {"squash", "merge", "rebase"}:
+            raise GitHubClientError(
+                "Invalid GITHUB_PR_MERGE_METHOD. Use squash, merge, or rebase."
+            )
+
+        if not self.github_token:
+            raise GitHubClientError("GITHUB_TOKEN is required to merge a PR.")
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+        api_url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls/{pr_number}/merge"
+        payload = {
+            "commit_title": commit_title,
+            "commit_message": commit_message,
+            "merge_method": merge_method,
+        }
+        headers = self._api_headers()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(api_url, json=payload, headers=headers)
+
+        self._log_merge_response(response)
+
+        if response.status_code >= 400:
+            raise GitHubClientError(self._merge_error_message(response))
+
+        data = response.json()
+        return GitPullRequestMergeResult(
+            sha=str(data.get("sha") or ""),
+            merged=bool(data.get("merged")),
+            message=str(data.get("message") or "Pull request merged."),
+        )
+
+    async def get_pull_request_status(
+        self,
+        repo_url: str,
+        pr_number: int,
+    ) -> GitPullRequestStatusResult:
+        """
+        Fetch the current state for a GitHub pull request.
+        """
+
+        if not self.github_token:
+            raise GitHubClientError("GITHUB_TOKEN is required to inspect a PR.")
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+        api_url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls/{pr_number}"
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(api_url, headers=self._api_headers())
+
+        if response.status_code >= 400:
+            raise GitHubClientError(
+                f"Failed to inspect pull request after merge: "
+                f"{response.status_code} {response.text}"
+            )
+
+        data = response.json()
+        merged_by = data.get("merged_by") or {}
+        return GitPullRequestStatusResult(
+            state=str(data.get("state") or ""),
+            merged=bool(data.get("merged")),
+            merge_commit_sha=data.get("merge_commit_sha"),
+            merged_by=merged_by.get("login") if isinstance(merged_by, dict) else None,
+        )
+
+    async def delete_remote_branch(self, repo_url: str, branch: str) -> None:
+        """
+        Delete a remote branch ref through the GitHub API.
+        """
+
+        if not self.github_token:
+            raise GitHubClientError("GITHUB_TOKEN is required to delete a branch.")
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+        api_url = f"https://api.github.com/repos/{owner}/{repo_name}/git/refs/heads/{branch}"
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.delete(api_url, headers=self._api_headers())
+
+        if response.status_code >= 400 and response.status_code != 404:
+            raise GitHubClientError(
+                f"Failed to delete remote branch: {response.status_code} {response.text}"
+            )
+
     def _build_authenticated_url(self, repo_url: str) -> str:
         """
         Add token authentication to HTTPS GitHub URLs when GITHUB_TOKEN is set.
@@ -404,6 +526,61 @@ class GitHubClient:
             return None
 
         return parsed.password
+
+    def _api_headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.github_token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _merge_error_message(self, response: httpx.Response) -> str:
+        text = response.text
+        lowered = text.lower()
+
+        if response.status_code == 409:
+            return "Merge conflict: resolve conflicts on GitHub before merging."
+
+        if "already merged" in lowered:
+            return "Pull request is already merged."
+
+        if "closed" in lowered:
+            return "Pull request is closed and cannot be merged."
+
+        if "review" in lowered:
+            return "Review required before merge."
+
+        if (
+            "protected" in lowered
+            or "branch protection" in lowered
+            or "required status" in lowered
+            or "status check" in lowered
+        ):
+            return "Branch protection prevents merge."
+
+        if response.status_code in {401, 403, 404}:
+            if self.github_token and self.github_token.startswith("ghs_"):
+                return (
+                    "GitHub App needs contents write and pull request write "
+                    "permission to merge."
+                )
+            return "Permission missing: GitHub token cannot merge this pull request."
+
+        if response.status_code == 405:
+            return "Pull request is not mergeable yet."
+
+        return f"Failed to merge pull request: {response.status_code} {text}"
+
+    def _log_merge_response(self, response: httpx.Response) -> None:
+        body = redact_token(response.text)
+        if len(body) > 1000:
+            body = f"{body[:1000]}..."
+
+        logger.info(
+            "GitHub merge API response: status=%s body=%s",
+            response.status_code,
+            body,
+        )
 
     def _origin_url(self, repo: Repo) -> str | None:
         for remote in repo.remotes:

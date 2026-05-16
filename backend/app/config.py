@@ -62,6 +62,11 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8000/auth/github-app/callback",
         alias="GITHUB_APP_CALLBACK_URL",
     )
+    github_pr_merge_method: str = Field(default="squash", alias="GITHUB_PR_MERGE_METHOD")
+    delete_branch_after_merge: bool = Field(
+        default=False,
+        alias="DELETE_BRANCH_AFTER_MERGE",
+    )
     github_oauth_client_id: str | None = Field(
         default=None,
         alias="GITHUB_OAUTH_CLIENT_ID",

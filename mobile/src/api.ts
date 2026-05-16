@@ -6,6 +6,7 @@ import type {
   AgentProviderVerificationResponse,
   TaskApprovalRequest,
   TaskApprovalResponse,
+  TaskMergePullRequestResponse,
   TaskPullRequestResponse,
   TaskCreateRequest,
   TaskCreateResponse,
@@ -225,6 +226,12 @@ export function pushTask(taskId: string) {
 
 export function createPullRequest(taskId: string) {
   return request<TaskPullRequestResponse>(`/tasks/${taskId}/pull-request`, {
+    method: "POST",
+  });
+}
+
+export function mergePullRequest(taskId: string) {
+  return request<TaskMergePullRequestResponse>(`/tasks/${taskId}/merge-pull-request`, {
     method: "POST",
   });
 }

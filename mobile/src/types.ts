@@ -6,6 +6,7 @@ export type TaskStatus =
   | "committed"
   | "pushed"
   | "pull_request_opened"
+  | "merged"
   | "rejected"
   | "completed"
   | "failed"
@@ -103,6 +104,10 @@ export type TaskSummary = {
   pr_url: string | null;
   pr_number?: number | null;
   pr_state?: string | null;
+  merged_at?: string | null;
+  merge_commit_sha?: string | null;
+  merged_by?: string | null;
+  merged_source?: string | null;
   created_at: string;
   updated_at: string;
   error: string | null;
@@ -137,6 +142,10 @@ export type WorkspaceStatusResponse = {
   pr_url: string | null;
   pr_number?: number | null;
   pr_state?: string | null;
+  merged_at?: string | null;
+  merge_commit_sha?: string | null;
+  merged_by?: string | null;
+  merged_source?: string | null;
 };
 
 export type TaskLogEvent = {
@@ -205,6 +214,19 @@ export type TaskPullRequestResponse = {
   pr_url: string;
   pr_number: number;
   pr_state: string;
+};
+
+export type TaskMergePullRequestResponse = {
+  task_id: string;
+  status: TaskStatus;
+  message: string;
+  pr_url: string;
+  pr_number: number;
+  pr_state: string;
+  merged_at: string;
+  merge_commit_sha: string;
+  merged_by?: string | null;
+  merged_source?: string | null;
 };
 
 export type GitHubAuthStartResponse = {
