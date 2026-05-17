@@ -144,6 +144,10 @@ type MergeAttemptState = {
   message: string;
 };
 
+type TimelineLogEvent = TaskLogEvent & {
+  label: string;
+};
+
 const promptAssistantModes: Array<{
   value: PromptAssistantMode;
   label: string;
@@ -224,6 +228,100 @@ function redactLogMessage(message: string) {
     .replace(/gh[opsu]_[A-Za-z0-9_]{8,}/g, "[REDACTED]")
     .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
     .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "$1[REDACTED]");
+}
+
+function isInternalRuntimeLog(message: string) {
+  return [
+    /codex_core/i,
+    /rollout warning/i,
+    /\brollout\b.*\b(warn|warning|metadata|id)\b/i,
+    /\b(thread|session|conversation|trace|span)[_-]?id\b/i,
+    /\b(thread|session|conversation|trace|span)\s*[:#]\s*[a-z0-9-]{6,}/i,
+    /\bsandbox\b/i,
+    /\bworkdir\b/i,
+    /\bworkspace root\b/i,
+    /\bworkspace snapshot failed\b/i,
+    /\/(?:private\/)?tmp\//i,
+    /\/var\/folders\//i,
+    /\btemporary director/i,
+    /\bruntime metadata\b/i,
+    /\binternal metadata\b/i,
+  ].some((pattern) => pattern.test(message));
+}
+
+function isRawExecutionLog(message: string) {
+  return [
+    /^\s*(stdout|stderr)\b/i,
+    /\b(stdout|stderr)\s*[:=]/i,
+    /^\s*(\$|>\s|[+])\s+\S+/,
+    /\b(shell|terminal|command|exec)\b.*[:=]/i,
+    /\bdiff --git\b/i,
+    /^@@\s/,
+    /^\s*(\+\+\+|---)\s+[ab]\//,
+    /\bCodex execution\b/i,
+    /\bfull terminal output\b/i,
+  ].some((pattern) => pattern.test(message));
+}
+
+function timelineLabelForLog(message: string) {
+  const normalized = message.toLowerCase();
+
+  if (/(workspace|repository|repo).*(prepared|cloned|ready|created)/.test(normalized)) {
+    return "Workspace prepared";
+  }
+  if (/(codex|agent).*(started|running|launched)/.test(normalized)) {
+    return "Codex started";
+  }
+  if (/diff.*(generated|ready|loaded)|changes.*ready/.test(normalized)) {
+    return "Diff generated";
+  }
+  if (/(commit|committed).*(completed|created|ready|from agentdock)|committed locally/.test(normalized)) {
+    return "Commit completed";
+  }
+  if (/(push|pushed).*(completed|ready|to branch)|pushed /.test(normalized)) {
+    return "Push completed";
+  }
+  if (/(pull request|pr).*(created|opened)/.test(normalized)) {
+    return "PR created";
+  }
+  if (/(merge|merged).*(completed|pull request|at)/.test(normalized)) {
+    return "Merge completed";
+  }
+  if (/failed|error/.test(normalized)) {
+    return "Action failed";
+  }
+  if (/waiting.*approval|approval/.test(normalized)) {
+    return "Ready for review";
+  }
+
+  return null;
+}
+
+function visibleTimelineLogs(events: TaskLogEvent[]) {
+  const seen = new Set<string>();
+  const timeline: TimelineLogEvent[] = [];
+
+  for (const event of events) {
+    const message = redactLogMessage(event.message);
+    if (isInternalRuntimeLog(message) || isRawExecutionLog(message)) continue;
+
+    const label = timelineLabelForLog(message);
+    if (!label) continue;
+
+    const key = `${label}:${event.level}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    timeline.push({ ...event, message, label });
+  }
+
+  return timeline;
+}
+
+function rawExecutionLogs(events: TaskLogEvent[]) {
+  return events
+    .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
+    .filter((event) => !isInternalRuntimeLog(event.message))
+    .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message));
 }
 
 function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
@@ -368,6 +466,7 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
   const [diff, setDiff] = useState<TaskDiffResponse>(emptyDiff);
   const [logs, setLogs] = useState<TaskLogsResponse>(emptyLogs);
+  const [isRawLogsOpen, setIsRawLogsOpen] = useState(false);
   const [isPollingLogs, setIsPollingLogs] = useState(false);
   const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null);
   const [logsCopyStatus, setLogsCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -397,6 +496,8 @@ export default function App() {
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
   const hasCodexPrompt = instruction.trim().length > 0;
   const isTaskActive = selectedTask ? isLiveActivityStatus(selectedTask.status) : false;
+  const timelineLogs = useMemo(() => visibleTimelineLogs(logs.events), [logs.events]);
+  const rawLogs = useMemo(() => rawExecutionLogs(logs.events), [logs.events]);
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -1042,10 +1143,15 @@ export default function App() {
   }
 
   async function handleCopyLogs() {
-    const content = logs.events
+    const raw = rawExecutionLogs(logs.events);
+    const timeline = visibleTimelineLogs(logs.events).map((event) => ({
+      ...event,
+      message: event.label,
+    }));
+    const content = (raw.length > 0 ? raw : timeline)
       .map(
         (event) =>
-          `[${formatDate(event.timestamp)}] ${event.level.toUpperCase()} ${redactLogMessage(event.message)}`
+          `[${formatDate(event.timestamp)}] ${event.level.toUpperCase()} ${event.message}`
       )
       .join("\n");
 
@@ -2018,7 +2124,7 @@ export default function App() {
 
               <View style={styles.advancedSubheader}>
                 <View style={styles.flex}>
-                  <Text style={styles.launcherGroupTitle}>Agent logs</Text>
+                  <Text style={styles.launcherGroupTitle}>Activity timeline</Text>
                   {isPollingLogs ? <Text style={styles.liveIndicator}>Live</Text> : null}
                 </View>
                 <View style={styles.githubButtonRow}>
@@ -2034,11 +2140,11 @@ export default function App() {
                     <Text style={styles.providerActionText}>Refresh logs</Text>
                   </Pressable>
                   <Pressable
-                    disabled={logs.events.length === 0}
+                    disabled={rawLogs.length === 0 && timelineLogs.length === 0}
                     onPress={() => void handleCopyLogs()}
                     style={({ pressed }) => [
                       styles.providerActionButton,
-                      logs.events.length === 0 && styles.disabledButton,
+                      rawLogs.length === 0 && timelineLogs.length === 0 && styles.disabledButton,
                       pressed && styles.pressed,
                     ]}
                   >
@@ -2049,12 +2155,24 @@ export default function App() {
                 </View>
               </View>
               {logsRefreshError ? <Text style={styles.assistantErrorText}>{logsRefreshError}</Text> : null}
-              {selectedTask ? <LogTimeline events={logs.events} /> : <Text style={styles.emptyText}>Logs appear after selecting a task.</Text>}
+              {selectedTask ? <LogTimeline events={timelineLogs} /> : <Text style={styles.emptyText}>Logs appear after selecting a task.</Text>}
               {selectedTask && !isTaskActive && logs.events.length > 0 ? (
                 <Text style={styles.promptAssistantCopy}>
                   Polling stopped. Last activity remains visible.
                 </Text>
               ) : null}
+              <View style={styles.rawLogsBox}>
+                <Pressable
+                  onPress={() => setIsRawLogsOpen((current) => !current)}
+                  style={({ pressed }) => [styles.rawLogsToggle, pressed && styles.pressed]}
+                >
+                  <Text style={styles.rawLogsTitle}>Raw execution logs</Text>
+                  <Text style={styles.fileOptionMeta}>
+                    {rawLogs.length} entries · {isRawLogsOpen ? "Hide" : "Show"}
+                  </Text>
+                </Pressable>
+                {isRawLogsOpen ? <RawLogList events={rawLogs} /> : null}
+              </View>
 
               <Text style={styles.launcherGroupTitle}>Workspace status</Text>
               {selectedTask && workspace ? (
@@ -2211,7 +2329,7 @@ function ChangedFiles({
   );
 }
 
-function LogTimeline({ events }: { events: TaskLogEvent[] }) {
+function LogTimeline({ events }: { events: TimelineLogEvent[] }) {
   if (events.length === 0) {
     return <Text style={styles.emptyText}>No log events.</Text>;
   }
@@ -2227,11 +2345,32 @@ function LogTimeline({ events }: { events: TaskLogEvent[] }) {
             <Text style={styles.logMeta}>
               {event.level.toUpperCase()} · {formatDate(event.timestamp)}
             </Text>
-            <Text style={styles.logMessage}>{redactLogMessage(event.message)}</Text>
+            <Text style={styles.logMessage}>{event.label}</Text>
           </View>
         </View>
       ))}
     </View>
+  );
+}
+
+function RawLogList({ events }: { events: TaskLogEvent[] }) {
+  if (events.length === 0) {
+    return <Text style={styles.emptyText}>No raw execution output to show.</Text>;
+  }
+
+  return (
+    <ScrollView nestedScrollEnabled style={styles.rawLogScroller}>
+      <View style={styles.rawLogList}>
+        {events.map((event, index) => (
+          <View key={`${event.timestamp}-${index}`} style={styles.rawLogItem}>
+            <Text style={styles.logMeta}>
+              {event.level.toUpperCase()} · {formatDate(event.timestamp)}
+            </Text>
+            <Text style={styles.rawLogMessage}>{event.message}</Text>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
   );
 }
 
@@ -3207,6 +3346,45 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginTop: 3,
+  },
+  rawLogsBox: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.32)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.14)",
+  },
+  rawLogsToggle: {
+    gap: 3,
+  },
+  rawLogsTitle: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  rawLogScroller: {
+    maxHeight: 260,
+    borderRadius: 8,
+    backgroundColor: "#02060b",
+    borderWidth: 1,
+    borderColor: "rgba(91, 129, 161, 0.22)",
+  },
+  rawLogList: {
+    gap: 8,
+    padding: 10,
+  },
+  rawLogItem: {
+    gap: 5,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(124, 157, 188, 0.12)",
+  },
+  rawLogMessage: {
+    color: "#9db5ca",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
   },
   loader: {
     minHeight: 80,

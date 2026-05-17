@@ -1435,6 +1435,47 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.raw-execution-logs {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  background: rgba(2, 6, 23, 0.22);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 14px;
+}
+
+.raw-execution-logs summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text-strong);
+  font-weight: 800;
+}
+
+.raw-execution-logs summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.raw-log-list {
+  max-height: 260px;
+  margin-top: 10px;
+}
+
+.raw-log-list li {
+  border-radius: 10px;
+}
+
+.raw-log-list p {
+  color: var(--muted);
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+}
+
 .changed-files {
   display: grid;
   gap: 8px;

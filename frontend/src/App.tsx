@@ -270,6 +270,10 @@ type TaskLogEvent = {
   message: string
 }
 
+type TimelineLogEvent = TaskLogEvent & {
+  label: string
+}
+
 type TaskLogsResponse = {
   task_id: string
   events: TaskLogEvent[]
@@ -505,6 +509,8 @@ function App() {
   )
   const hasCodexPrompt = form.instruction.trim().length > 0
   const isTaskActive = activeTask ? isLiveActivityStatus(activeTask.status) : false
+  const timelineLogs = useMemo(() => visibleTimelineLogs(taskLogs), [taskLogs])
+  const rawLogs = useMemo(() => rawExecutionLogs(taskLogs), [taskLogs])
   const activeTaskOutsideTargetFiles = useMemo(
     () =>
       (taskDiff?.changed_files ?? []).filter(
@@ -817,10 +823,15 @@ function App() {
   }
 
   async function copyTaskLogs() {
-    const content = taskLogs
+    const raw = rawExecutionLogs(taskLogs)
+    const timeline = visibleTimelineLogs(taskLogs).map((event) => ({
+      ...event,
+      message: event.label,
+    }))
+    const content = (raw.length > 0 ? raw : timeline)
       .map(
         (event) =>
-          `[${formatTimestamp(event.timestamp)}] ${event.level.toUpperCase()} ${redactLogMessage(event.message)}`,
+          `[${formatTimestamp(event.timestamp)}] ${event.level.toUpperCase()} ${event.message}`,
       )
       .join('\n')
 
@@ -2557,7 +2568,7 @@ function App() {
               <div className="section-heading compact-heading">
                 <h3 id="agent-log-title">
                   <Terminal size={16} />
-                  Agent log
+                  Activity timeline
                 </h3>
                 <div className="section-actions">
                   {isPollingLogs && (
@@ -2566,7 +2577,7 @@ function App() {
                       Live
                     </span>
                   )}
-                  <span>{taskLogs.length} events</span>
+                  <span>{timelineLogs.length} events</span>
                   {activeTask && (
                     <button
                       type="button"
@@ -2579,7 +2590,7 @@ function App() {
                   <button
                     type="button"
                     className="mini-action secondary"
-                    disabled={taskLogs.length === 0}
+                    disabled={rawLogs.length === 0 && timelineLogs.length === 0}
                     onClick={() => void copyTaskLogs()}
                   >
                     {logsCopyStatus === 'copied' ? 'Copied' : 'Copy logs'}
@@ -2588,17 +2599,17 @@ function App() {
               </div>
 
               {logsRefreshError && <p className="assistant-error">{logsRefreshError}</p>}
-              {taskLogs.length === 0 ? (
+              {timelineLogs.length === 0 ? (
                 <p className="empty-state">No task events to show.</p>
               ) : (
                 <ol className="log-list">
-                  {taskLogs.map((event) => (
-                    <li key={`${event.timestamp}-${event.message}`}>
+                  {timelineLogs.map((event) => (
+                    <li key={`${event.timestamp}-${event.label}`}>
                       <time>{formatTimestamp(event.timestamp)}</time>
                       <span className={`log-level ${event.level}`}>
                         {event.level}
                       </span>
-                      <p>{redactLogMessage(event.message)}</p>
+                      <p>{event.label}</p>
                     </li>
                   ))}
                 </ol>
@@ -2608,6 +2619,27 @@ function App() {
                   Polling stopped. Last activity remains visible.
                 </p>
               )}
+              <details className="raw-execution-logs">
+                <summary>
+                  <span>Raw execution logs</span>
+                  <small>{rawLogs.length} entries</small>
+                </summary>
+                {rawLogs.length === 0 ? (
+                  <p className="empty-state">No raw execution output to show.</p>
+                ) : (
+                  <ol className="log-list raw-log-list">
+                    {rawLogs.map((event) => (
+                      <li key={`${event.timestamp}-${event.message}`}>
+                        <time>{formatTimestamp(event.timestamp)}</time>
+                        <span className={`log-level ${event.level}`}>
+                          {event.level}
+                        </span>
+                        <p>{event.message}</p>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </details>
             </section>
           </div>
         </details>
@@ -2746,6 +2778,100 @@ function redactLogMessage(message: string) {
     .replace(/gh[opsu]_[A-Za-z0-9_]{8,}/g, '[REDACTED]')
     .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, '$1[REDACTED]')
     .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+}
+
+function isInternalRuntimeLog(message: string) {
+  return [
+    /codex_core/i,
+    /rollout warning/i,
+    /\brollout\b.*\b(warn|warning|metadata|id)\b/i,
+    /\b(thread|session|conversation|trace|span)[_-]?id\b/i,
+    /\b(thread|session|conversation|trace|span)\s*[:#]\s*[a-z0-9-]{6,}/i,
+    /\bsandbox\b/i,
+    /\bworkdir\b/i,
+    /\bworkspace root\b/i,
+    /\bworkspace snapshot failed\b/i,
+    /\/(?:private\/)?tmp\//i,
+    /\/var\/folders\//i,
+    /\btemporary director/i,
+    /\bruntime metadata\b/i,
+    /\binternal metadata\b/i,
+  ].some((pattern) => pattern.test(message))
+}
+
+function isRawExecutionLog(message: string) {
+  return [
+    /^\s*(stdout|stderr)\b/i,
+    /\b(stdout|stderr)\s*[:=]/i,
+    /^\s*(\$|>\s|[+])\s+\S+/,
+    /\b(shell|terminal|command|exec)\b.*[:=]/i,
+    /\bdiff --git\b/i,
+    /^@@\s/,
+    /^\s*(\+\+\+|---)\s+[ab]\//,
+    /\bCodex execution\b/i,
+    /\bfull terminal output\b/i,
+  ].some((pattern) => pattern.test(message))
+}
+
+function timelineLabelForLog(message: string) {
+  const normalized = message.toLowerCase()
+
+  if (/(workspace|repository|repo).*(prepared|cloned|ready|created)/.test(normalized)) {
+    return 'Workspace prepared'
+  }
+  if (/(codex|agent).*(started|running|launched)/.test(normalized)) {
+    return 'Codex started'
+  }
+  if (/diff.*(generated|ready|loaded)|changes.*ready/.test(normalized)) {
+    return 'Diff generated'
+  }
+  if (/(commit|committed).*(completed|created|ready|from agentdock)|committed locally/.test(normalized)) {
+    return 'Commit completed'
+  }
+  if (/(push|pushed).*(completed|ready|to branch)|pushed /.test(normalized)) {
+    return 'Push completed'
+  }
+  if (/(pull request|pr).*(created|opened)/.test(normalized)) {
+    return 'PR created'
+  }
+  if (/(merge|merged).*(completed|pull request|at)/.test(normalized)) {
+    return 'Merge completed'
+  }
+  if (/failed|error/.test(normalized)) {
+    return 'Action failed'
+  }
+  if (/waiting.*approval|approval/.test(normalized)) {
+    return 'Ready for review'
+  }
+
+  return null
+}
+
+function visibleTimelineLogs(events: TaskLogEvent[]) {
+  const seen = new Set<string>()
+  const timeline: TimelineLogEvent[] = []
+
+  for (const event of events) {
+    const message = redactLogMessage(event.message)
+    if (isInternalRuntimeLog(message) || isRawExecutionLog(message)) continue
+
+    const label = timelineLabelForLog(message)
+    if (!label) continue
+
+    const key = `${label}:${event.level}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    timeline.push({ ...event, message, label })
+  }
+
+  return timeline
+}
+
+function rawExecutionLogs(events: TaskLogEvent[]) {
+  return events
+    .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
+    .filter((event) => !isInternalRuntimeLog(event.message))
+    .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message))
 }
 
 function isCodexAuthFlowResponse(
