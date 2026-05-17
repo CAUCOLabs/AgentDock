@@ -904,11 +904,16 @@ select option {
 
 .prompt-assistant-header p,
 .assistant-mode-note,
-.assistant-provider-card small {
+.assistant-provider-card small,
+.assistant-error {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.assistant-error {
+  color: #fecaca;
 }
 
 .assistant-mode-grid,
@@ -964,6 +969,47 @@ select option {
 
 .prompt-assistant textarea {
   min-height: 130px;
+}
+
+.assistant-preview-card {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+}
+
+.assistant-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assistant-preview-header strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.assistant-preview-text {
+  display: -webkit-box;
+  min-height: 54px;
+  max-height: 86px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.assistant-preview-text.expanded {
+  display: block;
+  max-height: 320px;
+  overflow: auto;
+  -webkit-line-clamp: unset;
 }
 
 .character-count {

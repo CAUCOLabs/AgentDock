@@ -49,6 +49,7 @@ import {
   logout,
   mergePullRequest,
   pushTask,
+  refinePromptAssistant,
   startGitHubAuth,
   subscribeToApiConnectivity,
   verifyAgentProvider,
@@ -68,6 +69,9 @@ import type {
   GitHubRepository,
   TaskLogEvent,
   TaskLogsResponse,
+  PromptAssistantProvider,
+  PromptAssistantRefineResponse,
+  PromptAssistantScope,
   RepositoryFileEntry,
   RepositoryFilePreviewResponse,
   TaskStatus,
@@ -321,7 +325,12 @@ export default function App() {
   const [instruction, setInstruction] = useState("");
   const [promptAssistantMode, setPromptAssistantMode] = useState<PromptAssistantMode>("manual");
   const [assistantRoughIdea, setAssistantRoughIdea] = useState("");
-  const [assistantRefinedPrompt] = useState("");
+  const [assistantRefinedPrompt, setAssistantRefinedPrompt] = useState("");
+  const [assistantResult, setAssistantResult] = useState<PromptAssistantRefineResponse | null>(null);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [assistantCopyStatus, setAssistantCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
+  const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false);
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
@@ -365,6 +374,7 @@ export default function App() {
 
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
+  const hasCodexPrompt = instruction.trim().length > 0;
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -610,6 +620,58 @@ export default function App() {
     }
 
     setTimeout(() => setCodexCopyStatus(null), 1600);
+  }
+
+  function assistantProvider(): PromptAssistantProvider {
+    return promptAssistantMode === "manual" ? "fallback" : promptAssistantMode;
+  }
+
+  function assistantScope(): PromptAssistantScope {
+    switch (changeScope) {
+      case "only_selected_file":
+        return "single_file";
+      case "allow_related_files":
+        return "related_files";
+      case "whole_project":
+        return "whole_project";
+    }
+  }
+
+  async function handleGenerateAssistantPrompt() {
+    if (!assistantRoughIdea.trim()) return;
+
+    setIsGeneratingPrompt(true);
+    setAssistantError(null);
+    setAssistantResult(null);
+    try {
+      const result = await refinePromptAssistant({
+        provider: assistantProvider(),
+        rough_idea: assistantRoughIdea.trim(),
+        repo_name: selectedGithubRepo?.full_name || (repoUrl ? shortRepoName(repoUrl) : null),
+        target_file: targetFile || null,
+        change_scope: assistantScope(),
+        existing_readme_excerpt: filePreview?.path.toLowerCase().includes("readme")
+          ? filePreview.content
+          : null,
+      });
+      setAssistantResult(result);
+      setAssistantRefinedPrompt(result.refined_prompt);
+    } catch (generateError) {
+      setAssistantError(generateError instanceof Error ? generateError.message : "Unable to refine prompt.");
+    } finally {
+      setIsGeneratingPrompt(false);
+    }
+  }
+
+  async function handleCopyAssistantPrompt() {
+    try {
+      await Clipboard.setStringAsync(assistantRefinedPrompt);
+      setAssistantCopyStatus("copied");
+    } catch {
+      setAssistantCopyStatus("failed");
+    }
+
+    setTimeout(() => setAssistantCopyStatus(null), 1600);
   }
 
   async function handleLaunch() {
@@ -962,7 +1024,169 @@ export default function App() {
           </View>
         ) : null}
 
-        <Section title="Prompt Launcher">
+        <Section title="Prompt Assistant">
+          <View style={styles.promptAssistantBox}>
+            <View style={styles.promptAssistantHeader}>
+              <Text style={styles.promptAssistantTitle}>Prompt Assistant</Text>
+              <Text style={styles.promptAssistantCopy}>
+                The assistant helps plan the task. Codex executes the repository changes.
+              </Text>
+            </View>
+            <View style={styles.assistantModeGrid}>
+              {promptAssistantModes.map((mode) => (
+                <Pressable
+                  key={mode.value}
+                  onPress={() => {
+                    setPromptAssistantMode(mode.value);
+                    setAssistantError(null);
+                    setAssistantResult(null);
+                  }}
+                  style={({ pressed }) => [
+                    styles.assistantModeOption,
+                    promptAssistantMode === mode.value && styles.assistantModeSelected,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.radioDot,
+                      promptAssistantMode === mode.value && styles.radioDotSelected,
+                    ]}
+                  />
+                  <Text style={styles.assistantModeText}>{mode.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {promptAssistantMode === "manual" ? (
+              <Text style={styles.promptAssistantCopy}>
+                Manual mode uses a local prompt template only. Connect OpenAI or Claude for AI-assisted prompt generation.
+              </Text>
+            ) : (
+              <View style={styles.assistantProviderCard}>
+                <View style={styles.flex}>
+                  <Text style={styles.providerOptionText}>
+                    {promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic"}
+                  </Text>
+                  <Text style={styles.fileOptionMeta}>
+                    Status: {assistantResult && !assistantResult.used_fallback ? "Connected" : "Not connected"}
+                  </Text>
+                </View>
+                <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
+                  <Text style={styles.providerActionText}>Connect API key</Text>
+                </Pressable>
+                {assistantResult?.used_fallback ? (
+                  <Text style={styles.fileOptionMeta}>
+                    Backend API key is not configured, so AgentDock used the fallback prompt template.
+                  </Text>
+                ) : null}
+                <Text style={styles.fileOptionMeta}>API keys are read from server configuration only.</Text>
+              </View>
+            )}
+            <Field label="Rough idea">
+              <TextInput
+                value={assistantRoughIdea}
+                onChangeText={setAssistantRoughIdea}
+                placeholder="Describe what you want Codex to do in plain language."
+                placeholderTextColor="#6f7f92"
+                multiline
+                textAlignVertical="top"
+                style={[styles.input, styles.assistantDraftInput]}
+              />
+            </Field>
+            <View style={styles.assistantPreviewCard}>
+              <View style={styles.assistantPreviewHeader}>
+                <Text style={styles.providerOptionText}>Generated prompt</Text>
+                <Pressable
+                  disabled={!assistantRefinedPrompt.trim()}
+                  onPress={() => setIsAssistantPreviewExpanded((current) => !current)}
+                  style={({ pressed }) => [
+                    styles.providerActionButton,
+                    !assistantRefinedPrompt.trim() && styles.disabledButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.providerActionText}>
+                    {isAssistantPreviewExpanded ? "Collapse" : "Expand"}
+                  </Text>
+                </Pressable>
+              </View>
+              <Text
+                numberOfLines={isAssistantPreviewExpanded ? undefined : 4}
+                style={styles.assistantPreviewText}
+              >
+                {assistantRefinedPrompt || "Generate a prompt to preview it here."}
+              </Text>
+            </View>
+            <View style={styles.assistantActionRow}>
+              <Pressable
+                disabled={!assistantRoughIdea.trim() || isGeneratingPrompt}
+                onPress={() => void handleGenerateAssistantPrompt()}
+                style={({ pressed }) => [
+                  styles.providerActionButton,
+                  (!assistantRoughIdea.trim() || isGeneratingPrompt) && styles.disabledButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.providerActionText}>
+                  {isGeneratingPrompt ? "Generating" : "Generate Prompt"}
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={!assistantRefinedPrompt.trim()}
+                onPress={() => void handleCopyAssistantPrompt()}
+                style={({ pressed }) => [
+                  styles.providerActionButton,
+                  !assistantRefinedPrompt.trim() && styles.disabledButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.providerActionText}>
+                  {assistantCopyStatus === "copied" ? "Copied" : "Copy Prompt"}
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={!assistantRefinedPrompt.trim()}
+                onPress={() => setInstruction(assistantRefinedPrompt)}
+                style={({ pressed }) => [
+                  styles.providerActionButton,
+                  !assistantRefinedPrompt.trim() && styles.disabledButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.providerActionText}>Use Prompt</Text>
+              </Pressable>
+            </View>
+            {assistantError ? <Text style={styles.assistantErrorText}>{assistantError}</Text> : null}
+            {assistantResult?.used_fallback ? (
+              <Text style={styles.promptAssistantCopy}>
+                Fallback prompt template used. You can still edit the prompt before launching Codex.
+              </Text>
+            ) : null}
+          </View>
+        </Section>
+
+        <Section title="Codex Task">
+          <Text style={styles.launcherGroupTitle}>Execution</Text>
+          <Text style={styles.promptAssistantCopy}>
+            Codex will inspect the repository and execute the requested changes.
+          </Text>
+          <Field label="Final editable Codex prompt">
+            <TextInput
+              value={instruction}
+              onChangeText={setInstruction}
+              placeholder={promptPlaceholder}
+              placeholderTextColor="#6f7f92"
+              multiline
+              textAlignVertical="top"
+              style={[styles.input, hasCodexPrompt ? styles.promptInput : styles.promptInputCompact]}
+            />
+          </Field>
+          {!hasCodexPrompt ? (
+            <Text style={styles.promptAssistantCopy}>
+              Use a generated prompt or type a prompt above to reveal execution settings.
+            </Text>
+          ) : (
+            <>
           <Text style={styles.launcherGroupTitle}>Connections</Text>
           <View style={styles.githubPanel}>
             <View style={styles.githubHeader}>
@@ -1394,95 +1618,6 @@ export default function App() {
             ) : null}
           </View>
 
-          <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
-          <View style={styles.promptAssistantBox}>
-            <View style={styles.promptAssistantHeader}>
-              <Text style={styles.promptAssistantTitle}>Prompt Assistant</Text>
-              <Text style={styles.promptAssistantCopy}>
-                The assistant helps you prepare prompts. Codex still executes the code changes.
-              </Text>
-            </View>
-            <View style={styles.assistantModeGrid}>
-              {promptAssistantModes.map((mode) => (
-                <Pressable
-                  key={mode.value}
-                  onPress={() => setPromptAssistantMode(mode.value)}
-                  style={({ pressed }) => [
-                    styles.assistantModeOption,
-                    promptAssistantMode === mode.value && styles.assistantModeSelected,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.radioDot,
-                      promptAssistantMode === mode.value && styles.radioDotSelected,
-                    ]}
-                  />
-                  <Text style={styles.assistantModeText}>{mode.label}</Text>
-                </Pressable>
-              ))}
-            </View>
-            {promptAssistantMode === "manual" ? (
-              <Text style={styles.promptAssistantCopy}>
-                Write the Codex task prompt yourself.
-              </Text>
-            ) : (
-              <View style={styles.assistantProviderCard}>
-                <View style={styles.flex}>
-                  <Text style={styles.providerOptionText}>
-                    {promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic"}
-                  </Text>
-                  <Text style={styles.fileOptionMeta}>Status: Not connected</Text>
-                </View>
-                <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
-                  <Text style={styles.providerActionText}>Connect API key</Text>
-                </Pressable>
-                <Text style={styles.fileOptionMeta}>
-                  Connected status will be enabled after backend integration.
-                </Text>
-              </View>
-            )}
-            <Field label="Rough idea">
-              <TextInput
-                value={assistantRoughIdea}
-                onChangeText={setAssistantRoughIdea}
-                placeholder="Describe what you want Codex to do in plain language."
-                placeholderTextColor="#6f7f92"
-                multiline
-                textAlignVertical="top"
-                style={[styles.input, styles.assistantDraftInput]}
-              />
-            </Field>
-            <Field label="Refined prompt">
-              <TextInput
-                value={assistantRefinedPrompt}
-                placeholder="The refined Codex prompt will appear here after assistant generation is implemented."
-                placeholderTextColor="#6f7f92"
-                multiline
-                editable={false}
-                textAlignVertical="top"
-                style={[styles.input, styles.assistantDraftInput]}
-              />
-            </Field>
-            <View style={styles.assistantActionRow}>
-              <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
-                <Text style={styles.providerActionText}>Generate Codex Prompt</Text>
-              </Pressable>
-              <Pressable
-                disabled={!assistantRefinedPrompt.trim()}
-                onPress={() => setInstruction(assistantRefinedPrompt)}
-                style={({ pressed }) => [
-                  styles.providerActionButton,
-                  !assistantRefinedPrompt.trim() && styles.disabledButton,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.providerActionText}>Send to Codex Prompt</Text>
-              </Pressable>
-            </View>
-          </View>
-
           <View style={styles.scopeBox}>
             <Text style={styles.label}>Change scope</Text>
             {scopeOptions.map((option) => (
@@ -1506,17 +1641,6 @@ export default function App() {
             ))}
           </View>
 
-          <Field label="What should Codex build or modify?">
-            <TextInput
-              value={instruction}
-              onChangeText={setInstruction}
-              placeholder={promptPlaceholder}
-              placeholderTextColor="#6f7f92"
-              multiline
-              textAlignVertical="top"
-              style={[styles.input, styles.promptInput]}
-            />
-          </Field>
           <View style={styles.templateRow}>
             {templates.map((template) => (
               <Pressable
@@ -1545,6 +1669,8 @@ export default function App() {
               </Text>
             </Pressable>
           </View>
+            </>
+          )}
         </Section>
 
         <Section title="Recent tasks" right={<RefreshCw size={18} color="#8ba9c6" />}>
@@ -2118,6 +2244,10 @@ const styles = StyleSheet.create({
     minHeight: 148,
     lineHeight: 22,
   },
+  promptInputCompact: {
+    minHeight: 104,
+    lineHeight: 22,
+  },
   row: {
     flexDirection: "row",
     gap: 12,
@@ -2624,10 +2754,36 @@ const styles = StyleSheet.create({
     minHeight: 112,
     lineHeight: 21,
   },
+  assistantPreviewCard: {
+    gap: 8,
+    padding: 11,
+    borderRadius: 8,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  assistantPreviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  assistantPreviewText: {
+    minHeight: 66,
+    color: "#dcecf7",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
+  },
   assistantActionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  assistantErrorText: {
+    color: "#ffb8c0",
+    fontSize: 12,
+    lineHeight: 18,
   },
   codexAuthPanel: {
     gap: 10,

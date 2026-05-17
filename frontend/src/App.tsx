@@ -37,6 +37,7 @@ type TaskStatus =
 type AgentProvider = string
 type ChangeScope = 'only_selected_file' | 'allow_related_files' | 'whole_project'
 type PromptAssistantMode = 'manual' | 'openai' | 'anthropic'
+type PromptAssistantProvider = 'fallback' | 'openai' | 'anthropic'
 type ProviderConnectionStatus =
   | 'connected'
   | 'connecting'
@@ -280,6 +281,15 @@ type TaskDeleteResponse = {
   message: string
 }
 
+type PromptAssistantRefineResponse = {
+  provider: PromptAssistantProvider
+  title: string
+  recommended_scope: 'single_file' | 'related_files' | 'whole_project'
+  refined_prompt: string
+  safety_notes: string[]
+  used_fallback: boolean
+}
+
 type CreateTaskForm = {
   repoUrl: string
   baseBranch: string
@@ -390,7 +400,15 @@ function App() {
   const [promptAssistantMode, setPromptAssistantMode] =
     useState<PromptAssistantMode>('manual')
   const [assistantRoughIdea, setAssistantRoughIdea] = useState('')
-  const [assistantRefinedPrompt] = useState('')
+  const [assistantRefinedPrompt, setAssistantRefinedPrompt] = useState('')
+  const [assistantResult, setAssistantResult] =
+    useState<PromptAssistantRefineResponse | null>(null)
+  const [assistantError, setAssistantError] = useState<string | null>(null)
+  const [assistantCopyStatus, setAssistantCopyStatus] = useState<
+    'copied' | 'failed' | null
+  >(null)
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false)
+  const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false)
   const [githubSessionId, setGithubSessionId] = useState<string | null>(() =>
     localStorage.getItem(GITHUB_SESSION_STORAGE_KEY),
   )
@@ -480,6 +498,7 @@ function App() {
     () => githubRepos.find((repo) => repo.clone_url === form.repoUrl) ?? null,
     [form.repoUrl, githubRepos],
   )
+  const hasCodexPrompt = form.instruction.trim().length > 0
   const activeTaskOutsideTargetFiles = useMemo(
     () =>
       (taskDiff?.changed_files ?? []).filter(
@@ -1129,6 +1148,73 @@ function App() {
     }))
   }
 
+  function assistantProvider(): PromptAssistantProvider {
+    return promptAssistantMode === 'manual' ? 'fallback' : promptAssistantMode
+  }
+
+  function assistantChangeScope() {
+    switch (form.changeScope) {
+      case 'only_selected_file':
+        return 'single_file'
+      case 'allow_related_files':
+        return 'related_files'
+      case 'whole_project':
+        return 'whole_project'
+    }
+  }
+
+  async function generateAssistantPrompt() {
+    if (!assistantRoughIdea.trim()) return
+
+    setIsGeneratingPrompt(true)
+    setAssistantError(null)
+    setAssistantResult(null)
+
+    try {
+      const result = await request<PromptAssistantRefineResponse>(
+        '/prompt-assistant/refine',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            provider: assistantProvider(),
+            rough_idea: assistantRoughIdea.trim(),
+            repo_name:
+              selectedGithubRepo?.full_name ||
+              (form.repoUrl ? shortRepoName(form.repoUrl) : undefined),
+            target_file: form.targetFile || null,
+            change_scope: assistantChangeScope(),
+            existing_readme_excerpt:
+              filePreview?.path.toLowerCase().includes('readme')
+                ? filePreview.content
+                : null,
+          }),
+        },
+      )
+      setAssistantResult(result)
+      setAssistantRefinedPrompt(result.refined_prompt)
+    } catch (err) {
+      setAssistantError(formatError(err))
+    } finally {
+      setIsGeneratingPrompt(false)
+    }
+  }
+
+  async function copyAssistantPrompt() {
+    if (!assistantRefinedPrompt || !navigator.clipboard?.writeText) {
+      setAssistantCopyStatus('failed')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(assistantRefinedPrompt)
+      setAssistantCopyStatus('copied')
+    } catch {
+      setAssistantCopyStatus('failed')
+    }
+
+    setTimeout(() => setAssistantCopyStatus(null), 1600)
+  }
+
   const pushedBranchName = activeTask?.working_branch ?? activeTask?.remote_branch?.replace(/^origin\//, '')
   const pushedBranchUrl =
     activeTask?.branch_url ??
@@ -1268,11 +1354,10 @@ function App() {
             <div>
               <h2 id="create-task-title">
                 <Rocket size={20} />
-                Prompt Launcher
+                Prompt Assistant and Codex Task
               </h2>
               <p>
-                Paste a task prompt, let OpenAI Codex prepare the diff, then
-                commit, push, and open a pull request from AgentDock.
+                Plan the prompt first, then launch Codex execution when the task is ready.
               </p>
             </div>
           </div>
@@ -1499,248 +1584,7 @@ function App() {
               )}
             </div>
 
-            <div className="launcher-panel">
-              <div className="launcher-step">
-                <span>3</span>
-                <div>
-                  <strong>Repository</strong>
-                  <small>
-                    {selectedGithubRepo
-                      ? selectedGithubRepo.full_name
-                      : form.repoUrl || 'No repository selected'}
-                  </small>
-                </div>
-              </div>
-
-              {selectedGithubRepo && (
-                <div className="selected-repo-card">
-                  <strong>{selectedGithubRepo.full_name}</strong>
-                  <div className="badge-row">
-                    <span className="meta-badge">
-                      {selectedGithubRepo.private ? 'Private' : 'Public'}
-                    </span>
-                    <span className="meta-badge">
-                      {selectedGithubRepo.default_branch}
-                    </span>
-                    <span className={selectedGithubRepo.can_push ? 'meta-badge ok' : 'meta-badge'}>
-                      {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
-                    </span>
-                  </div>
-                  <small>{selectedGithubRepo.html_url}</small>
-                </div>
-              )}
-
-              {githubRepos.length > 0 && (
-                <details className="repo-select-panel" open={!selectedGithubRepo}>
-                  <summary>Choose from connected repositories</summary>
-                  <div className="github-repo-picker">
-                    <input
-                      value={githubRepoFilter}
-                      onChange={(event) => setGithubRepoFilter(event.target.value)}
-                      placeholder="Filter GitHub repositories"
-                    />
-                    <div className="github-repos">
-                      {filteredGithubRepos.map((repo) => (
-                        <button
-                          type="button"
-                          key={repo.id}
-                          className={
-                            form.repoUrl === repo.clone_url
-                              ? 'github-repo selected'
-                              : 'github-repo'
-                          }
-                          onClick={() => selectGithubRepo(repo)}
-                        >
-                          <span>{repo.full_name}</span>
-                          <small>
-                            {repo.private ? 'private' : 'public'} ·{' '}
-                            {repo.default_branch}
-                            {' · '}
-                            {repo.can_push ? 'push' : 'read'}
-                          </small>
-                        </button>
-                      ))}
-                      {filteredGithubRepos.length === 0 && (
-                        <p className="empty-state">No repositories match.</p>
-                      )}
-                    </div>
-                  </div>
-                </details>
-              )}
-
-              <details className="manual-repo-panel">
-                <summary>Advanced: use manual repository URL</summary>
-                <div className="form-pair">
-                  <label>
-                    Repository URL
-                    <input
-                      type="url"
-                      placeholder="https://github.com/org/repo"
-                      value={form.repoUrl}
-                      onChange={(event) =>
-                        setForm({ ...form, repoUrl: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Base Branch
-                    <input
-                      value={form.baseBranch}
-                      onChange={(event) =>
-                        setForm({ ...form, baseBranch: event.target.value })
-                      }
-                    />
-                  </label>
-                </div>
-              </details>
-            </div>
-
-            <div className="launcher-panel repository-explorer">
-              <div className="launcher-step">
-                <span>4</span>
-                <div>
-                  <strong>Target file</strong>
-                  <small>
-                    {form.targetFile ||
-                      (form.changeScope === 'whole_project'
-                        ? 'Optional context for whole-project tasks'
-                        : 'Select a target file')}
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  className="mini-action"
-                  disabled={isLoadingFiles || !form.repoUrl}
-                  onClick={() => void loadRepositoryFiles()}
-                >
-                  {isLoadingFiles ? 'Loading files' : 'Browse files'}
-                </button>
-              </div>
-
-              {repoFiles.length > 0 && (
-                <div className="explorer-grid">
-                  <div className="explorer-list">
-                    <input
-                      value={fileFilter}
-                      onChange={(event) => setFileFilter(event.target.value)}
-                      placeholder="Search files by path"
-                    />
-                    <div className="file-list">
-                      {filteredRepoFiles.map((entry) => (
-                        <button
-                          type="button"
-                          key={entry.path}
-                          className={
-                            form.targetFile === entry.path
-                              ? 'file-option selected'
-                              : 'file-option'
-                          }
-                          onClick={() => void selectTargetFile(entry.path)}
-                        >
-                          <span>{entry.path}</span>
-                          <small>
-                            {entry.extension ?? 'file'}
-                            {typeof entry.size === 'number'
-                              ? ` · ${entry.size} bytes`
-                              : ''}
-                          </small>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="explorer-preview">
-                    {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
-                    {filePreview ? (
-                      <>
-                        <div className="file-preview-header">
-                          <div className="file-preview-title">
-                            <div>
-                              <strong>{filePreview.path}</strong>
-                              <small>
-                                {formatBytes(filePreview.size)}
-                                {filePreview.truncated ? ' · Preview truncated' : ''}
-                              </small>
-                            </div>
-                            <button
-                              type="button"
-                              className="preview-copy-button"
-                              onClick={() => void copyFilePreview()}
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          {previewCopyStatus && (
-                            <small className="preview-copy-status">
-                              {previewCopyStatus === 'copied'
-                                ? 'Copied'
-                                : 'Copy failed'}
-                            </small>
-                          )}
-                        </div>
-                        <pre className="file-preview">{filePreview.content}</pre>
-                      </>
-                    ) : (
-                      <p className="empty-state">A read-only preview appears here after selecting a file.</p>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="launcher-panel">
-              <div className="launcher-step">
-                <span>5</span>
-                <div>
-                  <strong>Task Prompt</strong>
-                  <small>Describe the code change Codex should prepare.</small>
-                </div>
-              </div>
-              <div className="template-strip" aria-label="Quick prompt templates">
-                {promptTemplates.map((template) => (
-                  <button
-                    type="button"
-                    className="template-button"
-                    key={template.label}
-                    onClick={() => applyPromptTemplate(
-                      form.targetFile
-                        ? `${template.prompt}\n\nFocus on ${form.targetFile}.`
-                        : template.prompt,
-                    )}
-                  >
-                    {template.label}
-                  </button>
-                ))}
-              </div>
-              <div className="scope-options">
-                {scopeOptions.map((option) => (
-                  <label
-                    key={option.value}
-                    className={[
-                      'scope-option',
-                      form.changeScope === option.value ? 'selected' : '',
-                      option.broad ? 'broad' : '',
-                    ].filter(Boolean).join(' ')}
-                  >
-                    <input
-                      type="radio"
-                      name="changeScope"
-                      checked={form.changeScope === option.value}
-                      onChange={() =>
-                        setForm({ ...form, changeScope: option.value })
-                      }
-                    />
-                    <span>{option.label}</span>
-                    <small>{option.description}</small>
-                    {option.broad && (
-                      <em>
-                        Broader repository access. More files may appear in diff review.
-                      </em>
-                    )}
-                  </label>
-                ))}
-              </div>
-
-              <div className="prompt-assistant" aria-labelledby="prompt-assistant-title">
+            <div className="launcher-panel prompt-assistant" aria-labelledby="prompt-assistant-title">
                 <div className="prompt-assistant-header">
                   <div>
                     <h3 id="prompt-assistant-title">
@@ -1748,7 +1592,7 @@ function App() {
                       Prompt Assistant
                     </h3>
                     <p>
-                      The assistant helps you prepare prompts. Codex still executes the code changes.
+                      The assistant helps plan the task. Codex executes the repository changes.
                     </p>
                   </div>
                 </div>
@@ -1766,7 +1610,11 @@ function App() {
                         type="radio"
                         name="promptAssistantMode"
                         checked={promptAssistantMode === mode.value}
-                        onChange={() => setPromptAssistantMode(mode.value)}
+                        onChange={() => {
+                          setPromptAssistantMode(mode.value)
+                          setAssistantError(null)
+                          setAssistantResult(null)
+                        }}
                       />
                       <span>{mode.label}</span>
                     </label>
@@ -1775,7 +1623,7 @@ function App() {
 
                 {promptAssistantMode === 'manual' ? (
                   <p className="assistant-mode-note">
-                    Write the Codex task prompt yourself.
+                    Manual mode uses a local prompt template only. Connect OpenAI or Claude for AI-assisted prompt generation.
                   </p>
                 ) : (
                   <div className="assistant-provider-card">
@@ -1785,13 +1633,23 @@ function App() {
                           ? 'ChatGPT / OpenAI'
                           : 'Claude / Anthropic'}
                       </strong>
-                      <span>Status: Not connected</span>
+                      <span>
+                        Status:{' '}
+                        {assistantResult && !assistantResult.used_fallback
+                          ? 'Connected'
+                          : 'Not connected'}
+                      </span>
                     </div>
                     <button type="button" className="mini-action secondary" disabled>
                       Connect API key
                     </button>
+                    {assistantResult?.used_fallback && (
+                      <small>
+                        Backend API key is not configured, so AgentDock used the fallback prompt template.
+                      </small>
+                    )}
                     <small>
-                      Connected status will be enabled after backend integration.
+                      API keys are read from server configuration only.
                     </small>
                   </div>
                 )}
@@ -1806,20 +1664,48 @@ function App() {
                       placeholder="Describe what you want Codex to do in plain language."
                     />
                   </label>
-                  <label>
-                    Refined prompt
-                    <textarea
-                      rows={4}
-                      value={assistantRefinedPrompt}
-                      readOnly
-                      placeholder="The refined Codex prompt will appear here after assistant generation is implemented."
-                    />
-                  </label>
+                </div>
+                <div className="assistant-preview-card">
+                  <div className="assistant-preview-header">
+                    <strong>Generated prompt</strong>
+                    <button
+                      type="button"
+                      className="mini-action secondary"
+                      disabled={!assistantRefinedPrompt.trim()}
+                      onClick={() =>
+                        setIsAssistantPreviewExpanded((current) => !current)
+                      }
+                    >
+                      {isAssistantPreviewExpanded ? 'Collapse' : 'Expand'}
+                    </button>
+                  </div>
+                  <p
+                    className={[
+                      'assistant-preview-text',
+                      isAssistantPreviewExpanded ? 'expanded' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {assistantRefinedPrompt ||
+                      'Generate a prompt to preview it here.'}
+                  </p>
                 </div>
 
                 <div className="assistant-actions">
-                  <button type="button" className="mini-action" disabled>
-                    Generate Codex Prompt
+                  <button
+                    type="button"
+                    className="mini-action"
+                    disabled={!assistantRoughIdea.trim() || isGeneratingPrompt}
+                    onClick={() => void generateAssistantPrompt()}
+                  >
+                    {isGeneratingPrompt ? 'Generating' : 'Generate Prompt'}
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-action secondary"
+                    disabled={!assistantRefinedPrompt.trim()}
+                    onClick={() => void copyAssistantPrompt()}
+                  >
+                    {assistantCopyStatus === 'copied' ? 'Copied' : 'Copy Prompt'}
                   </button>
                   <button
                     type="button"
@@ -1832,17 +1718,35 @@ function App() {
                       }))
                     }
                   >
-                    Send to Codex Prompt
+                    Use Prompt
                   </button>
                 </div>
+                {assistantError && <p className="assistant-error">{assistantError}</p>}
+                {assistantResult?.used_fallback && (
+                  <p className="assistant-mode-note">
+                    Fallback prompt template used. You can still edit the prompt before launching Codex.
+                  </p>
+                )}
+            </div>
+
+            <div className="launcher-panel codex-task-section">
+              <div className="launcher-step">
+                <span>3</span>
+                <div>
+                  <strong>Codex Task</strong>
+                  <small>Execution</small>
+                </div>
               </div>
+              <p className="provider-mode-note">
+                Codex will inspect the repository and execute the requested changes.
+              </p>
 
               <label className="prompt-field">
-                What should Codex build or modify?
+                Final editable Codex prompt
                 <textarea
                   required
                   minLength={10}
-                  rows={7}
+                  rows={hasCodexPrompt ? 6 : 4}
                   placeholder={`Describe the task. Examples:\n- ${promptPlaceholderExamples.join('\n- ')}`}
                   value={form.instruction}
                   onChange={(event) =>
@@ -1853,17 +1757,253 @@ function App() {
                   {form.instruction.length} characters
                 </span>
               </label>
+
+              {hasCodexPrompt ? (
+                <>
+                  <div className="template-strip" aria-label="Quick prompt templates">
+                    {promptTemplates.map((template) => (
+                      <button
+                        type="button"
+                        className="template-button"
+                        key={template.label}
+                        onClick={() => applyPromptTemplate(
+                          form.targetFile
+                            ? `${template.prompt}\n\nFocus on ${form.targetFile}.`
+                            : template.prompt,
+                        )}
+                      >
+                        {template.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="scope-options">
+                    {scopeOptions.map((option) => (
+                      <label
+                        key={option.value}
+                        className={[
+                          'scope-option',
+                          form.changeScope === option.value ? 'selected' : '',
+                          option.broad ? 'broad' : '',
+                        ].filter(Boolean).join(' ')}
+                      >
+                        <input
+                          type="radio"
+                          name="changeScope"
+                          checked={form.changeScope === option.value}
+                          onChange={() =>
+                            setForm({ ...form, changeScope: option.value })
+                          }
+                        />
+                        <span>{option.label}</span>
+                        <small>{option.description}</small>
+                        {option.broad && (
+                          <em>
+                            Broader repository access. More files may appear in diff review.
+                          </em>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="selected-repo-card">
+                    <strong>Repository target</strong>
+                    <small>
+                      {selectedGithubRepo
+                        ? selectedGithubRepo.full_name
+                        : form.repoUrl || 'No repository selected'}
+                    </small>
+                    {selectedGithubRepo && (
+                      <div className="badge-row">
+                        <span className="meta-badge">
+                          {selectedGithubRepo.private ? 'Private' : 'Public'}
+                        </span>
+                        <span className="meta-badge">
+                          {selectedGithubRepo.default_branch}
+                        </span>
+                        <span className={selectedGithubRepo.can_push ? 'meta-badge ok' : 'meta-badge'}>
+                          {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {githubRepos.length > 0 && (
+                    <details className="repo-select-panel" open={!selectedGithubRepo}>
+                      <summary>Choose from connected repositories</summary>
+                      <div className="github-repo-picker">
+                        <input
+                          value={githubRepoFilter}
+                          onChange={(event) => setGithubRepoFilter(event.target.value)}
+                          placeholder="Filter GitHub repositories"
+                        />
+                        <div className="github-repos">
+                          {filteredGithubRepos.map((repo) => (
+                            <button
+                              type="button"
+                              key={repo.id}
+                              className={
+                                form.repoUrl === repo.clone_url
+                                  ? 'github-repo selected'
+                                  : 'github-repo'
+                              }
+                              onClick={() => selectGithubRepo(repo)}
+                            >
+                              <span>{repo.full_name}</span>
+                              <small>
+                                {repo.private ? 'private' : 'public'} ·{' '}
+                                {repo.default_branch}
+                                {' · '}
+                                {repo.can_push ? 'push' : 'read'}
+                              </small>
+                            </button>
+                          ))}
+                          {filteredGithubRepos.length === 0 && (
+                            <p className="empty-state">No repositories match.</p>
+                          )}
+                        </div>
+                      </div>
+                    </details>
+                  )}
+
+                  <details className="manual-repo-panel">
+                    <summary>Advanced: use manual repository URL</summary>
+                    <div className="form-pair">
+                      <label>
+                        Repository URL
+                        <input
+                          type="url"
+                          placeholder="https://github.com/org/repo"
+                          value={form.repoUrl}
+                          onChange={(event) =>
+                            setForm({ ...form, repoUrl: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Base Branch
+                        <input
+                          value={form.baseBranch}
+                          onChange={(event) =>
+                            setForm({ ...form, baseBranch: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </details>
+
+                  <div className="repository-explorer">
+                    <div className="launcher-step">
+                      <span>4</span>
+                      <div>
+                        <strong>Target file</strong>
+                        <small>
+                          {form.targetFile ||
+                            (form.changeScope === 'whole_project'
+                              ? 'Optional context for whole-project tasks'
+                              : 'Select a target file')}
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="mini-action"
+                        disabled={isLoadingFiles || !form.repoUrl}
+                        onClick={() => void loadRepositoryFiles()}
+                      >
+                        {isLoadingFiles ? 'Loading files' : 'Browse files'}
+                      </button>
+                    </div>
+
+                    {repoFiles.length > 0 && (
+                      <div className="explorer-grid">
+                        <div className="explorer-list">
+                          <input
+                            value={fileFilter}
+                            onChange={(event) => setFileFilter(event.target.value)}
+                            placeholder="Search files by path"
+                          />
+                          <div className="file-list">
+                            {filteredRepoFiles.map((entry) => (
+                              <button
+                                type="button"
+                                key={entry.path}
+                                className={
+                                  form.targetFile === entry.path
+                                    ? 'file-option selected'
+                                    : 'file-option'
+                                }
+                                onClick={() => void selectTargetFile(entry.path)}
+                              >
+                                <span>{entry.path}</span>
+                                <small>
+                                  {entry.extension ?? 'file'}
+                                  {typeof entry.size === 'number'
+                                    ? ` · ${entry.size} bytes`
+                                    : ''}
+                                </small>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="explorer-preview">
+                          {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
+                          {filePreview ? (
+                            <>
+                              <div className="file-preview-header">
+                                <div className="file-preview-title">
+                                  <div>
+                                    <strong>{filePreview.path}</strong>
+                                    <small>
+                                      {formatBytes(filePreview.size)}
+                                      {filePreview.truncated ? ' · Preview truncated' : ''}
+                                    </small>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="preview-copy-button"
+                                    onClick={() => void copyFilePreview()}
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                                {previewCopyStatus && (
+                                  <small className="preview-copy-status">
+                                    {previewCopyStatus === 'copied'
+                                      ? 'Copied'
+                                      : 'Copy failed'}
+                                  </small>
+                                )}
+                              </div>
+                              <pre className="file-preview">{filePreview.content}</pre>
+                            </>
+                          ) : (
+                            <p className="empty-state">A read-only preview appears here after selecting a file.</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="assistant-mode-note">
+                  Use a generated prompt or type a prompt above to reveal execution settings.
+                </p>
+              )}
             </div>
 
-            <div className="safety-note">
-              Safety: AgentDock creates an isolated workspace and branch.
-              Nothing is pushed or opened as a PR unless explicitly enabled.
-            </div>
+            {hasCodexPrompt && (
+              <>
+                <div className="safety-note">
+                  Safety: AgentDock creates an isolated workspace and branch.
+                  Nothing is pushed or opened as a PR unless explicitly enabled.
+                </div>
 
-            <button type="submit" disabled={isCreating}>
-              <Rocket size={17} />
-              {isCreating ? 'Launching Codex Task' : 'Launch Codex Task'}
-            </button>
+                <button type="submit" disabled={isCreating}>
+                  <Rocket size={17} />
+                  {isCreating ? 'Launching Codex Task' : 'Launch Codex Task'}
+                </button>
+              </>
+            )}
           </form>
         </section>
       </section>
