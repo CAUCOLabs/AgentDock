@@ -188,6 +188,14 @@ export type PromptAssistantRefineResponse = {
   used_fallback: boolean;
 };
 
+export type PromptAssistantProviderStatus = {
+  provider: PromptAssistantProvider;
+  connected: boolean;
+  label: string;
+  last_verified_at?: string | null;
+  error?: string | null;
+};
+
 export type RepositoryFileEntry = {
   path: string;
   type: "file" | "directory";

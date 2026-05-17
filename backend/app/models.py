@@ -223,6 +223,35 @@ class PromptAssistantRefineResponse(BaseModel):
     used_fallback: bool
 
 
+class PromptAssistantProviderStatus(BaseModel):
+    """
+    Public prompt assistant provider status. Raw keys are never returned.
+    """
+
+    provider: PromptAssistantProvider
+    connected: bool
+    label: str
+    last_verified_at: datetime | None = None
+    error: str | None = None
+
+
+class PromptAssistantProviderConnectRequest(BaseModel):
+    """
+    Store a server-side API key for a prompt assistant provider.
+    """
+
+    provider: PromptAssistantProvider
+    api_key: str = Field(..., min_length=1)
+
+
+class PromptAssistantProviderRequest(BaseModel):
+    """
+    Request for prompt assistant provider status actions.
+    """
+
+    provider: PromptAssistantProvider
+
+
 class TaskCreateRequest(BaseModel):
     """
     Request body for creating a new coding task.

@@ -294,6 +294,14 @@ type PromptAssistantRefineResponse = {
   used_fallback: boolean
 }
 
+type PromptAssistantProviderStatus = {
+  provider: PromptAssistantProvider
+  connected: boolean
+  label: string
+  last_verified_at?: string | null
+  error?: string | null
+}
+
 type CreateTaskForm = {
   repoUrl: string
   baseBranch: string
@@ -416,6 +424,20 @@ function App() {
   const [assistantCopyStatus, setAssistantCopyStatus] = useState<
     'copied' | 'failed' | null
   >(null)
+  const [promptAssistantProviders, setPromptAssistantProviders] = useState<
+    PromptAssistantProviderStatus[]
+  >([])
+  const [assistantApiKeyProvider, setAssistantApiKeyProvider] =
+    useState<PromptAssistantProvider | null>(null)
+  const [assistantApiKey, setAssistantApiKey] = useState('')
+  const [assistantProviderAction, setAssistantProviderAction] =
+    useState<PromptAssistantProvider | null>(null)
+  const [assistantProviderError, setAssistantProviderError] = useState<string | null>(
+    null,
+  )
+  const [assistantProviderNotice, setAssistantProviderNotice] = useState<string | null>(
+    null,
+  )
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false)
   const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false)
   const [githubSessionId, setGithubSessionId] = useState<string | null>(() =>
@@ -482,6 +504,17 @@ function App() {
       activeTask.agent
     : null
   const hasConnectedProvider = codexProvider?.status === 'connected'
+  const activePromptAssistantProviderId: PromptAssistantProvider | null =
+    promptAssistantMode === 'manual' ? null : promptAssistantMode
+  const activePromptAssistantProvider = useMemo(
+    () =>
+      activePromptAssistantProviderId === null
+        ? null
+        : promptAssistantProviders.find(
+            (provider) => provider.provider === activePromptAssistantProviderId,
+          ) ?? null,
+    [activePromptAssistantProviderId, promptAssistantProviders],
+  )
 
   const filteredRepoFiles = useMemo(
     () =>
@@ -525,6 +558,7 @@ function App() {
   useEffect(() => {
     void loadTasks()
     void loadAgentProviders()
+    void loadPromptAssistantProviders()
   }, [])
 
   useEffect(() => {
@@ -633,6 +667,105 @@ function App() {
       setAgentProviders(await request<AgentProviderMetadata[]>('/agent-providers'))
     } catch {
       setAgentProviders([])
+    }
+  }
+
+  async function loadPromptAssistantProviders() {
+    try {
+      setPromptAssistantProviders(
+        await request<PromptAssistantProviderStatus[]>(
+          '/prompt-assistant/providers',
+        ),
+      )
+    } catch {
+      setPromptAssistantProviders([])
+    }
+  }
+
+  async function savePromptAssistantKey(provider: PromptAssistantProvider) {
+    if (provider === 'fallback' || !assistantApiKey.trim()) return
+
+    setAssistantProviderAction(provider)
+    setAssistantProviderError(null)
+    setAssistantProviderNotice(null)
+
+    try {
+      const status = await request<PromptAssistantProviderStatus>(
+        '/prompt-assistant/providers/connect',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            provider,
+            api_key: assistantApiKey.trim(),
+          }),
+        },
+      )
+      setPromptAssistantProviders((current) =>
+        upsertPromptAssistantProvider(current, status),
+      )
+      setAssistantApiKey('')
+      setAssistantApiKeyProvider(null)
+      setAssistantProviderNotice(`${status.label} connected.`)
+    } catch (err) {
+      setAssistantProviderError(formatError(err))
+    } finally {
+      setAssistantProviderAction(null)
+    }
+  }
+
+  async function testPromptAssistantProvider(provider: PromptAssistantProvider) {
+    if (provider === 'fallback') return
+
+    setAssistantProviderAction(provider)
+    setAssistantProviderError(null)
+    setAssistantProviderNotice(null)
+
+    try {
+      const status = await request<PromptAssistantProviderStatus>(
+        '/prompt-assistant/providers/test',
+        {
+          method: 'POST',
+          body: JSON.stringify({ provider }),
+        },
+      )
+      setPromptAssistantProviders((current) =>
+        upsertPromptAssistantProvider(current, status),
+      )
+      if (status.error) {
+        setAssistantProviderError(status.error)
+      } else {
+        setAssistantProviderNotice(`${status.label} connection verified.`)
+      }
+    } catch (err) {
+      setAssistantProviderError(formatError(err))
+    } finally {
+      setAssistantProviderAction(null)
+    }
+  }
+
+  async function disconnectPromptAssistantProvider(provider: PromptAssistantProvider) {
+    if (provider === 'fallback') return
+
+    setAssistantProviderAction(provider)
+    setAssistantProviderError(null)
+    setAssistantProviderNotice(null)
+
+    try {
+      const status = await request<PromptAssistantProviderStatus>(
+        '/prompt-assistant/providers/disconnect',
+        {
+          method: 'POST',
+          body: JSON.stringify({ provider }),
+        },
+      )
+      setPromptAssistantProviders((current) =>
+        upsertPromptAssistantProvider(current, status),
+      )
+      setAssistantProviderNotice(`${status.label} disconnected.`)
+    } catch (err) {
+      setAssistantProviderError(formatError(err))
+    } finally {
+      setAssistantProviderAction(null)
     }
   }
 
@@ -1724,6 +1857,8 @@ function App() {
                           setPromptAssistantMode(mode.value)
                           setAssistantError(null)
                           setAssistantResult(null)
+                          setAssistantProviderError(null)
+                          setAssistantProviderNotice(null)
                         }}
                       />
                       <span>{mode.label}</span>
@@ -1739,27 +1874,129 @@ function App() {
                   <div className="assistant-provider-card">
                     <div>
                       <strong>
-                        {promptAssistantMode === 'openai'
-                          ? 'ChatGPT / OpenAI'
-                          : 'Claude / Anthropic'}
+                        {activePromptAssistantProvider?.label ??
+                          (promptAssistantMode === 'openai'
+                            ? 'ChatGPT / OpenAI'
+                            : 'Claude / Anthropic')}
                       </strong>
                       <span>
                         Status:{' '}
-                        {assistantResult && !assistantResult.used_fallback
+                        {activePromptAssistantProvider?.connected
                           ? 'Connected'
                           : 'Not connected'}
                       </span>
+                      {activePromptAssistantProvider?.last_verified_at && (
+                        <small>
+                          Last verified{' '}
+                          {formatTimestamp(activePromptAssistantProvider.last_verified_at)}
+                        </small>
+                      )}
                     </div>
-                    <button type="button" className="mini-action secondary" disabled>
-                      Connect API key
-                    </button>
+                    <div className="provider-card-actions">
+                      <button
+                        type="button"
+                        className="mini-action secondary"
+                        onClick={() => {
+                          setAssistantApiKeyProvider(activePromptAssistantProviderId)
+                          setAssistantApiKey('')
+                          setAssistantProviderError(null)
+                          setAssistantProviderNotice(null)
+                        }}
+                      >
+                        {activePromptAssistantProvider?.connected
+                          ? 'Replace API key'
+                          : 'Connect API key'}
+                      </button>
+                      <button
+                        type="button"
+                        className="mini-action secondary"
+                        disabled={
+                          !activePromptAssistantProvider?.connected ||
+                          assistantProviderAction === activePromptAssistantProviderId
+                        }
+                        onClick={() =>
+                          activePromptAssistantProviderId &&
+                          void testPromptAssistantProvider(activePromptAssistantProviderId)
+                        }
+                      >
+                        Test connection
+                      </button>
+                      {activePromptAssistantProvider?.connected && (
+                        <button
+                          type="button"
+                          className="mini-action"
+                          disabled={assistantProviderAction === activePromptAssistantProviderId}
+                          onClick={() =>
+                            activePromptAssistantProviderId &&
+                            void disconnectPromptAssistantProvider(
+                              activePromptAssistantProviderId,
+                            )
+                          }
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </div>
+                    {assistantApiKeyProvider === activePromptAssistantProviderId && (
+                      <div className="assistant-key-panel">
+                        <label>
+                          API key
+                          <input
+                            type="password"
+                            value={assistantApiKey}
+                            onChange={(event) => setAssistantApiKey(event.target.value)}
+                            autoComplete="off"
+                            spellCheck={false}
+                            placeholder={
+                              promptAssistantMode === 'openai'
+                                ? 'sk-...'
+                                : 'sk-ant-...'
+                            }
+                          />
+                        </label>
+                        <div className="provider-card-actions">
+                          <button
+                            type="button"
+                            className="mini-action secondary"
+                            onClick={() => {
+                              setAssistantApiKey('')
+                              setAssistantApiKeyProvider(null)
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="mini-action"
+                            disabled={
+                              !assistantApiKey.trim() ||
+                              assistantProviderAction === activePromptAssistantProviderId
+                            }
+                            onClick={() =>
+                              activePromptAssistantProviderId &&
+                              void savePromptAssistantKey(activePromptAssistantProviderId)
+                            }
+                          >
+                            Save key
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {assistantProviderNotice && (
+                      <small>{assistantProviderNotice}</small>
+                    )}
+                    {(assistantProviderError || activePromptAssistantProvider?.error) && (
+                      <small className="assistant-error">
+                        {assistantProviderError ?? activePromptAssistantProvider?.error}
+                      </small>
+                    )}
                     {assistantResult?.used_fallback && (
                       <small>
-                        Backend API key is not configured, so AgentDock used the fallback prompt template.
+                        Provider is not connected or failed, so AgentDock used the fallback prompt template.
                       </small>
                     )}
                     <small>
-                      API keys are read from server configuration only.
+                      API keys are stored server-side for Prompt Assistant only.
                     </small>
                   </div>
                 )}
@@ -2872,6 +3109,16 @@ function rawExecutionLogs(events: TaskLogEvent[]) {
     .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
     .filter((event) => !isInternalRuntimeLog(event.message))
     .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message))
+}
+
+function upsertPromptAssistantProvider(
+  providers: PromptAssistantProviderStatus[],
+  next: PromptAssistantProviderStatus,
+) {
+  const existing = providers.filter((provider) => provider.provider !== next.provider)
+  return [...existing, next].sort((left, right) =>
+    left.provider.localeCompare(right.provider),
+  )
 }
 
 function isCodexAuthFlowResponse(

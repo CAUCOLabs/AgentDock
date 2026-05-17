@@ -31,14 +31,17 @@ import {
   approveTask,
   connectAgentProvider,
   connectAgentProviderApiKey,
+  connectPromptAssistantProvider as connectPromptAssistantProviderApi,
   createPullRequest,
   createTask,
   deleteTask,
   disconnectAgentProvider,
+  disconnectPromptAssistantProvider as disconnectPromptAssistantProviderApi,
   getAgentProviders,
   getHealth,
   getGitHubInstallations,
   getGitHubRepos,
+  getPromptAssistantProviders,
   getRepositoryFilePreview,
   getRepositoryFiles,
   getTask,
@@ -52,6 +55,7 @@ import {
   refinePromptAssistant,
   startGitHubAuth,
   subscribeToApiConnectivity,
+  testPromptAssistantProvider as testPromptAssistantProviderApi,
   verifyAgentProvider,
 } from "./src/api";
 import { API_BASE_URL } from "./src/config";
@@ -70,6 +74,7 @@ import type {
   TaskLogEvent,
   TaskLogsResponse,
   PromptAssistantProvider,
+  PromptAssistantProviderStatus,
   PromptAssistantRefineResponse,
   PromptAssistantScope,
   RepositoryFileEntry,
@@ -324,6 +329,14 @@ function rawExecutionLogs(events: TaskLogEvent[]) {
     .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message));
 }
 
+function upsertPromptAssistantProvider(
+  providers: PromptAssistantProviderStatus[],
+  next: PromptAssistantProviderStatus
+) {
+  const existing = providers.filter((provider) => provider.provider !== next.provider);
+  return [...existing, next].sort((left, right) => left.provider.localeCompare(right.provider));
+}
+
 function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
   if (providerId === "codex") {
     switch (readiness) {
@@ -445,6 +458,12 @@ export default function App() {
   const [assistantResult, setAssistantResult] = useState<PromptAssistantRefineResponse | null>(null);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [assistantCopyStatus, setAssistantCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const [promptAssistantProviders, setPromptAssistantProviders] = useState<PromptAssistantProviderStatus[]>([]);
+  const [assistantApiKeyProvider, setAssistantApiKeyProvider] = useState<PromptAssistantProvider | null>(null);
+  const [assistantApiKey, setAssistantApiKey] = useState("");
+  const [assistantProviderAction, setAssistantProviderAction] = useState<PromptAssistantProvider | null>(null);
+  const [assistantProviderError, setAssistantProviderError] = useState<string | null>(null);
+  const [assistantProviderNotice, setAssistantProviderNotice] = useState<string | null>(null);
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false);
   const [targetFile, setTargetFile] = useState("");
@@ -498,6 +517,15 @@ export default function App() {
   const isTaskActive = selectedTask ? isLiveActivityStatus(selectedTask.status) : false;
   const timelineLogs = useMemo(() => visibleTimelineLogs(logs.events), [logs.events]);
   const rawLogs = useMemo(() => rawExecutionLogs(logs.events), [logs.events]);
+  const activePromptAssistantProviderId: PromptAssistantProvider | null =
+    promptAssistantMode === "manual" ? null : promptAssistantMode;
+  const activePromptAssistantProvider = useMemo(
+    () =>
+      activePromptAssistantProviderId === null
+        ? null
+        : promptAssistantProviders.find((provider) => provider.provider === activePromptAssistantProviderId) ?? null,
+    [activePromptAssistantProviderId, promptAssistantProviders]
+  );
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -611,6 +639,14 @@ export default function App() {
     }
   }, []);
 
+  const loadPromptAssistantProviders = useCallback(async () => {
+    try {
+      setPromptAssistantProviders(await getPromptAssistantProviders());
+    } catch {
+      setPromptAssistantProviders([]);
+    }
+  }, []);
+
   const loadInitialData = useCallback(async () => {
     setIsRefreshing(true);
     setError(null);
@@ -625,6 +661,7 @@ export default function App() {
     }
 
     try {
+      await loadPromptAssistantProviders();
       const nextTasks = await refreshTasks();
       if (selectedTaskId && nextTasks.some((task) => task.task_id === selectedTaskId)) {
         await loadTaskDetail(selectedTaskId);
@@ -634,7 +671,7 @@ export default function App() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadTaskDetail, refreshTasks, selectedTaskId]);
+  }, [loadPromptAssistantProviders, loadTaskDetail, refreshTasks, selectedTaskId]);
 
   useEffect(() => {
     const unsubscribe = subscribeToApiConnectivity((snapshot) => {
@@ -774,6 +811,66 @@ export default function App() {
     }
 
     setTimeout(() => setCodexCopyStatus(null), 1600);
+  }
+
+  async function handleSavePromptAssistantKey(provider: PromptAssistantProvider) {
+    if (provider === "fallback" || !assistantApiKey.trim()) return;
+
+    setAssistantProviderAction(provider);
+    setAssistantProviderError(null);
+    setAssistantProviderNotice(null);
+
+    try {
+      const status = await connectPromptAssistantProviderApi(provider, assistantApiKey.trim());
+      setPromptAssistantProviders((current) => upsertPromptAssistantProvider(current, status));
+      setAssistantApiKey("");
+      setAssistantApiKeyProvider(null);
+      setAssistantProviderNotice(`${status.label} connected.`);
+    } catch (connectError) {
+      setAssistantProviderError(connectError instanceof Error ? connectError.message : "Unable to connect provider.");
+    } finally {
+      setAssistantProviderAction(null);
+    }
+  }
+
+  async function handleTestPromptAssistantProvider(provider: PromptAssistantProvider) {
+    if (provider === "fallback") return;
+
+    setAssistantProviderAction(provider);
+    setAssistantProviderError(null);
+    setAssistantProviderNotice(null);
+
+    try {
+      const status = await testPromptAssistantProviderApi(provider);
+      setPromptAssistantProviders((current) => upsertPromptAssistantProvider(current, status));
+      if (status.error) {
+        setAssistantProviderError(status.error);
+      } else {
+        setAssistantProviderNotice(`${status.label} connection verified.`);
+      }
+    } catch (testError) {
+      setAssistantProviderError(testError instanceof Error ? testError.message : "Unable to test provider.");
+    } finally {
+      setAssistantProviderAction(null);
+    }
+  }
+
+  async function handleDisconnectPromptAssistantProvider(provider: PromptAssistantProvider) {
+    if (provider === "fallback") return;
+
+    setAssistantProviderAction(provider);
+    setAssistantProviderError(null);
+    setAssistantProviderNotice(null);
+
+    try {
+      const status = await disconnectPromptAssistantProviderApi(provider);
+      setPromptAssistantProviders((current) => upsertPromptAssistantProvider(current, status));
+      setAssistantProviderNotice(`${status.label} disconnected.`);
+    } catch (disconnectError) {
+      setAssistantProviderError(disconnectError instanceof Error ? disconnectError.message : "Unable to disconnect provider.");
+    } finally {
+      setAssistantProviderAction(null);
+    }
   }
 
   function assistantProvider(): PromptAssistantProvider {
@@ -1306,6 +1403,8 @@ export default function App() {
                     setPromptAssistantMode(mode.value);
                     setAssistantError(null);
                     setAssistantResult(null);
+                    setAssistantProviderError(null);
+                    setAssistantProviderNotice(null);
                   }}
                   style={({ pressed }) => [
                     styles.assistantModeOption,
@@ -1331,21 +1430,122 @@ export default function App() {
               <View style={styles.assistantProviderCard}>
                 <View style={styles.flex}>
                   <Text style={styles.providerOptionText}>
-                    {promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic"}
+                    {activePromptAssistantProvider?.label ??
+                      (promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic")}
                   </Text>
                   <Text style={styles.fileOptionMeta}>
-                    Status: {assistantResult && !assistantResult.used_fallback ? "Connected" : "Not connected"}
+                    Status: {activePromptAssistantProvider?.connected ? "Connected" : "Not connected"}
                   </Text>
+                  {activePromptAssistantProvider?.last_verified_at ? (
+                    <Text style={styles.fileOptionMeta}>
+                      Last verified {formatDate(activePromptAssistantProvider.last_verified_at)}
+                    </Text>
+                  ) : null}
                 </View>
-                <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
-                  <Text style={styles.providerActionText}>Connect API key</Text>
-                </Pressable>
-                {assistantResult?.used_fallback ? (
-                  <Text style={styles.fileOptionMeta}>
-                    Backend API key is not configured, so AgentDock used the fallback prompt template.
+                <View style={styles.providerCardActions}>
+                  <Pressable
+                    onPress={() => {
+                      setAssistantApiKeyProvider(activePromptAssistantProviderId);
+                      setAssistantApiKey("");
+                      setAssistantProviderError(null);
+                      setAssistantProviderNotice(null);
+                    }}
+                    style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.providerActionText}>
+                      {activePromptAssistantProvider?.connected ? "Replace API key" : "Connect API key"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={!activePromptAssistantProvider?.connected || assistantProviderAction === activePromptAssistantProviderId}
+                    onPress={() =>
+                      activePromptAssistantProviderId
+                        ? void handleTestPromptAssistantProvider(activePromptAssistantProviderId)
+                        : undefined
+                    }
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      (!activePromptAssistantProvider?.connected || assistantProviderAction === activePromptAssistantProviderId) &&
+                        styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>Test connection</Text>
+                  </Pressable>
+                  {activePromptAssistantProvider?.connected ? (
+                    <Pressable
+                      disabled={assistantProviderAction === activePromptAssistantProviderId}
+                      onPress={() =>
+                        activePromptAssistantProviderId
+                          ? void handleDisconnectPromptAssistantProvider(activePromptAssistantProviderId)
+                          : undefined
+                      }
+                      style={({ pressed }) => [
+                        styles.providerActionButton,
+                        assistantProviderAction === activePromptAssistantProviderId && styles.disabledButton,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.providerActionText}>Disconnect</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                {assistantApiKeyProvider === activePromptAssistantProviderId ? (
+                  <View style={styles.assistantKeyPanel}>
+                    <Text style={styles.label}>API key</Text>
+                    <TextInput
+                      value={assistantApiKey}
+                      onChangeText={setAssistantApiKey}
+                      placeholder={promptAssistantMode === "openai" ? "sk-..." : "sk-ant-..."}
+                      placeholderTextColor="#6f7f92"
+                      secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={styles.input}
+                    />
+                    <View style={styles.providerCardActions}>
+                      <Pressable
+                        onPress={() => {
+                          setAssistantApiKey("");
+                          setAssistantApiKeyProvider(null);
+                        }}
+                        style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                      >
+                        <Text style={styles.providerActionText}>Cancel</Text>
+                      </Pressable>
+                      <Pressable
+                        disabled={!assistantApiKey.trim() || assistantProviderAction === activePromptAssistantProviderId}
+                        onPress={() =>
+                          activePromptAssistantProviderId
+                            ? void handleSavePromptAssistantKey(activePromptAssistantProviderId)
+                            : undefined
+                        }
+                        style={({ pressed }) => [
+                          styles.providerActionButton,
+                          (!assistantApiKey.trim() || assistantProviderAction === activePromptAssistantProviderId) &&
+                            styles.disabledButton,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={styles.providerActionText}>Save key</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
+                {assistantProviderNotice ? (
+                  <Text style={styles.fileOptionMeta}>{assistantProviderNotice}</Text>
+                ) : null}
+                {assistantProviderError || activePromptAssistantProvider?.error ? (
+                  <Text style={styles.assistantErrorText}>
+                    {assistantProviderError ?? activePromptAssistantProvider?.error}
                   </Text>
                 ) : null}
-                <Text style={styles.fileOptionMeta}>API keys are read from server configuration only.</Text>
+                {assistantResult?.used_fallback ? (
+                  <Text style={styles.fileOptionMeta}>
+                    Provider is not connected or failed, so AgentDock used the fallback prompt template.
+                  </Text>
+                ) : null}
+                <Text style={styles.fileOptionMeta}>API keys are stored server-side for Prompt Assistant only.</Text>
               </View>
             )}
             <Field label="Rough idea">
@@ -3000,6 +3200,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(45, 106, 150, 0.13)",
     borderWidth: 1,
     borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  assistantKeyPanel: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(2, 8, 15, 0.52)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
   },
   assistantDraftInput: {
     minHeight: 112,

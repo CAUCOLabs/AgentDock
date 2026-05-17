@@ -6,6 +6,8 @@ import type {
   AgentProviderVerificationResponse,
   PromptAssistantRefineRequest,
   PromptAssistantRefineResponse,
+  PromptAssistantProvider,
+  PromptAssistantProviderStatus,
   TaskApprovalRequest,
   TaskApprovalResponse,
   TaskMergePullRequestResponse,
@@ -153,6 +155,31 @@ export function refinePromptAssistant(payload: PromptAssistantRefineRequest) {
   return request<PromptAssistantRefineResponse>("/prompt-assistant/refine", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function getPromptAssistantProviders() {
+  return request<PromptAssistantProviderStatus[]>("/prompt-assistant/providers");
+}
+
+export function connectPromptAssistantProvider(provider: PromptAssistantProvider, apiKey: string) {
+  return request<PromptAssistantProviderStatus>("/prompt-assistant/providers/connect", {
+    method: "POST",
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+}
+
+export function testPromptAssistantProvider(provider: PromptAssistantProvider) {
+  return request<PromptAssistantProviderStatus>("/prompt-assistant/providers/test", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
+}
+
+export function disconnectPromptAssistantProvider(provider: PromptAssistantProvider) {
+  return request<PromptAssistantProviderStatus>("/prompt-assistant/providers/disconnect", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
   });
 }
 

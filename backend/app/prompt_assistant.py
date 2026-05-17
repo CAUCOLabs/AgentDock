@@ -1,6 +1,9 @@
 import json
 import logging
 import re
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -9,6 +12,7 @@ from app.config import Settings
 from app.models import (
     PromptAssistantChangeScope,
     PromptAssistantProvider,
+    PromptAssistantProviderStatus,
     PromptAssistantRefineRequest,
     PromptAssistantRefineResponse,
 )
@@ -17,9 +21,26 @@ logger = logging.getLogger(__name__)
 
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s]+"),
+    re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
 ]
+
+_PROMPT_PROVIDER_LABELS = {
+    PromptAssistantProvider.openai: "ChatGPT / OpenAI",
+    PromptAssistantProvider.anthropic: "Claude / Anthropic",
+}
+
+
+@dataclass(frozen=True)
+class PromptAssistantCredential:
+    provider: PromptAssistantProvider
+    api_key: str
+    connected_at: datetime
+    updated_at: datetime
+    last_verified_at: datetime | None
+    last_error: str | None
 
 
 def redact_secret_text(message: str) -> str:
@@ -32,6 +53,192 @@ def redact_secret_text(message: str) -> str:
     return redacted
 
 
+class PromptAssistantCredentialStore:
+    """
+    SQLite-backed server-side credential storage for Prompt Assistant providers.
+
+    Keys are intentionally isolated from task logs and API responses. AgentDock
+    does not currently have a general encryption layer, so callers must never
+    expose raw credential rows outside this class.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.db_path = settings.db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize_database()
+
+    def list_statuses(self) -> list[PromptAssistantProviderStatus]:
+        credentials = {
+            credential.provider: credential
+            for credential in (
+                self.get_credential(PromptAssistantProvider.openai),
+                self.get_credential(PromptAssistantProvider.anthropic),
+            )
+            if credential is not None
+        }
+        return [
+            self._status_for_provider(provider, credentials.get(provider))
+            for provider in (PromptAssistantProvider.openai, PromptAssistantProvider.anthropic)
+        ]
+
+    def connect(self, provider: PromptAssistantProvider, api_key: str) -> PromptAssistantProviderStatus:
+        self._validate_connectable_provider(provider)
+        now = self._datetime_to_text(datetime.now(timezone.utc))
+        with self._connect() as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO prompt_assistant_provider_credentials (
+                        provider,
+                        api_key,
+                        connected_at,
+                        updated_at,
+                        last_verified_at,
+                        last_error
+                    )
+                    VALUES (?, ?, ?, ?, NULL, NULL)
+                    ON CONFLICT(provider) DO UPDATE SET
+                        api_key = excluded.api_key,
+                        updated_at = excluded.updated_at,
+                        last_verified_at = NULL,
+                        last_error = NULL
+                    """,
+                    (provider.value, api_key, now, now),
+                )
+
+        credential = self.get_credential(provider)
+        return self._status_for_provider(provider, credential)
+
+    def disconnect(self, provider: PromptAssistantProvider) -> PromptAssistantProviderStatus:
+        self._validate_connectable_provider(provider)
+        with self._connect() as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM prompt_assistant_provider_credentials WHERE provider = ?",
+                    (provider.value,),
+                )
+        return self._status_for_provider(provider, None)
+
+    def mark_test_result(
+        self,
+        provider: PromptAssistantProvider,
+        *,
+        ok: bool,
+        error: str | None = None,
+    ) -> PromptAssistantProviderStatus:
+        self._validate_connectable_provider(provider)
+        credential = self.get_credential(provider)
+        if credential is None:
+            return self._status_for_provider(
+                provider,
+                None,
+                error="Provider is not connected.",
+            )
+
+        now = self._datetime_to_text(datetime.now(timezone.utc))
+        sanitized_error = redact_secret_text(error or "") if error else None
+        with self._connect() as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE prompt_assistant_provider_credentials
+                    SET last_verified_at = ?,
+                        last_error = ?
+                    WHERE provider = ?
+                    """,
+                    (now if ok else credential.last_verified_at and self._datetime_to_text(credential.last_verified_at), None if ok else sanitized_error, provider.value),
+                )
+
+        return self._status_for_provider(
+            provider,
+            self.get_credential(provider),
+            error=None if ok else sanitized_error,
+        )
+
+    def get_credential(
+        self,
+        provider: PromptAssistantProvider,
+    ) -> PromptAssistantCredential | None:
+        self._validate_connectable_provider(provider)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT provider, api_key, connected_at, updated_at, last_verified_at, last_error
+                FROM prompt_assistant_provider_credentials
+                WHERE provider = ?
+                """,
+                (provider.value,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return PromptAssistantCredential(
+            provider=PromptAssistantProvider(row["provider"]),
+            api_key=str(row["api_key"]),
+            connected_at=self._datetime_from_text(row["connected_at"]),
+            updated_at=self._datetime_from_text(row["updated_at"]),
+            last_verified_at=(
+                self._datetime_from_text(row["last_verified_at"])
+                if row["last_verified_at"]
+                else None
+            ),
+            last_error=(
+                redact_secret_text(str(row["last_error"]))
+                if row["last_error"]
+                else None
+            ),
+        )
+
+    def _status_for_provider(
+        self,
+        provider: PromptAssistantProvider,
+        credential: PromptAssistantCredential | None,
+        *,
+        error: str | None = None,
+    ) -> PromptAssistantProviderStatus:
+        status_error = error or (credential.last_error if credential else None)
+        return PromptAssistantProviderStatus(
+            provider=provider,
+            connected=credential is not None,
+            label=_PROMPT_PROVIDER_LABELS[provider],
+            last_verified_at=credential.last_verified_at if credential else None,
+            error=redact_secret_text(status_error) if status_error else None,
+        )
+
+    def _initialize_database(self) -> None:
+        with self._connect() as connection:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prompt_assistant_provider_credentials (
+                        provider TEXT PRIMARY KEY,
+                        api_key TEXT NOT NULL,
+                        connected_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_verified_at TEXT,
+                        last_error TEXT
+                    )
+                    """
+                )
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _datetime_to_text(self, value: datetime) -> str:
+        return value.isoformat()
+
+    def _datetime_from_text(self, value: str) -> datetime:
+        return datetime.fromisoformat(value)
+
+    def _validate_connectable_provider(self, provider: PromptAssistantProvider) -> None:
+        if provider not in _PROMPT_PROVIDER_LABELS:
+            raise ValueError("Prompt Assistant provider must be openai or anthropic.")
+
+
 def refine_prompt(
     payload: PromptAssistantRefineRequest,
     settings: Settings,
@@ -39,16 +246,64 @@ def refine_prompt(
     provider = payload.provider
 
     if provider == PromptAssistantProvider.openai:
-        if not settings.openai_api_key:
+        api_key = _api_key_for_provider(settings, provider)
+        if not api_key:
             return fallback_response(payload)
-        return _refine_with_openai(payload, settings)
+        return _refine_with_openai(payload, api_key)
 
     if provider == PromptAssistantProvider.anthropic:
-        if not settings.anthropic_api_key:
+        api_key = _api_key_for_provider(settings, provider)
+        if not api_key:
             return fallback_response(payload)
-        return _refine_with_anthropic(payload, settings)
+        return _refine_with_anthropic(payload, api_key)
 
     return fallback_response(payload)
+
+
+def prompt_assistant_provider_statuses(settings: Settings) -> list[PromptAssistantProviderStatus]:
+    return PromptAssistantCredentialStore(settings).list_statuses()
+
+
+def connect_prompt_assistant_provider(
+    settings: Settings,
+    provider: PromptAssistantProvider,
+    api_key: str,
+) -> PromptAssistantProviderStatus:
+    return PromptAssistantCredentialStore(settings).connect(provider, api_key)
+
+
+def disconnect_prompt_assistant_provider(
+    settings: Settings,
+    provider: PromptAssistantProvider,
+) -> PromptAssistantProviderStatus:
+    return PromptAssistantCredentialStore(settings).disconnect(provider)
+
+
+def test_prompt_assistant_provider(
+    settings: Settings,
+    provider: PromptAssistantProvider,
+) -> PromptAssistantProviderStatus:
+    store = PromptAssistantCredentialStore(settings)
+    credential = store.get_credential(provider)
+    if credential is None:
+        return store.mark_test_result(provider, ok=False, error="Provider is not connected.")
+
+    try:
+        if provider == PromptAssistantProvider.openai:
+            _test_openai_key(credential.api_key)
+        elif provider == PromptAssistantProvider.anthropic:
+            _test_anthropic_key(credential.api_key)
+        else:
+            raise ValueError("Prompt Assistant provider must be openai or anthropic.")
+    except Exception as exc:
+        logger.warning(
+            "Prompt assistant provider test failed for %s: %s",
+            provider.value,
+            redact_secret_text(str(exc)),
+        )
+        return store.mark_test_result(provider, ok=False, error=str(exc))
+
+    return store.mark_test_result(provider, ok=True)
 
 
 def fallback_response(payload: PromptAssistantRefineRequest) -> PromptAssistantRefineResponse:
@@ -122,13 +377,13 @@ def fallback_response(payload: PromptAssistantRefineRequest) -> PromptAssistantR
 
 def _refine_with_openai(
     payload: PromptAssistantRefineRequest,
-    settings: Settings,
+    api_key: str,
 ) -> PromptAssistantRefineResponse:
     try:
         response = httpx.post(
             "https://api.openai.com/v1/responses",
             headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
@@ -154,13 +409,13 @@ def _refine_with_openai(
 
 def _refine_with_anthropic(
     payload: PromptAssistantRefineRequest,
-    settings: Settings,
+    api_key: str,
 ) -> PromptAssistantRefineResponse:
     try:
         response = httpx.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": settings.anthropic_api_key or "",
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },
@@ -184,6 +439,63 @@ def _refine_with_anthropic(
             redact_secret_text(str(exc)),
         )
         return fallback_response(payload)
+
+
+def _api_key_for_provider(
+    settings: Settings,
+    provider: PromptAssistantProvider,
+) -> str | None:
+    try:
+        credential = PromptAssistantCredentialStore(settings).get_credential(provider)
+        if credential and credential.api_key:
+            return credential.api_key
+    except Exception as exc:
+        logger.warning(
+            "Prompt assistant credential lookup failed for %s: %s",
+            provider.value,
+            redact_secret_text(str(exc)),
+        )
+
+    if provider == PromptAssistantProvider.openai:
+        return settings.openai_api_key
+    if provider == PromptAssistantProvider.anthropic:
+        return settings.anthropic_api_key
+    return None
+
+
+def _test_openai_key(api_key: str) -> None:
+    response = httpx.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4.1-mini",
+            "input": "Reply with OK.",
+            "max_output_tokens": 8,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+
+
+def _test_anthropic_key(api_key: str) -> None:
+    response = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
 
 
 def _provider_prompt(payload: PromptAssistantRefineRequest) -> str:

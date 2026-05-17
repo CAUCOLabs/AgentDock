@@ -39,6 +39,9 @@ from app.models import (
     LogoutResponse,
     PromptAssistantRefineRequest,
     PromptAssistantRefineResponse,
+    PromptAssistantProviderConnectRequest,
+    PromptAssistantProviderRequest,
+    PromptAssistantProviderStatus,
     RepositoryFilePreviewRequest,
     RepositoryFilePreviewResponse,
     RepositoryFilesRequest,
@@ -58,7 +61,14 @@ from app.models import (
     create_task_id,
     create_working_branch,
 )
-from app.prompt_assistant import refine_prompt
+from app.prompt_assistant import (
+    connect_prompt_assistant_provider,
+    disconnect_prompt_assistant_provider,
+    prompt_assistant_provider_statuses,
+    refine_prompt,
+    redact_secret_text,
+    test_prompt_assistant_provider,
+)
 from app.repo_browser import RepoBrowserError, RepoBrowserService
 from app.task_runner import TaskRunner, TaskRunnerError
 from app.task_store import TaskStore
@@ -74,6 +84,7 @@ app = FastAPI(
 
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s]+"),
     re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
@@ -595,6 +606,87 @@ def refine_prompt_assistant(
     """
 
     return refine_prompt(payload, settings)
+
+
+@app.get(
+    "/prompt-assistant/providers",
+    response_model=list[PromptAssistantProviderStatus],
+)
+def list_prompt_assistant_providers(
+    settings: Settings = Depends(get_settings),
+) -> list[PromptAssistantProviderStatus]:
+    """
+    Return public Prompt Assistant provider connection status.
+    """
+
+    return prompt_assistant_provider_statuses(settings)
+
+
+@app.post(
+    "/prompt-assistant/providers/connect",
+    response_model=PromptAssistantProviderStatus,
+)
+def connect_prompt_assistant_provider_endpoint(
+    payload: PromptAssistantProviderConnectRequest,
+    settings: Settings = Depends(get_settings),
+) -> PromptAssistantProviderStatus:
+    """
+    Store a Prompt Assistant provider API key server-side.
+    """
+
+    try:
+        return connect_prompt_assistant_provider(
+            settings,
+            provider=payload.provider,
+            api_key=payload.api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redact_secret_text(str(exc)),
+        ) from exc
+
+
+@app.post(
+    "/prompt-assistant/providers/disconnect",
+    response_model=PromptAssistantProviderStatus,
+)
+def disconnect_prompt_assistant_provider_endpoint(
+    payload: PromptAssistantProviderRequest,
+    settings: Settings = Depends(get_settings),
+) -> PromptAssistantProviderStatus:
+    """
+    Remove a stored Prompt Assistant provider API key.
+    """
+
+    try:
+        return disconnect_prompt_assistant_provider(settings, provider=payload.provider)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redact_secret_text(str(exc)),
+        ) from exc
+
+
+@app.post(
+    "/prompt-assistant/providers/test",
+    response_model=PromptAssistantProviderStatus,
+)
+def test_prompt_assistant_provider_endpoint(
+    payload: PromptAssistantProviderRequest,
+    settings: Settings = Depends(get_settings),
+) -> PromptAssistantProviderStatus:
+    """
+    Verify a stored Prompt Assistant provider API key.
+    """
+
+    try:
+        return test_prompt_assistant_provider(settings, provider=payload.provider)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redact_secret_text(str(exc)),
+        ) from exc
 
 
 @app.post(
