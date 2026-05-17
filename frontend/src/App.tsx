@@ -396,7 +396,6 @@ function App() {
   const [workspaceStatus, setWorkspaceStatus] =
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
-  const [isLiveActivityExpanded, setIsLiveActivityExpanded] = useState(false)
   const [isPollingLogs, setIsPollingLogs] = useState(false)
   const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null)
   const [logsCopyStatus, setLogsCopyStatus] = useState<'copied' | 'failed' | null>(
@@ -506,7 +505,6 @@ function App() {
   )
   const hasCodexPrompt = form.instruction.trim().length > 0
   const isTaskActive = activeTask ? isLiveActivityStatus(activeTask.status) : false
-  const visibleTaskLogs = isLiveActivityExpanded ? taskLogs : taskLogs.slice(-6)
   const activeTaskOutsideTargetFiles = useMemo(
     () =>
       (taskDiff?.changed_files ?? []).filter(
@@ -1415,6 +1413,86 @@ function App() {
           </div>
         </aside>
 
+        <div className="workflow-column">
+        <section className="github-connect glass-card" aria-labelledby="github-connect-title">
+          <div>
+            <strong id="github-connect-title">
+              <GitBranch size={17} />
+              GitHub connection
+            </strong>
+            <span>
+              {connectedGithubLogin
+                ? `Connected as ${connectedGithubLogin}`
+                : 'Disconnected. Connect GitHub or use a manual repository URL in Codex Task.'}
+            </span>
+          </div>
+
+          <div className="github-actions">
+            <button
+              type="button"
+              className="mini-action"
+              onClick={() =>
+                connectedGithubLogin
+                  ? void loadGithubRepos()
+                  : void connectGithub()
+              }
+              disabled={isConnectingGithub || isLoadingGithubRepos}
+            >
+              {connectedGithubLogin
+                ? isLoadingGithubRepos
+                  ? 'Loading repos'
+                  : 'Refresh repos'
+                : isConnectingGithub
+                  ? 'Connecting'
+                  : 'Connect GitHub'}
+            </button>
+            {connectedGithubLogin && (
+              <button
+                type="button"
+                className="mini-action secondary"
+                onClick={() => void logoutGithub()}
+              >
+                Logout
+              </button>
+            )}
+          </div>
+
+          {githubRepos.length > 0 && (
+            <div className="github-repo-picker">
+              <input
+                value={githubRepoFilter}
+                onChange={(event) => setGithubRepoFilter(event.target.value)}
+                placeholder="Filter GitHub repositories"
+              />
+              <div className="github-repos">
+                {filteredGithubRepos.map((repo) => (
+                  <button
+                    type="button"
+                    key={repo.id}
+                    className={
+                      form.repoUrl === repo.clone_url
+                        ? 'github-repo selected'
+                        : 'github-repo'
+                    }
+                    onClick={() => selectGithubRepo(repo)}
+                  >
+                    <span>{repo.full_name}</span>
+                    <small>
+                      {repo.private ? 'private' : 'public'} ·{' '}
+                      {repo.default_branch}
+                      {' · '}
+                      {repo.can_push ? 'push' : 'read'}
+                    </small>
+                  </button>
+                ))}
+                {filteredGithubRepos.length === 0 && (
+                  <p className="empty-state">No repositories match.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
         <section className="task-create prompt-launcher glass-card" aria-labelledby="create-task-title">
           <div className="launcher-heading">
             <div>
@@ -1429,52 +1507,7 @@ function App() {
           </div>
 
           <form onSubmit={(event) => void createTask(event)}>
-            <div className="launcher-panel">
-              <div className="launcher-step">
-                <span>1</span>
-                <div>
-                  <strong>Connections</strong>
-                  <small>
-                    {connectedGithubLogin
-                      ? `Connected as ${connectedGithubLogin}`
-                      : 'Connect GitHub or use a manual repository URL.'}
-                  </small>
-                </div>
-              </div>
-              <div>
-                <div className="github-actions">
-                  <button
-                    type="button"
-                    className="mini-action"
-                    onClick={() =>
-                      connectedGithubLogin
-                        ? void loadGithubRepos()
-                        : void connectGithub()
-                    }
-                    disabled={isConnectingGithub || isLoadingGithubRepos}
-                  >
-                    {connectedGithubLogin
-                      ? isLoadingGithubRepos
-                        ? 'Loading repos'
-                        : 'Refresh repos'
-                      : isConnectingGithub
-                        ? 'Connecting'
-                        : 'Connect GitHub'}
-                  </button>
-                  {connectedGithubLogin && (
-                    <button
-                      type="button"
-                      className="mini-action"
-                      onClick={() => void logoutGithub()}
-                    >
-                      Logout
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="launcher-panel">
+            <div className="launcher-panel codex-auth-section">
               <div className="launcher-step">
                 <span>2</span>
                 <div>
@@ -2072,74 +2105,7 @@ function App() {
             )}
           </form>
         </section>
-      </section>
-
-      <section className="live-activity glass-card" aria-labelledby="live-activity-title">
-        <div className="section-heading">
-          <h2 id="live-activity-title">
-            <Activity size={17} />
-            Live Activity
-          </h2>
-          <div className="section-actions">
-            {isPollingLogs && (
-              <span className="live-indicator">
-                <span />
-                Live
-              </span>
-            )}
-            {taskLogs.length > 0 && (
-              <button
-                type="button"
-                className="mini-action secondary"
-                onClick={() =>
-                  setIsLiveActivityExpanded((current) => !current)
-                }
-              >
-                {isLiveActivityExpanded ? 'Collapse' : 'Expand'}
-              </button>
-            )}
-            {activeTask && (
-              <button
-                type="button"
-                className="mini-action"
-                onClick={() => void loadTaskLogs(activeTask.task_id)}
-              >
-                Refresh logs
-              </button>
-            )}
-            <button
-              type="button"
-              className="mini-action secondary"
-              disabled={taskLogs.length === 0}
-              onClick={() => void copyTaskLogs()}
-            >
-              {logsCopyStatus === 'copied' ? 'Copied' : 'Copy logs'}
-            </button>
-          </div>
         </div>
-        {logsRefreshError && <p className="assistant-error">{logsRefreshError}</p>}
-        {!activeTask ? (
-          <p className="empty-state">Select a task to watch activity.</p>
-        ) : visibleTaskLogs.length === 0 ? (
-          <p className="empty-state">No log events yet.</p>
-        ) : (
-          <ol className="live-log-list">
-            {visibleTaskLogs.map((event, index) => (
-              <li key={`${event.timestamp}-${index}`}>
-                <time>{formatTimestamp(event.timestamp)}</time>
-                <span className={`log-level ${event.level}`}>
-                  {event.level}
-                </span>
-                <p>{redactLogMessage(event.message)}</p>
-              </li>
-            ))}
-          </ol>
-        )}
-        {activeTask && !isTaskActive && taskLogs.length > 0 && (
-          <p className="provider-mode-note">
-            Polling stopped. Last activity remains visible.
-          </p>
-        )}
       </section>
 
       <section className="diff-viewer glass-card primary-review" aria-labelledby="diff-viewer-title">
@@ -2593,9 +2559,35 @@ function App() {
                   <Terminal size={16} />
                   Agent log
                 </h3>
-                <span>{taskLogs.length} events</span>
+                <div className="section-actions">
+                  {isPollingLogs && (
+                    <span className="live-indicator">
+                      <span />
+                      Live
+                    </span>
+                  )}
+                  <span>{taskLogs.length} events</span>
+                  {activeTask && (
+                    <button
+                      type="button"
+                      className="mini-action"
+                      onClick={() => void loadTaskLogs(activeTask.task_id)}
+                    >
+                      Refresh logs
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="mini-action secondary"
+                    disabled={taskLogs.length === 0}
+                    onClick={() => void copyTaskLogs()}
+                  >
+                    {logsCopyStatus === 'copied' ? 'Copied' : 'Copy logs'}
+                  </button>
+                </div>
               </div>
 
+              {logsRefreshError && <p className="assistant-error">{logsRefreshError}</p>}
               {taskLogs.length === 0 ? (
                 <p className="empty-state">No task events to show.</p>
               ) : (
@@ -2606,10 +2598,15 @@ function App() {
                       <span className={`log-level ${event.level}`}>
                         {event.level}
                       </span>
-                      <p>{event.message}</p>
+                      <p>{redactLogMessage(event.message)}</p>
                     </li>
                   ))}
                 </ol>
+              )}
+              {activeTask && !isTaskActive && taskLogs.length > 0 && (
+                <p className="provider-mode-note">
+                  Polling stopped. Last activity remains visible.
+                </p>
               )}
             </section>
           </div>

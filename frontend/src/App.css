@@ -200,6 +200,13 @@
   order: 0;
 }
 
+.workflow-column {
+  display: grid;
+  gap: 16px;
+  order: -1;
+  min-width: 0;
+}
+
 .glass-card {
   width: 100%;
   min-width: 0;
@@ -590,6 +597,26 @@ form {
   background: rgba(2, 6, 23, 0.26);
   border: 1px solid rgba(148, 163, 184, 0.13);
   border-radius: 16px;
+}
+
+.prompt-assistant {
+  order: 1;
+}
+
+.codex-auth-section {
+  order: 2;
+}
+
+.codex-task-section {
+  order: 3;
+}
+
+.safety-note {
+  order: 4;
+}
+
+.task-create form > button[type='submit'] {
+  order: 5;
 }
 
 .launcher-step {
@@ -1574,6 +1601,7 @@ pre {
 
 @media (min-width: 1100px) {
   .prompt-launcher,
+  .workflow-column,
   .task-dashboard {
     order: initial;
   }

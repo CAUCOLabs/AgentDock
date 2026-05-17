@@ -368,7 +368,6 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
   const [diff, setDiff] = useState<TaskDiffResponse>(emptyDiff);
   const [logs, setLogs] = useState<TaskLogsResponse>(emptyLogs);
-  const [isLiveActivityExpanded, setIsLiveActivityExpanded] = useState(false);
   const [isPollingLogs, setIsPollingLogs] = useState(false);
   const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null);
   const [logsCopyStatus, setLogsCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -398,7 +397,6 @@ export default function App() {
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
   const hasCodexPrompt = instruction.trim().length > 0;
   const isTaskActive = selectedTask ? isLiveActivityStatus(selectedTask.status) : false;
-  const visibleLogs = isLiveActivityExpanded ? logs.events : logs.events.slice(-6);
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -1097,6 +1095,95 @@ export default function App() {
           </View>
         ) : null}
 
+        <Section title="GitHub connection">
+          <View style={styles.githubPanel}>
+            <View style={styles.githubHeader}>
+              <View style={styles.githubTitleRow}>
+                <GitBranch size={18} color="#dcecf7" />
+                <Text style={styles.githubTitle}>GitHub</Text>
+              </View>
+              <Text style={styles.githubSubtitle}>
+                {connectedGithubLogin
+                  ? `Connected as ${connectedGithubLogin}`
+                  : "Disconnected. Connect GitHub or use a manual repository URL in Codex Task."}
+              </Text>
+            </View>
+            <View style={styles.githubButtonRow}>
+              <Pressable
+                onPress={() => connectedGithubLogin ? void handleRefreshGitHub() : void handleConnectGitHub()}
+                disabled={isConnectingGithub || isLoadingGithubRepos}
+                style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.smallButtonText}>
+                  {connectedGithubLogin
+                    ? isLoadingGithubRepos
+                      ? "Loading repos"
+                      : "Refresh repos"
+                    : isConnectingGithub
+                      ? "Connecting"
+                      : "Connect GitHub"}
+                </Text>
+              </Pressable>
+              {githubSessionId ? (
+                <>
+                  <Pressable
+                    onPress={() => void handleRefreshGitHub()}
+                    disabled={isLoadingGithubRepos}
+                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.smallButtonText}>Check status</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void handleLogoutGitHub()}
+                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.smallButtonText}>Logout</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </View>
+            {githubRepos.length > 0 ? (
+              <View style={styles.githubRepoPicker}>
+                <TextInput
+                  value={githubRepoFilter}
+                  onChangeText={setGithubRepoFilter}
+                  placeholder="Filter GitHub repositories"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <ScrollView
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.githubRepoScroller}
+                  contentContainerStyle={styles.githubRepoList}
+                >
+                  {filteredGithubRepos.map((repo) => (
+                    <Pressable
+                      key={repo.id}
+                      onPress={() => handleSelectGitHubRepo(repo)}
+                      style={({ pressed }) => [
+                        styles.githubRepoOption,
+                        repoUrl === repo.clone_url && styles.fileOptionSelected,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text style={styles.fileOptionPath}>{repo.full_name}</Text>
+                      <Text style={styles.fileOptionMeta}>
+                        {repo.private ? "private" : "public"} · {repo.default_branch} · {repo.can_push ? "push" : "read"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                  {filteredGithubRepos.length === 0 ? (
+                    <Text style={styles.emptyText}>No repositories match.</Text>
+                  ) : null}
+                </ScrollView>
+              </View>
+            ) : null}
+          </View>
+        </Section>
+
         <Section title="Prompt Assistant">
           <View style={styles.promptAssistantBox}>
             <View style={styles.promptAssistantHeader}>
@@ -1260,94 +1347,6 @@ export default function App() {
             </Text>
           ) : (
             <>
-          <Text style={styles.launcherGroupTitle}>Connections</Text>
-          <View style={styles.githubPanel}>
-            <View style={styles.githubHeader}>
-              <View style={styles.githubTitleRow}>
-                <GitBranch size={18} color="#dcecf7" />
-                <Text style={styles.githubTitle}>GitHub</Text>
-              </View>
-              <Text style={styles.githubSubtitle}>
-                {connectedGithubLogin
-                  ? `Connected as ${connectedGithubLogin}`
-                  : "Manual repository URL mode remains available."}
-              </Text>
-            </View>
-            <View style={styles.githubButtonRow}>
-              <Pressable
-                onPress={() => connectedGithubLogin ? void handleRefreshGitHub() : void handleConnectGitHub()}
-                disabled={isConnectingGithub || isLoadingGithubRepos}
-                style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-              >
-                <Text style={styles.smallButtonText}>
-                  {connectedGithubLogin
-                    ? isLoadingGithubRepos
-                      ? "Loading repos"
-                      : "Refresh repos"
-                    : isConnectingGithub
-                      ? "Connecting"
-                      : "Connect GitHub"}
-                </Text>
-              </Pressable>
-              {githubSessionId ? (
-                <>
-                  <Pressable
-                    onPress={() => void handleRefreshGitHub()}
-                    disabled={isLoadingGithubRepos}
-                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.smallButtonText}>Check status</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void handleLogoutGitHub()}
-                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.smallButtonText}>Logout</Text>
-                  </Pressable>
-                </>
-              ) : null}
-            </View>
-            {githubRepos.length > 0 ? (
-              <View style={styles.githubRepoPicker}>
-                <TextInput
-                  value={githubRepoFilter}
-                  onChangeText={setGithubRepoFilter}
-                  placeholder="Filter GitHub repositories"
-                  placeholderTextColor="#6f7f92"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-                <ScrollView
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  style={styles.githubRepoScroller}
-                  contentContainerStyle={styles.githubRepoList}
-                >
-                  {filteredGithubRepos.map((repo) => (
-                    <Pressable
-                      key={repo.id}
-                      onPress={() => handleSelectGitHubRepo(repo)}
-                      style={({ pressed }) => [
-                        styles.githubRepoOption,
-                        repoUrl === repo.clone_url && styles.fileOptionSelected,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text style={styles.fileOptionPath}>{repo.full_name}</Text>
-                      <Text style={styles.fileOptionMeta}>
-                        {repo.private ? "private" : "public"} · {repo.default_branch} · {repo.can_push ? "push" : "read"}
-                      </Text>
-                    </Pressable>
-                  ))}
-                  {filteredGithubRepos.length === 0 ? (
-                    <Text style={styles.emptyText}>No repositories match.</Text>
-                  ) : null}
-                </ScrollView>
-              </View>
-            ) : null}
-          </View>
-
           <Text style={styles.launcherGroupTitle}>Codex</Text>
           <View style={styles.agentProviderBox}>
             <Text style={styles.fileOptionMeta}>AgentDock uses OpenAI Codex to prepare code changes.</Text>
@@ -1746,64 +1745,6 @@ export default function App() {
           )}
         </Section>
 
-        <Section
-          title="Live Activity"
-          right={isPollingLogs ? <Text style={styles.liveIndicator}>Live</Text> : undefined}
-        >
-          <View style={styles.liveActionRow}>
-            <Pressable
-              disabled={!selectedTask}
-              onPress={() => selectedTask ? void loadTaskLogs(selectedTask.task_id) : undefined}
-              style={({ pressed }) => [
-                styles.providerActionButton,
-                !selectedTask && styles.disabledButton,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.providerActionText}>Refresh logs</Text>
-            </Pressable>
-            <Pressable
-              disabled={logs.events.length === 0}
-              onPress={() => void handleCopyLogs()}
-              style={({ pressed }) => [
-                styles.providerActionButton,
-                logs.events.length === 0 && styles.disabledButton,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.providerActionText}>
-                {logsCopyStatus === "copied" ? "Copied" : "Copy logs"}
-              </Text>
-            </Pressable>
-            <Pressable
-              disabled={logs.events.length === 0}
-              onPress={() => setIsLiveActivityExpanded((current) => !current)}
-              style={({ pressed }) => [
-                styles.providerActionButton,
-                logs.events.length === 0 && styles.disabledButton,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.providerActionText}>
-                {isLiveActivityExpanded ? "Collapse" : "Expand"}
-              </Text>
-            </Pressable>
-          </View>
-          {logsRefreshError ? <Text style={styles.assistantErrorText}>{logsRefreshError}</Text> : null}
-          {!selectedTask ? (
-            <Text style={styles.emptyText}>Select a task to watch activity.</Text>
-          ) : visibleLogs.length === 0 ? (
-            <Text style={styles.emptyText}>No log events yet.</Text>
-          ) : (
-            <LogTimeline events={visibleLogs} />
-          )}
-          {selectedTask && !isTaskActive && logs.events.length > 0 ? (
-            <Text style={styles.promptAssistantCopy}>
-              Polling stopped. Last activity remains visible.
-            </Text>
-          ) : null}
-        </Section>
-
         <Section title="Recent tasks" right={<RefreshCw size={18} color="#8ba9c6" />}>
           {latestTasks.length === 0 ? (
             <Text style={styles.emptyText}>No tasks yet.</Text>
@@ -2075,8 +2016,45 @@ export default function App() {
                 <Text style={styles.emptyText}>Select a task to inspect metadata.</Text>
               )}
 
-              <Text style={styles.launcherGroupTitle}>Agent logs</Text>
+              <View style={styles.advancedSubheader}>
+                <View style={styles.flex}>
+                  <Text style={styles.launcherGroupTitle}>Agent logs</Text>
+                  {isPollingLogs ? <Text style={styles.liveIndicator}>Live</Text> : null}
+                </View>
+                <View style={styles.githubButtonRow}>
+                  <Pressable
+                    disabled={!selectedTask}
+                    onPress={() => selectedTask ? void loadTaskLogs(selectedTask.task_id) : undefined}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      !selectedTask && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>Refresh logs</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={logs.events.length === 0}
+                    onPress={() => void handleCopyLogs()}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      logs.events.length === 0 && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>
+                      {logsCopyStatus === "copied" ? "Copied" : "Copy logs"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+              {logsRefreshError ? <Text style={styles.assistantErrorText}>{logsRefreshError}</Text> : null}
               {selectedTask ? <LogTimeline events={logs.events} /> : <Text style={styles.emptyText}>Logs appear after selecting a task.</Text>}
+              {selectedTask && !isTaskActive && logs.events.length > 0 ? (
+                <Text style={styles.promptAssistantCopy}>
+                  Polling stopped. Last activity remains visible.
+                </Text>
+              ) : null}
 
               <Text style={styles.launcherGroupTitle}>Workspace status</Text>
               {selectedTask && workspace ? (
@@ -2600,6 +2578,9 @@ const styles = StyleSheet.create({
     color: "#edf8ff",
     fontSize: 14,
     fontWeight: "800",
+  },
+  advancedSubheader: {
+    gap: 8,
   },
   detailHeader: {
     width: "100%",
