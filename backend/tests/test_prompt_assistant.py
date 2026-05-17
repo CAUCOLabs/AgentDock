@@ -73,6 +73,7 @@ class PromptAssistantTests(unittest.TestCase):
         self.assertFalse(response.json()["used_fallback"])
         self.assertEqual(response.json()["provider"], "openai")
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], f"Bearer {secret}")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.5")
         self.assertNotIn(secret, response.text)
 
     def test_refine_uses_stored_anthropic_key(self) -> None:
@@ -175,6 +176,103 @@ class PromptAssistantTests(unittest.TestCase):
         self.assertIn("[REDACTED]", payload["error"])
         self.assertNotIn(secret, response.text)
 
+    def test_openai_provider_test_succeeds_with_minimal_responses_payload(self) -> None:
+        secret = "sk-testsecret123456789"
+        client = self._client_without_keys()
+        client.post(
+            "/prompt-assistant/providers/connect",
+            json={"provider": "openai", "api_key": secret},
+        )
+
+        with patch("app.prompt_assistant.httpx.post") as post:
+            post.return_value = self._provider_response({"output_text": "OK"})
+            response = client.post(
+                "/prompt-assistant/providers/test",
+                json={"provider": "openai"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["connected"])
+        self.assertIsNone(payload["error"])
+        self.assertIsNotNone(payload["last_verified_at"])
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {"model": "gpt-5.5", "input": "Say OK"},
+        )
+        self.assertNotIn(secret, response.text)
+
+    def test_openai_400_body_is_parsed_and_sanitized(self) -> None:
+        secret = "sk-testsecret123456789"
+        client = self._client_without_keys()
+        client.post(
+            "/prompt-assistant/providers/connect",
+            json={"provider": "openai", "api_key": secret},
+        )
+
+        with self.assertLogs("app.prompt_assistant", level="WARNING") as logs, patch(
+            "app.prompt_assistant.httpx.post",
+            return_value=self._provider_response(
+                {
+                    "error": {
+                        "message": f"Bad request for api_key={secret}",
+                        "type": "invalid_request_error",
+                        "code": "bad_payload",
+                    }
+                },
+                status_code=400,
+            ),
+        ):
+            response = client.post(
+                "/prompt-assistant/providers/test",
+                json={"provider": "openai"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        error = response.json()["error"]
+        self.assertIn("status_code=400", error)
+        self.assertIn("message=Bad request for api_key=[REDACTED]", error)
+        self.assertIn("type=invalid_request_error", error)
+        self.assertIn("code=bad_payload", error)
+        self.assertNotIn(secret, response.text)
+        self.assertNotIn(secret, "\n".join(logs.output))
+
+    def test_openai_invalid_model_returns_actionable_message_without_verifying(self) -> None:
+        secret = "sk-testsecret123456789"
+        client = self._client_without_keys()
+        client.post(
+            "/prompt-assistant/providers/connect",
+            json={"provider": "openai", "api_key": secret},
+        )
+
+        with self.assertLogs("app.prompt_assistant", level="WARNING"), patch(
+            "app.prompt_assistant.httpx.post",
+            return_value=self._provider_response(
+                {
+                    "error": {
+                        "message": "The model gpt-5.5 does not exist or you do not have access.",
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                    }
+                },
+                status_code=400,
+            ),
+        ):
+            response = client.post(
+                "/prompt-assistant/providers/test",
+                json={"provider": "openai"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIsNone(payload["last_verified_at"])
+        self.assertEqual(
+            payload["error"],
+            "OpenAI key is valid, but model is not available. "
+            "Check PROMPT_ASSISTANT_OPENAI_MODEL.",
+        )
+        self.assertNotIn(secret, response.text)
+
     def test_response_shape_is_stable(self) -> None:
         response = self._client_without_keys().post(
             "/prompt-assistant/refine",
@@ -264,8 +362,15 @@ class PromptAssistantTests(unittest.TestCase):
             '"safety_notes":["Codex will not run until launch."]}'
         )
 
-    def _provider_response(self, payload: dict[str, object]):
+    def _provider_response(self, payload: dict[str, object], status_code: int = 200):
         class Response:
+            def __init__(self) -> None:
+                self.status_code = status_code
+
+            @property
+            def text(self) -> str:
+                return str(payload)
+
             def raise_for_status(self) -> None:
                 return None
 

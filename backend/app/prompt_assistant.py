@@ -43,6 +43,21 @@ class PromptAssistantCredential:
     last_error: str | None
 
 
+class PromptAssistantProviderError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        super().__init__(redact_secret_text(message))
+        self.status_code = status_code
+        self.error_type = redact_secret_text(error_type) if error_type else None
+        self.error_code = redact_secret_text(error_code) if error_code else None
+
+
 def redact_secret_text(message: str) -> str:
     redacted = message
     for pattern in _SECRET_PATTERNS:
@@ -249,13 +264,13 @@ def refine_prompt(
         api_key = _api_key_for_provider(settings, provider)
         if not api_key:
             return fallback_response(payload)
-        return _refine_with_openai(payload, api_key)
+        return _refine_with_openai(payload, api_key, settings.prompt_assistant_openai_model)
 
     if provider == PromptAssistantProvider.anthropic:
         api_key = _api_key_for_provider(settings, provider)
         if not api_key:
             return fallback_response(payload)
-        return _refine_with_anthropic(payload, api_key)
+        return _refine_with_anthropic(payload, api_key, settings.prompt_assistant_anthropic_model)
 
     return fallback_response(payload)
 
@@ -290,9 +305,9 @@ def test_prompt_assistant_provider(
 
     try:
         if provider == PromptAssistantProvider.openai:
-            _test_openai_key(credential.api_key)
+            _test_openai_key(credential.api_key, settings.prompt_assistant_openai_model)
         elif provider == PromptAssistantProvider.anthropic:
-            _test_anthropic_key(credential.api_key)
+            _test_anthropic_key(credential.api_key, settings.prompt_assistant_anthropic_model)
         else:
             raise ValueError("Prompt Assistant provider must be openai or anthropic.")
     except Exception as exc:
@@ -378,6 +393,7 @@ def fallback_response(payload: PromptAssistantRefineRequest) -> PromptAssistantR
 def _refine_with_openai(
     payload: PromptAssistantRefineRequest,
     api_key: str,
+    model: str,
 ) -> PromptAssistantRefineResponse:
     try:
         response = httpx.post(
@@ -387,13 +403,13 @@ def _refine_with_openai(
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gpt-4.1-mini",
+                "model": model,
                 "input": _provider_prompt(payload),
                 "temperature": 0.2,
             },
             timeout=20,
         )
-        response.raise_for_status()
+        _raise_for_provider_error(response, provider=PromptAssistantProvider.openai)
         return _response_from_provider_json(
             payload,
             PromptAssistantProvider.openai,
@@ -410,6 +426,7 @@ def _refine_with_openai(
 def _refine_with_anthropic(
     payload: PromptAssistantRefineRequest,
     api_key: str,
+    model: str,
 ) -> PromptAssistantRefineResponse:
     try:
         response = httpx.post(
@@ -420,14 +437,14 @@ def _refine_with_anthropic(
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-3-5-haiku-latest",
+                "model": model,
                 "max_tokens": 1400,
                 "temperature": 0.2,
                 "messages": [{"role": "user", "content": _provider_prompt(payload)}],
             },
             timeout=20,
         )
-        response.raise_for_status()
+        _raise_for_provider_error(response, provider=PromptAssistantProvider.anthropic)
         return _response_from_provider_json(
             payload,
             PromptAssistantProvider.anthropic,
@@ -463,7 +480,7 @@ def _api_key_for_provider(
     return None
 
 
-def _test_openai_key(api_key: str) -> None:
+def _test_openai_key(api_key: str, model: str) -> None:
     response = httpx.post(
         "https://api.openai.com/v1/responses",
         headers={
@@ -471,16 +488,15 @@ def _test_openai_key(api_key: str) -> None:
             "Content-Type": "application/json",
         },
         json={
-            "model": "gpt-4.1-mini",
-            "input": "Reply with OK.",
-            "max_output_tokens": 8,
+            "model": model,
+            "input": "Say OK",
         },
         timeout=15,
     )
-    response.raise_for_status()
+    _raise_for_provider_error(response, provider=PromptAssistantProvider.openai)
 
 
-def _test_anthropic_key(api_key: str) -> None:
+def _test_anthropic_key(api_key: str, model: str) -> None:
     response = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -489,13 +505,110 @@ def _test_anthropic_key(api_key: str) -> None:
             "Content-Type": "application/json",
         },
         json={
-            "model": "claude-3-5-haiku-latest",
+            "model": model,
             "max_tokens": 8,
             "messages": [{"role": "user", "content": "Reply with OK."}],
         },
         timeout=15,
     )
-    response.raise_for_status()
+    _raise_for_provider_error(response, provider=PromptAssistantProvider.anthropic)
+
+
+def _raise_for_provider_error(
+    response: httpx.Response,
+    *,
+    provider: PromptAssistantProvider,
+) -> None:
+    status_code = getattr(response, "status_code", 200)
+    if status_code < 400:
+        return
+
+    message, error_type, error_code = _provider_error_details(response)
+    detail = _format_provider_error_detail(
+        provider=provider,
+        status_code=status_code,
+        message=message,
+        error_type=error_type,
+        error_code=error_code,
+    )
+    raise PromptAssistantProviderError(
+        detail,
+        status_code=status_code,
+        error_type=error_type,
+        error_code=error_code,
+    )
+
+
+def _provider_error_details(response: httpx.Response) -> tuple[str, str | None, str | None]:
+    raw_text = redact_secret_text(getattr(response, "text", "") or "")
+    try:
+        data = response.json()
+    except Exception:
+        return raw_text or "Provider request failed.", None, None
+
+    if not isinstance(data, dict):
+        return raw_text or "Provider request failed.", None, None
+
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or raw_text or "Provider request failed.")
+        error_type = error.get("type")
+        error_code = error.get("code")
+    else:
+        message = str(data.get("message") or raw_text or "Provider request failed.")
+        error_type = data.get("type")
+        error_code = data.get("code")
+
+    return (
+        redact_secret_text(message),
+        redact_secret_text(str(error_type)) if error_type is not None else None,
+        redact_secret_text(str(error_code)) if error_code is not None else None,
+    )
+
+
+def _format_provider_error_detail(
+    *,
+    provider: PromptAssistantProvider,
+    status_code: int,
+    message: str,
+    error_type: str | None,
+    error_code: str | None,
+) -> str:
+    if provider == PromptAssistantProvider.openai and _is_openai_model_unavailable(
+        message=message,
+        error_type=error_type,
+        error_code=error_code,
+    ):
+        return (
+            "OpenAI key is valid, but model is not available. "
+            "Check PROMPT_ASSISTANT_OPENAI_MODEL."
+        )
+
+    parts = [f"status_code={status_code}", f"message={message}"]
+    if error_type:
+        parts.append(f"type={error_type}")
+    if error_code:
+        parts.append(f"code={error_code}")
+    return redact_secret_text("; ".join(parts))
+
+
+def _is_openai_model_unavailable(
+    *,
+    message: str,
+    error_type: str | None,
+    error_code: str | None,
+) -> bool:
+    values = " ".join(
+        value.lower()
+        for value in (message, error_type, error_code)
+        if value
+    )
+    return (
+        "model_not_found" in values
+        or "unsupported model" in values
+        or "model is not available" in values
+        or "model not found" in values
+    )
 
 
 def _provider_prompt(payload: PromptAssistantRefineRequest) -> str:

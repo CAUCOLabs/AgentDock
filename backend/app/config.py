@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # AI provider
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    prompt_assistant_openai_model: str = Field(
+        default="gpt-5.5",
+        alias="PROMPT_ASSISTANT_OPENAI_MODEL",
+    )
+    prompt_assistant_anthropic_model: str = Field(
+        default="claude-sonnet-4-5",
+        alias="PROMPT_ASSISTANT_ANTHROPIC_MODEL",
+    )
     ollama_base_url: str | None = Field(default=None, alias="OLLAMA_BASE_URL")
     ai_provider: str = Field(default="mock", alias="AI_PROVIDER")
     agent_runner: str = Field(default="mock", alias="AGENT_RUNNER")
