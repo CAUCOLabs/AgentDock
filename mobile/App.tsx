@@ -208,6 +208,24 @@ function formatBytes(value: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function isLiveActivityStatus(status: TaskStatus) {
+  return [
+    "running",
+    "waiting_for_approval",
+    "committed",
+    "pushed",
+    "pull_request_opened",
+  ].includes(status);
+}
+
+function redactLogMessage(message: string) {
+  return message
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/gh[opsu]_[A-Za-z0-9_]{8,}/g, "[REDACTED]")
+    .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
+    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, "$1[REDACTED]");
+}
+
 function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
   if (providerId === "codex") {
     switch (readiness) {
@@ -350,6 +368,10 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
   const [diff, setDiff] = useState<TaskDiffResponse>(emptyDiff);
   const [logs, setLogs] = useState<TaskLogsResponse>(emptyLogs);
+  const [isLiveActivityExpanded, setIsLiveActivityExpanded] = useState(false);
+  const [isPollingLogs, setIsPollingLogs] = useState(false);
+  const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null);
+  const [logsCopyStatus, setLogsCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -375,6 +397,8 @@ export default function App() {
   const selectedTaskId = selectedTask?.task_id ?? null;
   const canLaunch = repoUrl.trim().length > 0 && instruction.trim().length >= 10 && !isLaunching;
   const hasCodexPrompt = instruction.trim().length > 0;
+  const isTaskActive = selectedTask ? isLiveActivityStatus(selectedTask.status) : false;
+  const visibleLogs = isLiveActivityExpanded ? logs.events : logs.events.slice(-6);
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -475,6 +499,19 @@ export default function App() {
     }
   }, []);
 
+  const loadTaskLogs = useCallback(async (taskId: string, quiet = false) => {
+    try {
+      const nextLogs = await getTaskLogs(taskId);
+      setLogs(nextLogs);
+      setLogsRefreshError(null);
+    } catch {
+      setLogsRefreshError("Could not refresh logs.");
+      if (!quiet) {
+        setError("Could not refresh logs.");
+      }
+    }
+  }, []);
+
   const loadInitialData = useCallback(async () => {
     setIsRefreshing(true);
     setError(null);
@@ -511,6 +548,24 @@ export default function App() {
   useEffect(() => {
     void loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (!selectedTask?.task_id || !isLiveActivityStatus(selectedTask.status)) {
+      setIsPollingLogs(false);
+      return;
+    }
+
+    setIsPollingLogs(true);
+    void loadTaskLogs(selectedTask.task_id, true);
+    const intervalId = setInterval(() => {
+      void loadTaskLogs(selectedTask.task_id, true);
+    }, 1500);
+
+    return () => {
+      clearInterval(intervalId);
+      setIsPollingLogs(false);
+    };
+  }, [loadTaskLogs, selectedTask?.task_id, selectedTask?.status]);
 
   useEffect(() => {
     void (async () => {
@@ -986,6 +1041,24 @@ export default function App() {
     }
 
     setTimeout(() => setDiffCopyStatus(null), 1600);
+  }
+
+  async function handleCopyLogs() {
+    const content = logs.events
+      .map(
+        (event) =>
+          `[${formatDate(event.timestamp)}] ${event.level.toUpperCase()} ${redactLogMessage(event.message)}`
+      )
+      .join("\n");
+
+    try {
+      await Clipboard.setStringAsync(content);
+      setLogsCopyStatus("copied");
+    } catch {
+      setLogsCopyStatus("failed");
+    }
+
+    setTimeout(() => setLogsCopyStatus(null), 1600);
   }
 
   return (
@@ -1673,6 +1746,64 @@ export default function App() {
           )}
         </Section>
 
+        <Section
+          title="Live Activity"
+          right={isPollingLogs ? <Text style={styles.liveIndicator}>Live</Text> : undefined}
+        >
+          <View style={styles.liveActionRow}>
+            <Pressable
+              disabled={!selectedTask}
+              onPress={() => selectedTask ? void loadTaskLogs(selectedTask.task_id) : undefined}
+              style={({ pressed }) => [
+                styles.providerActionButton,
+                !selectedTask && styles.disabledButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.providerActionText}>Refresh logs</Text>
+            </Pressable>
+            <Pressable
+              disabled={logs.events.length === 0}
+              onPress={() => void handleCopyLogs()}
+              style={({ pressed }) => [
+                styles.providerActionButton,
+                logs.events.length === 0 && styles.disabledButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.providerActionText}>
+                {logsCopyStatus === "copied" ? "Copied" : "Copy logs"}
+              </Text>
+            </Pressable>
+            <Pressable
+              disabled={logs.events.length === 0}
+              onPress={() => setIsLiveActivityExpanded((current) => !current)}
+              style={({ pressed }) => [
+                styles.providerActionButton,
+                logs.events.length === 0 && styles.disabledButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.providerActionText}>
+                {isLiveActivityExpanded ? "Collapse" : "Expand"}
+              </Text>
+            </Pressable>
+          </View>
+          {logsRefreshError ? <Text style={styles.assistantErrorText}>{logsRefreshError}</Text> : null}
+          {!selectedTask ? (
+            <Text style={styles.emptyText}>Select a task to watch activity.</Text>
+          ) : visibleLogs.length === 0 ? (
+            <Text style={styles.emptyText}>No log events yet.</Text>
+          ) : (
+            <LogTimeline events={visibleLogs} />
+          )}
+          {selectedTask && !isTaskActive && logs.events.length > 0 ? (
+            <Text style={styles.promptAssistantCopy}>
+              Polling stopped. Last activity remains visible.
+            </Text>
+          ) : null}
+        </Section>
+
         <Section title="Recent tasks" right={<RefreshCw size={18} color="#8ba9c6" />}>
           {latestTasks.length === 0 ? (
             <Text style={styles.emptyText}>No tasks yet.</Text>
@@ -2118,7 +2249,7 @@ function LogTimeline({ events }: { events: TaskLogEvent[] }) {
             <Text style={styles.logMeta}>
               {event.level.toUpperCase()} · {formatDate(event.timestamp)}
             </Text>
-            <Text style={styles.logMessage}>{event.message}</Text>
+            <Text style={styles.logMessage}>{redactLogMessage(event.message)}</Text>
           </View>
         </View>
       ))}
@@ -2784,6 +2915,17 @@ const styles = StyleSheet.create({
     color: "#ffb8c0",
     fontSize: 12,
     lineHeight: 18,
+  },
+  liveIndicator: {
+    color: "#95e6bd",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  liveActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
   codexAuthPanel: {
     gap: 10,

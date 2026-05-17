@@ -15,6 +15,7 @@ class TaskRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_repo = self._create_source_repo(Path(temp_dir) / "source")
             settings = self._settings(Path(temp_dir) / "mock-run")
+            events: list[tuple[str, str]] = []
 
             result = TaskRunner(settings).run_task(
                 task_id="task_mock",
@@ -23,10 +24,17 @@ class TaskRunnerTests(unittest.TestCase):
                 working_branch="agentdock/task_mock",
                 instruction="Create the default mock task note.",
                 agent=AgentProvider.mock,
+                log_event=lambda level, message: events.append((level, message)),
             )
 
             self.assertIn("AGENTDOCK_TASK.md", result.diff)
             self.assertEqual(result.changed_files[0].path, "AGENTDOCK_TASK.md")
+            messages = [message for _, message in events]
+            self.assertIn("Workspace preparation started.", messages)
+            self.assertIn("Workspace prepared on branch agentdock/task_mock.", messages)
+            self.assertIn("mock started.", messages)
+            self.assertIn("mock completed.", messages)
+            self.assertIn("Diff generated.", messages)
 
     def test_development_runner_modifies_selected_target_file_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

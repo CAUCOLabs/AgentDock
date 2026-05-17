@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,24 @@ from app.models import (
     TaskSummary,
     WorkspaceStatusResponse,
 )
+
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s]+"),
+    re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"gh[opsu]_[A-Za-z0-9_]{8,}"),
+]
+
+
+def _redact_log_message(message: str) -> str:
+    redacted = message
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(
+            r"\1[REDACTED]" if pattern.groups else "[REDACTED]",
+            redacted,
+        )
+    return redacted
 
 
 class TaskStoreError(Exception):
@@ -275,7 +294,7 @@ class TaskStore:
                         task_id,
                         self._datetime_to_text(datetime.now(timezone.utc)),
                         level,
-                        message,
+                        _redact_log_message(message),
                     ),
                 )
 

@@ -696,6 +696,11 @@ def create_task(
             agent=payload.agent,
             target_file=target_file,
             change_scope=payload.change_scope.value,
+            log_event=lambda level, message: task_store.append_log(
+                task_id,
+                level,
+                message,
+            ),
         )
 
         task.status = TaskStatus.waiting_for_approval
@@ -1125,6 +1130,7 @@ async def approve_or_reject_task(
         )
 
     try:
+        task_store.append_log(task_id, "info", "Commit started.")
         workspace_manager = WorkspaceManager(settings)
         repo_path = workspace_manager.repo_path(task_id)
         github_client = GitHubClient(settings)
@@ -1153,6 +1159,7 @@ async def approve_or_reject_task(
     task.updated_at = now
     task.completed_at = now
     task_store.append_log(task_id, "info", f"Task locally committed: {commit_sha}.")
+    task_store.append_log(task_id, "info", "Commit completed.")
 
     try:
         diff_service = DiffService(repo_path)
@@ -1256,6 +1263,7 @@ async def push_committed_task(
         )
 
     try:
+        task_store.append_log(task_id, "info", "Push started.")
         workspace_manager = WorkspaceManager(settings)
         repo_path = workspace_manager.repo_path(task_id)
         github_client = GitHubClient(settings)
@@ -1436,6 +1444,7 @@ async def create_task_pull_request(
     )
 
     try:
+        task_store.append_log(task_id, "info", "PR creation started.")
         pr_result = await github_client.create_pull_request(
             repo_url=task.repo_url,
             head_branch=task.working_branch,
@@ -1466,6 +1475,7 @@ async def create_task_pull_request(
     task.updated_at = datetime.now(timezone.utc)
     task_store.save_task(task)
     task_store.append_log(task_id, "info", f"PR created: {pr_result.url}")
+    task_store.append_log(task_id, "info", "PR creation completed.")
 
     return TaskPullRequestResponse(
         task_id=task_id,
@@ -1524,6 +1534,7 @@ async def merge_task_pull_request(
     )
 
     try:
+        task_store.append_log(task_id, "info", "Merge started.")
         merge_result = await github_client.merge_pull_request(
             repo_url=task.repo_url,
             pr_number=task.pr_number,
@@ -1617,6 +1628,7 @@ async def merge_task_pull_request(
         "info",
         f"PR #{task.pr_number} merged: {task.merge_commit_sha}",
     )
+    task_store.append_log(task_id, "info", "Merge completed.")
 
     if settings.delete_branch_after_merge and task.working_branch:
         try:

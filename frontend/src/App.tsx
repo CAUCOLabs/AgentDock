@@ -396,6 +396,12 @@ function App() {
   const [workspaceStatus, setWorkspaceStatus] =
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
+  const [isLiveActivityExpanded, setIsLiveActivityExpanded] = useState(false)
+  const [isPollingLogs, setIsPollingLogs] = useState(false)
+  const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null)
+  const [logsCopyStatus, setLogsCopyStatus] = useState<'copied' | 'failed' | null>(
+    null,
+  )
   const [form, setForm] = useState<CreateTaskForm>(initialForm)
   const [promptAssistantMode, setPromptAssistantMode] =
     useState<PromptAssistantMode>('manual')
@@ -499,6 +505,8 @@ function App() {
     [form.repoUrl, githubRepos],
   )
   const hasCodexPrompt = form.instruction.trim().length > 0
+  const isTaskActive = activeTask ? isLiveActivityStatus(activeTask.status) : false
+  const visibleTaskLogs = isLiveActivityExpanded ? taskLogs : taskLogs.slice(-6)
   const activeTaskOutsideTargetFiles = useMemo(
     () =>
       (taskDiff?.changed_files ?? []).filter(
@@ -538,6 +546,24 @@ function App() {
 
     void loadTaskBundle(selectedTaskId)
   }, [selectedTaskId])
+
+  useEffect(() => {
+    if (!activeTask?.task_id || !isLiveActivityStatus(activeTask.status)) {
+      setIsPollingLogs(false)
+      return
+    }
+
+    setIsPollingLogs(true)
+    void loadTaskLogs(activeTask.task_id, true)
+    const intervalId = window.setInterval(() => {
+      void loadTaskLogs(activeTask.task_id, true)
+    }, 1500)
+
+    return () => {
+      window.clearInterval(intervalId)
+      setIsPollingLogs(false)
+    }
+  }, [activeTask?.task_id, activeTask?.status])
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let response: Response
@@ -773,6 +799,46 @@ function App() {
     } catch (err) {
       setError(formatError(err))
     }
+  }
+
+  async function loadTaskLogs(taskId: string, quiet = false) {
+    if (!quiet) {
+      setError(null)
+    }
+
+    try {
+      const result = await request<TaskLogsResponse>(`/tasks/${taskId}/logs`)
+      setTaskLogs(result.events)
+      setLogsRefreshError(null)
+    } catch (err) {
+      setLogsRefreshError('Could not refresh logs.')
+      if (!quiet) {
+        setError(formatError(err))
+      }
+    }
+  }
+
+  async function copyTaskLogs() {
+    const content = taskLogs
+      .map(
+        (event) =>
+          `[${formatTimestamp(event.timestamp)}] ${event.level.toUpperCase()} ${redactLogMessage(event.message)}`,
+      )
+      .join('\n')
+
+    if (!content || !navigator.clipboard?.writeText) {
+      setLogsCopyStatus('failed')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(content)
+      setLogsCopyStatus('copied')
+    } catch {
+      setLogsCopyStatus('failed')
+    }
+
+    window.setTimeout(() => setLogsCopyStatus(null), 1600)
   }
 
   async function loadWorkspaceStatus(taskId: string) {
@@ -2008,6 +2074,74 @@ function App() {
         </section>
       </section>
 
+      <section className="live-activity glass-card" aria-labelledby="live-activity-title">
+        <div className="section-heading">
+          <h2 id="live-activity-title">
+            <Activity size={17} />
+            Live Activity
+          </h2>
+          <div className="section-actions">
+            {isPollingLogs && (
+              <span className="live-indicator">
+                <span />
+                Live
+              </span>
+            )}
+            {taskLogs.length > 0 && (
+              <button
+                type="button"
+                className="mini-action secondary"
+                onClick={() =>
+                  setIsLiveActivityExpanded((current) => !current)
+                }
+              >
+                {isLiveActivityExpanded ? 'Collapse' : 'Expand'}
+              </button>
+            )}
+            {activeTask && (
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => void loadTaskLogs(activeTask.task_id)}
+              >
+                Refresh logs
+              </button>
+            )}
+            <button
+              type="button"
+              className="mini-action secondary"
+              disabled={taskLogs.length === 0}
+              onClick={() => void copyTaskLogs()}
+            >
+              {logsCopyStatus === 'copied' ? 'Copied' : 'Copy logs'}
+            </button>
+          </div>
+        </div>
+        {logsRefreshError && <p className="assistant-error">{logsRefreshError}</p>}
+        {!activeTask ? (
+          <p className="empty-state">Select a task to watch activity.</p>
+        ) : visibleTaskLogs.length === 0 ? (
+          <p className="empty-state">No log events yet.</p>
+        ) : (
+          <ol className="live-log-list">
+            {visibleTaskLogs.map((event, index) => (
+              <li key={`${event.timestamp}-${index}`}>
+                <time>{formatTimestamp(event.timestamp)}</time>
+                <span className={`log-level ${event.level}`}>
+                  {event.level}
+                </span>
+                <p>{redactLogMessage(event.message)}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+        {activeTask && !isTaskActive && taskLogs.length > 0 && (
+          <p className="provider-mode-note">
+            Polling stopped. Last activity remains visible.
+          </p>
+        )}
+      </section>
+
       <section className="diff-viewer glass-card primary-review" aria-labelledby="diff-viewer-title">
         <div className="section-heading">
           <h2 id="diff-viewer-title">
@@ -2597,6 +2731,24 @@ function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimary
     default:
       return 'UNKNOWN'
   }
+}
+
+function isLiveActivityStatus(status: TaskStatus) {
+  return [
+    'running',
+    'waiting_for_approval',
+    'committed',
+    'pushed',
+    'pull_request_opened',
+  ].includes(status)
+}
+
+function redactLogMessage(message: string) {
+  return message
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[REDACTED]')
+    .replace(/gh[opsu]_[A-Za-z0-9_]{8,}/g, '[REDACTED]')
+    .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
 }
 
 function isCodexAuthFlowResponse(

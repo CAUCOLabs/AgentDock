@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import logging
+from collections.abc import Callable
 
 from app.agent_providers import AgentProviderError
 from app.agent_runner import AgentRunnerError, get_agent_runner
@@ -71,6 +72,7 @@ class TaskRunner:
         agent: AgentProvider,
         target_file: str | None = None,
         change_scope: str = "only_selected_file",
+        log_event: Callable[[str, str], None] | None = None,
     ) -> TaskRunResult:
         """
         Run a task and return the generated review data.
@@ -78,6 +80,9 @@ class TaskRunner:
 
         try:
             repo_path = self.workspace_manager.repo_path(task_id)
+
+            if log_event:
+                log_event("info", "Workspace preparation started.")
 
             repo = self.github_client.clone_repository(
                 repo_url=repo_url,
@@ -90,7 +95,13 @@ class TaskRunner:
                 working_branch=working_branch,
             )
 
+            if log_event:
+                log_event("info", f"Workspace prepared on branch {working_branch}.")
+
             runner = get_agent_runner(agent, self.settings)
+
+            if log_event:
+                log_event("info", f"{agent.value} started.")
 
             agent_result = runner.run(
                 repo_path=repo_path,
@@ -107,7 +118,13 @@ class TaskRunner:
                     provider=agent,
                 )
 
+            if log_event:
+                log_event("info", f"{agent.value} completed.")
+
             diff_service = DiffService(repo_path)
+
+            if log_event:
+                log_event("info", "Diff generation started.")
 
             diff = diff_service.get_diff()
             changed_files = diff_service.get_changed_files()
@@ -119,6 +136,9 @@ class TaskRunner:
                     error_type="ProviderNoChangesError",
                     provider=agent,
                 )
+
+            if log_event:
+                log_event("info", "Diff generated.")
 
             return TaskRunResult(
                 diff=diff,

@@ -49,6 +49,23 @@ class TaskStorePersistenceTests(unittest.TestCase):
                 log_messages,
             )
 
+    def test_task_logs_redact_secret_like_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            task = self._task("task_secret_logs")
+            store = TaskStore(settings)
+            store.save_task(task)
+            store.append_log(
+                task.task_id,
+                "error",
+                "provider failed api_key=sk-testsecret123456 token=ghp_secret123456",
+            )
+
+            message = store.get_logs(task.task_id)[0].message
+            self.assertIn("[REDACTED]", message)
+            self.assertNotIn("sk-testsecret123456", message)
+            self.assertNotIn("ghp_secret123456", message)
+
     def test_completed_task_commit_sha_persists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir))
