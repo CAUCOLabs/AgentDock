@@ -36,6 +36,7 @@ type TaskStatus =
 
 type AgentProvider = string
 type ChangeScope = 'only_selected_file' | 'allow_related_files' | 'whole_project'
+type PromptAssistantMode = 'manual' | 'openai' | 'anthropic'
 type ProviderConnectionStatus =
   | 'connected'
   | 'connecting'
@@ -340,6 +341,15 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: 'OpenAI Codex', value: 'codex' },
 ]
 
+const promptAssistantModes: Array<{
+  value: PromptAssistantMode
+  label: string
+}> = [
+  { value: 'manual', label: 'Manual mode' },
+  { value: 'openai', label: 'ChatGPT / OpenAI' },
+  { value: 'anthropic', label: 'Claude / Anthropic' },
+]
+
 const promptTemplates = [
   {
     label: 'Fix bug',
@@ -377,6 +387,10 @@ function App() {
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
   const [form, setForm] = useState<CreateTaskForm>(initialForm)
+  const [promptAssistantMode, setPromptAssistantMode] =
+    useState<PromptAssistantMode>('manual')
+  const [assistantRoughIdea, setAssistantRoughIdea] = useState('')
+  const [assistantRefinedPrompt] = useState('')
   const [githubSessionId, setGithubSessionId] = useState<string | null>(() =>
     localStorage.getItem(GITHUB_SESSION_STORAGE_KEY),
   )
@@ -1724,6 +1738,103 @@ function App() {
                     )}
                   </label>
                 ))}
+              </div>
+
+              <div className="prompt-assistant" aria-labelledby="prompt-assistant-title">
+                <div className="prompt-assistant-header">
+                  <div>
+                    <h3 id="prompt-assistant-title">
+                      <Bot size={16} />
+                      Prompt Assistant
+                    </h3>
+                    <p>
+                      The assistant helps you prepare prompts. Codex still executes the code changes.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="assistant-mode-grid" role="radiogroup" aria-label="Prompt assistant mode">
+                  {promptAssistantModes.map((mode) => (
+                    <label
+                      key={mode.value}
+                      className={[
+                        'assistant-mode-option',
+                        promptAssistantMode === mode.value ? 'selected' : '',
+                      ].filter(Boolean).join(' ')}
+                    >
+                      <input
+                        type="radio"
+                        name="promptAssistantMode"
+                        checked={promptAssistantMode === mode.value}
+                        onChange={() => setPromptAssistantMode(mode.value)}
+                      />
+                      <span>{mode.label}</span>
+                    </label>
+                  ))}
+                </div>
+
+                {promptAssistantMode === 'manual' ? (
+                  <p className="assistant-mode-note">
+                    Write the Codex task prompt yourself.
+                  </p>
+                ) : (
+                  <div className="assistant-provider-card">
+                    <div>
+                      <strong>
+                        {promptAssistantMode === 'openai'
+                          ? 'ChatGPT / OpenAI'
+                          : 'Claude / Anthropic'}
+                      </strong>
+                      <span>Status: Not connected</span>
+                    </div>
+                    <button type="button" className="mini-action secondary" disabled>
+                      Connect API key
+                    </button>
+                    <small>
+                      Connected status will be enabled after backend integration.
+                    </small>
+                  </div>
+                )}
+
+                <div className="assistant-draft-grid">
+                  <label>
+                    Rough idea
+                    <textarea
+                      rows={4}
+                      value={assistantRoughIdea}
+                      onChange={(event) => setAssistantRoughIdea(event.target.value)}
+                      placeholder="Describe what you want Codex to do in plain language."
+                    />
+                  </label>
+                  <label>
+                    Refined prompt
+                    <textarea
+                      rows={4}
+                      value={assistantRefinedPrompt}
+                      readOnly
+                      placeholder="The refined Codex prompt will appear here after assistant generation is implemented."
+                    />
+                  </label>
+                </div>
+
+                <div className="assistant-actions">
+                  <button type="button" className="mini-action" disabled>
+                    Generate Codex Prompt
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-action secondary"
+                    disabled={!assistantRefinedPrompt.trim()}
+                    onClick={() =>
+                      setForm((current) => ({
+                        ...current,
+                        instruction: assistantRefinedPrompt,
+                      }))
+                    }
+                  >
+                    Send to Codex Prompt
+                  </button>
+                </div>
               </div>
 
               <label className="prompt-field">

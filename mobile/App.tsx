@@ -132,11 +132,22 @@ type ApiConnectionState = {
   error: string | null;
 };
 
+type PromptAssistantMode = "manual" | "openai" | "anthropic";
+
 type MergeAttemptState = {
   taskId: string;
   status: "loading" | "succeeded" | "failed";
   message: string;
 };
+
+const promptAssistantModes: Array<{
+  value: PromptAssistantMode;
+  label: string;
+}> = [
+  { value: "manual", label: "Manual mode" },
+  { value: "openai", label: "ChatGPT / OpenAI" },
+  { value: "anthropic", label: "Claude / Anthropic" },
+];
 
 function shortRepoName(repoUrl: string) {
   const trimmed = repoUrl.replace(/\/$/, "");
@@ -308,6 +319,9 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
   const [instruction, setInstruction] = useState("");
+  const [promptAssistantMode, setPromptAssistantMode] = useState<PromptAssistantMode>("manual");
+  const [assistantRoughIdea, setAssistantRoughIdea] = useState("");
+  const [assistantRefinedPrompt] = useState("");
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
@@ -1381,6 +1395,94 @@ export default function App() {
           </View>
 
           <Text style={styles.launcherGroupTitle}>Task Prompt</Text>
+          <View style={styles.promptAssistantBox}>
+            <View style={styles.promptAssistantHeader}>
+              <Text style={styles.promptAssistantTitle}>Prompt Assistant</Text>
+              <Text style={styles.promptAssistantCopy}>
+                The assistant helps you prepare prompts. Codex still executes the code changes.
+              </Text>
+            </View>
+            <View style={styles.assistantModeGrid}>
+              {promptAssistantModes.map((mode) => (
+                <Pressable
+                  key={mode.value}
+                  onPress={() => setPromptAssistantMode(mode.value)}
+                  style={({ pressed }) => [
+                    styles.assistantModeOption,
+                    promptAssistantMode === mode.value && styles.assistantModeSelected,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.radioDot,
+                      promptAssistantMode === mode.value && styles.radioDotSelected,
+                    ]}
+                  />
+                  <Text style={styles.assistantModeText}>{mode.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {promptAssistantMode === "manual" ? (
+              <Text style={styles.promptAssistantCopy}>
+                Write the Codex task prompt yourself.
+              </Text>
+            ) : (
+              <View style={styles.assistantProviderCard}>
+                <View style={styles.flex}>
+                  <Text style={styles.providerOptionText}>
+                    {promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic"}
+                  </Text>
+                  <Text style={styles.fileOptionMeta}>Status: Not connected</Text>
+                </View>
+                <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
+                  <Text style={styles.providerActionText}>Connect API key</Text>
+                </Pressable>
+                <Text style={styles.fileOptionMeta}>
+                  Connected status will be enabled after backend integration.
+                </Text>
+              </View>
+            )}
+            <Field label="Rough idea">
+              <TextInput
+                value={assistantRoughIdea}
+                onChangeText={setAssistantRoughIdea}
+                placeholder="Describe what you want Codex to do in plain language."
+                placeholderTextColor="#6f7f92"
+                multiline
+                textAlignVertical="top"
+                style={[styles.input, styles.assistantDraftInput]}
+              />
+            </Field>
+            <Field label="Refined prompt">
+              <TextInput
+                value={assistantRefinedPrompt}
+                placeholder="The refined Codex prompt will appear here after assistant generation is implemented."
+                placeholderTextColor="#6f7f92"
+                multiline
+                editable={false}
+                textAlignVertical="top"
+                style={[styles.input, styles.assistantDraftInput]}
+              />
+            </Field>
+            <View style={styles.assistantActionRow}>
+              <Pressable disabled style={[styles.providerActionButton, styles.disabledButton]}>
+                <Text style={styles.providerActionText}>Generate Codex Prompt</Text>
+              </Pressable>
+              <Pressable
+                disabled={!assistantRefinedPrompt.trim()}
+                onPress={() => setInstruction(assistantRefinedPrompt)}
+                style={({ pressed }) => [
+                  styles.providerActionButton,
+                  !assistantRefinedPrompt.trim() && styles.disabledButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.providerActionText}>Send to Codex Prompt</Text>
+              </Pressable>
+            </View>
+          </View>
+
           <View style={styles.scopeBox}>
             <Text style={styles.label}>Change scope</Text>
             {scopeOptions.map((option) => (
@@ -2453,6 +2555,79 @@ const styles = StyleSheet.create({
     color: "#8ea7bd",
     fontSize: 12,
     lineHeight: 18,
+  },
+  promptAssistantBox: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.2)",
+  },
+  promptAssistantHeader: {
+    gap: 4,
+  },
+  promptAssistantTitle: {
+    color: "#edf8ff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  promptAssistantCopy: {
+    color: "#8ea7bd",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  assistantModeGrid: {
+    gap: 8,
+  },
+  assistantModeOption: {
+    minHeight: 42,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  assistantModeSelected: {
+    backgroundColor: "rgba(65, 230, 189, 0.18)",
+    borderColor: "rgba(65, 230, 189, 0.38)",
+  },
+  assistantModeText: {
+    color: "#edf8ff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  radioDot: {
+    width: 13,
+    height: 13,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "rgba(142, 167, 189, 0.8)",
+  },
+  radioDotSelected: {
+    backgroundColor: "#41e6bd",
+    borderColor: "#41e6bd",
+  },
+  assistantProviderCard: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(45, 106, 150, 0.13)",
+    borderWidth: 1,
+    borderColor: "rgba(90, 177, 230, 0.18)",
+  },
+  assistantDraftInput: {
+    minHeight: 112,
+    lineHeight: 21,
+  },
+  assistantActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
   codexAuthPanel: {
     gap: 10,

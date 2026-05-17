@@ -884,6 +884,88 @@ select option {
   gap: 8px;
 }
 
+.prompt-assistant {
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+  background: rgba(2, 6, 23, 0.32);
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: 14px;
+}
+
+.prompt-assistant-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.prompt-assistant-header p,
+.assistant-mode-note,
+.assistant-provider-card small {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-mode-grid,
+.assistant-draft-grid,
+.assistant-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 9px 11px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+}
+
+.assistant-mode-option input {
+  width: auto;
+}
+
+.assistant-mode-option.selected {
+  border-color: rgba(45, 212, 191, 0.42);
+  background: rgba(20, 184, 166, 0.1);
+}
+
+.assistant-provider-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+}
+
+.assistant-provider-card div {
+  display: grid;
+  gap: 4px;
+}
+
+.assistant-provider-card strong {
+  color: var(--text-strong);
+}
+
+.assistant-provider-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.prompt-assistant textarea {
+  min-height: 130px;
+}
+
 .character-count {
   color: var(--muted);
   font-size: 12px;
@@ -1317,6 +1399,12 @@ pre {
 
   .form-pair,
   .metadata-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .assistant-mode-grid,
+  .assistant-draft-grid,
+  .assistant-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
