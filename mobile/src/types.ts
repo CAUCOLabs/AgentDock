@@ -14,6 +14,8 @@ export type TaskStatus =
 
 export type AgentProvider = string;
 export type ChangeScope = "only_selected_file" | "allow_related_files" | "whole_project";
+export type PromptAssistantProvider = "fallback" | "openai" | "anthropic";
+export type PromptAssistantScope = "single_file" | "related_files" | "whole_project";
 export type ProviderStatus =
   | "available"
   | "not_configured"
@@ -166,6 +168,24 @@ export type TaskCreateRequest = {
   agent: AgentProvider;
   target_file?: string | null;
   change_scope?: ChangeScope;
+};
+
+export type PromptAssistantRefineRequest = {
+  provider: PromptAssistantProvider;
+  rough_idea: string;
+  repo_name?: string | null;
+  target_file?: string | null;
+  change_scope?: PromptAssistantScope | null;
+  existing_readme_excerpt?: string | null;
+};
+
+export type PromptAssistantRefineResponse = {
+  provider: PromptAssistantProvider;
+  title: string;
+  recommended_scope: PromptAssistantScope;
+  refined_prompt: string;
+  safety_notes: string[];
+  used_fallback: boolean;
 };
 
 export type RepositoryFileEntry = {

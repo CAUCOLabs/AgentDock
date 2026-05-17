@@ -37,6 +37,8 @@ from app.models import (
     GitHubInstallationsResponse,
     GitHubRepositoriesResponse,
     LogoutResponse,
+    PromptAssistantRefineRequest,
+    PromptAssistantRefineResponse,
     RepositoryFilePreviewRequest,
     RepositoryFilePreviewResponse,
     RepositoryFilesRequest,
@@ -56,6 +58,7 @@ from app.models import (
     create_task_id,
     create_working_branch,
 )
+from app.prompt_assistant import refine_prompt
 from app.repo_browser import RepoBrowserError, RepoBrowserService
 from app.task_runner import TaskRunner, TaskRunnerError
 from app.task_store import TaskStore
@@ -577,6 +580,21 @@ def preview_repository_file(
         truncated=truncated,
         content=content,
     )
+
+
+@app.post(
+    "/prompt-assistant/refine",
+    response_model=PromptAssistantRefineResponse,
+)
+def refine_prompt_assistant(
+    payload: PromptAssistantRefineRequest,
+    settings: Settings = Depends(get_settings),
+) -> PromptAssistantRefineResponse:
+    """
+    Refine a rough idea into a Codex-ready prompt without launching Codex.
+    """
+
+    return refine_prompt(payload, settings)
 
 
 @app.post(

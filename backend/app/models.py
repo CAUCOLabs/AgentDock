@@ -177,6 +177,52 @@ class ChangeScope(str, Enum):
     whole_project = "whole_project"
 
 
+class PromptAssistantProvider(str, Enum):
+    """
+    Providers available for prompt drafting.
+    """
+
+    fallback = "fallback"
+    openai = "openai"
+    anthropic = "anthropic"
+
+
+class PromptAssistantChangeScope(str, Enum):
+    """
+    Prompt assistant scope values used by web and mobile clients.
+    """
+
+    single_file = "single_file"
+    related_files = "related_files"
+    whole_project = "whole_project"
+
+
+class PromptAssistantRefineRequest(BaseModel):
+    """
+    Request body for turning a rough idea into a Codex-ready task prompt.
+    """
+
+    provider: PromptAssistantProvider = PromptAssistantProvider.fallback
+    rough_idea: str = Field(..., min_length=1)
+    repo_name: str | None = None
+    target_file: str | None = None
+    change_scope: PromptAssistantChangeScope | None = None
+    existing_readme_excerpt: str | None = None
+
+
+class PromptAssistantRefineResponse(BaseModel):
+    """
+    Stable response shape for prompt assistant clients.
+    """
+
+    provider: PromptAssistantProvider
+    title: str
+    recommended_scope: PromptAssistantChangeScope
+    refined_prompt: str
+    safety_notes: list[str] = Field(default_factory=list)
+    used_fallback: bool
+
+
 class TaskCreateRequest(BaseModel):
     """
     Request body for creating a new coding task.

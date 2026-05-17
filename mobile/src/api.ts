@@ -4,6 +4,8 @@ import type {
   AgentProviderAuthFlowResponse,
   AgentProviderMetadata,
   AgentProviderVerificationResponse,
+  PromptAssistantRefineRequest,
+  PromptAssistantRefineResponse,
   TaskApprovalRequest,
   TaskApprovalResponse,
   TaskMergePullRequestResponse,
@@ -143,6 +145,13 @@ export function createTask(payload: TaskCreateRequest, sessionId?: string | null
   return request<TaskCreateResponse>("/tasks", {
     method: "POST",
     sessionId,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function refinePromptAssistant(payload: PromptAssistantRefineRequest) {
+  return request<PromptAssistantRefineResponse>("/prompt-assistant/refine", {
+    method: "POST",
     body: JSON.stringify(payload),
   });
 }

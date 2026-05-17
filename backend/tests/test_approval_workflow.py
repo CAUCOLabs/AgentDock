@@ -810,7 +810,6 @@ class ApprovalWorkflowTests(unittest.TestCase):
         for source in (web_app, mobile_app):
             self.assertIn("OpenAI Codex", source)
             self.assertIn("AgentDock uses OpenAI Codex to prepare code changes.", source)
-            self.assertNotIn("Claude", source)
             self.assertNotIn("Ollama", source)
             self.assertNotIn("Local model", source)
             self.assertNotIn("Choose the agent profile for this task.", source)
