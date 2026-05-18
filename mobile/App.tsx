@@ -65,6 +65,7 @@ import type {
   ProviderConnectionStatus,
   ProviderPrimaryStatus,
   ProviderReadiness,
+  ChangedFile,
   TaskDiffResponse,
   ChangeScope,
   GitHubAccount,
@@ -134,6 +135,75 @@ const emptyLogs: TaskLogsResponse = {
   task_id: "",
   events: [],
 };
+
+type ExecutionTimelineStepState = "pending" | "active" | "completed" | "failed";
+
+type ExecutionTimelineStepId =
+  | "preparing_workspace"
+  | "repository_ready"
+  | "running_codex"
+  | "changes_generated"
+  | "generating_diff"
+  | "review_ready"
+  | "waiting_approval"
+  | "committed"
+  | "pull_request_opened"
+  | "merged"
+  | "failed";
+
+type ExecutionTimelineStep = {
+  id: ExecutionTimelineStepId;
+  label: string;
+  state: ExecutionTimelineStepState;
+  detail?: string | null;
+  timestamp?: string | null;
+};
+
+function isolateFileDiff(diff: string, filePath: string) {
+  if (!diff || !filePath) return null;
+
+  const lines = diff.split("\n");
+  let currentBlock: string[] = [];
+  let currentPaths: string[] = [];
+
+  const finishBlock = () => {
+    if (currentBlock.length === 0) return null;
+    return currentPaths.includes(filePath) ? currentBlock.join("\n") : null;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      const matchedBlock = finishBlock();
+      if (matchedBlock) return matchedBlock;
+      currentBlock = [line];
+      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      currentPaths = match ? [match[1], match[2]] : [];
+      continue;
+    }
+
+    if (currentBlock.length > 0) {
+      currentBlock.push(line);
+    }
+  }
+
+  return finishBlock();
+}
+
+type DiffLineTone = "muted" | "hunk" | "added" | "removed" | "context";
+
+function diffLineTone(line: string): DiffLineTone {
+  if (
+    line.startsWith("diff --git ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ")
+  ) {
+    return "muted";
+  }
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
+  return "context";
+}
 
 type ApiConnectionState = {
   status: "checking" | "online" | "offline";
@@ -351,6 +421,166 @@ function rawExecutionLogs(events: TaskLogEvent[]) {
     .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message));
 }
 
+const executionTimelineDefinitions: Array<{
+  id: ExecutionTimelineStepId;
+  label: string;
+}> = [
+  { id: "preparing_workspace", label: "Preparing workspace" },
+  { id: "repository_ready", label: "Repository ready" },
+  { id: "running_codex", label: "Running Codex" },
+  { id: "changes_generated", label: "Changes generated" },
+  { id: "generating_diff", label: "Generating diff" },
+  { id: "review_ready", label: "Review ready" },
+  { id: "waiting_approval", label: "Waiting approval" },
+  { id: "committed", label: "Committed" },
+  { id: "pull_request_opened", label: "Pull request opened" },
+  { id: "merged", label: "Merged" },
+  { id: "failed", label: "Failed" },
+];
+
+const completedStatuses = new Set<TaskStatus>([
+  "committed",
+  "pushed",
+  "pull_request_opened",
+  "merged",
+  "completed",
+]);
+
+function firstMatchingLog(events: TaskLogEvent[], patterns: RegExp[]) {
+  return (
+    events
+      .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
+      .filter((event) => !isInternalRuntimeLog(event.message))
+      .find((event) => patterns.some((pattern) => pattern.test(event.message))) ?? null
+  );
+}
+
+function buildExecutionTimeline(
+  task: TaskSummary | null,
+  events: TaskLogEvent[],
+  diff?: TaskDiffResponse | null,
+  workspace?: WorkspaceStatusResponse | null
+): ExecutionTimelineStep[] {
+  if (!task) return [];
+
+  const logForStep: Partial<Record<ExecutionTimelineStepId, TaskLogEvent>> = {
+    preparing_workspace:
+      firstMatchingLog(events, [/Workspace preparation started/i, /Task created/i]) ?? undefined,
+    repository_ready:
+      firstMatchingLog(events, [/Workspace prepared/i, /repository ready/i]) ?? undefined,
+    running_codex:
+      firstMatchingLog(events, [/(codex|mock|local|openai|claude|ollama|local_model) started/i]) ?? undefined,
+    changes_generated:
+      firstMatchingLog(events, [/(codex|mock|local|openai|claude|ollama|local_model) completed/i, /Task completed by runner/i]) ?? undefined,
+    generating_diff:
+      firstMatchingLog(events, [/Diff generation started/i]) ?? undefined,
+    review_ready:
+      firstMatchingLog(events, [/Diff generated/i, /Diff ready for approval/i]) ?? undefined,
+    waiting_approval:
+      firstMatchingLog(events, [/Diff ready for approval/i, /waiting.*approval/i]) ?? undefined,
+    committed:
+      firstMatchingLog(events, [/Task locally committed/i, /Commit completed/i]) ?? undefined,
+    pull_request_opened:
+      firstMatchingLog(events, [/PR created/i, /PR creation completed/i, /pull request.*opened/i]) ?? undefined,
+    merged:
+      firstMatchingLog(events, [/Merge completed/i, /PR #.*merged/i]) ?? undefined,
+    failed:
+      firstMatchingLog(events, [/failed/i, /error/i]) ?? undefined,
+  };
+
+  const hasDiff = Boolean(diff?.diff || task.changed_files.length);
+  const hasWorkspace = Boolean(workspace?.repo_path || task.working_branch);
+  const hasCommit = Boolean(task.commit_sha || workspace?.commit_sha);
+  const hasPullRequest = Boolean(task.pr_url || workspace?.pr_url);
+  const hasMerged = task.status === "merged" || workspace?.pr_state === "merged";
+  const isFailed = task.status === "failed";
+
+  const completed = new Set<ExecutionTimelineStepId>();
+  if (logForStep.repository_ready || hasWorkspace || task.status !== "queued") {
+    completed.add("preparing_workspace");
+  }
+  if (logForStep.repository_ready || completedStatuses.has(task.status) || hasDiff) {
+    completed.add("repository_ready");
+  }
+  if (
+    logForStep.changes_generated ||
+    logForStep.generating_diff ||
+    hasDiff ||
+    task.status === "waiting_for_approval" ||
+    completedStatuses.has(task.status)
+  ) {
+    completed.add("running_codex");
+    completed.add("changes_generated");
+  }
+  if (logForStep.review_ready || hasDiff || task.status === "waiting_for_approval" || completedStatuses.has(task.status)) {
+    completed.add("generating_diff");
+    completed.add("review_ready");
+  }
+  if (completedStatuses.has(task.status) || task.status === "rejected") {
+    completed.add("waiting_approval");
+  }
+  if (hasCommit || ["pushed", "pull_request_opened", "merged", "completed"].includes(task.status)) {
+    completed.add("committed");
+  }
+  if (hasPullRequest || task.status === "pull_request_opened" || task.status === "merged") {
+    completed.add("pull_request_opened");
+  }
+  if (hasMerged) {
+    completed.add("merged");
+  }
+
+  let activeId: ExecutionTimelineStepId | null = null;
+  if (isFailed) {
+    activeId = "failed";
+  } else if (task.status === "merged") {
+    activeId = "merged";
+  } else if (task.status === "pull_request_opened") {
+    activeId = "pull_request_opened";
+  } else if (task.status === "committed" || task.status === "pushed" || task.status === "completed") {
+    activeId = "committed";
+  } else if (task.status === "waiting_for_approval") {
+    activeId = "waiting_approval";
+  } else if (task.status === "running") {
+    if (logForStep.generating_diff && !logForStep.review_ready && !hasDiff) {
+      activeId = "generating_diff";
+    } else if (logForStep.changes_generated && !logForStep.generating_diff) {
+      activeId = "changes_generated";
+    } else if (logForStep.running_codex && !logForStep.changes_generated) {
+      activeId = "running_codex";
+    } else if (logForStep.repository_ready && !logForStep.running_codex) {
+      activeId = "repository_ready";
+    } else {
+      activeId = "preparing_workspace";
+    }
+  } else {
+    activeId = "preparing_workspace";
+  }
+
+  return executionTimelineDefinitions.map((definition) => {
+    const log = logForStep[definition.id];
+    const state: ExecutionTimelineStepState =
+      definition.id === "failed" && isFailed
+        ? "failed"
+        : definition.id === activeId
+          ? "active"
+          : completed.has(definition.id)
+            ? "completed"
+            : "pending";
+
+    return {
+      ...definition,
+      state,
+      timestamp: log?.timestamp ?? null,
+      detail:
+        definition.id === "failed"
+          ? task.error ?? log?.message ?? null
+          : definition.id === "committed" && task.status === "pushed"
+            ? "Branch pushed; pull request has not been opened yet."
+            : log?.message ?? null,
+    };
+  });
+}
+
 function upsertPromptAssistantProvider(
   providers: PromptAssistantProviderStatus[],
   next: PromptAssistantProviderStatus
@@ -460,6 +690,8 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null);
   const [diff, setDiff] = useState<TaskDiffResponse>(emptyDiff);
   const [logs, setLogs] = useState<TaskLogsResponse>(emptyLogs);
+  const [isRawDiffExpanded, setIsRawDiffExpanded] = useState(false);
+  const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string | null>(null);
   const [isRawLogsOpen, setIsRawLogsOpen] = useState(false);
   const [isPollingLogs, setIsPollingLogs] = useState(false);
   const [logsRefreshError, setLogsRefreshError] = useState<string | null>(null);
@@ -490,6 +722,10 @@ export default function App() {
   const isTaskActive = selectedTask ? isLiveActivityStatus(selectedTask.status) : false;
   const timelineLogs = useMemo(() => visibleTimelineLogs(logs.events), [logs.events]);
   const rawLogs = useMemo(() => rawExecutionLogs(logs.events), [logs.events]);
+  const taskTimelineSteps = useMemo(
+    () => buildExecutionTimeline(selectedTask, logs.events, diff, workspace),
+    [selectedTask, logs.events, diff, workspace]
+  );
   const activePromptAssistantProviderId: PromptAssistantProvider | null =
     promptAssistantMode === "manual" ? null : promptAssistantMode;
   const activePromptAssistantProvider = useMemo(
@@ -536,12 +772,41 @@ export default function App() {
     codexConnection === "disconnected" && (codexReadiness === "auth_required" || codexReadiness === "ready");
   const codexConnectionLabel =
     codexConnection === "connecting" ? "Connecting" : isCodexActive ? "Connected" : "Disconnected";
+  const diffSummaryFiles = useMemo(
+    () =>
+      selectedTask?.changed_files?.length
+        ? selectedTask.changed_files
+        : diff.changed_files,
+    [diff.changed_files, selectedTask?.changed_files]
+  );
+  const diffSummaryTotals = useMemo(
+    () =>
+      diffSummaryFiles.reduce(
+        (totals, file) => ({
+          additions: totals.additions + file.additions,
+          deletions: totals.deletions + file.deletions,
+        }),
+        { additions: 0, deletions: 0 }
+      ),
+    [diffSummaryFiles]
+  );
   const outsideTargetFiles = useMemo(
     () =>
-      diff.changed_files.filter(
+      diffSummaryFiles.filter(
         (file) => selectedTask?.target_file && file.path !== selectedTask.target_file
       ),
-    [diff.changed_files, selectedTask?.target_file]
+    [diffSummaryFiles, selectedTask?.target_file]
+  );
+  const selectedDiffFile = useMemo(
+    () =>
+      selectedDiffFilePath
+        ? diffSummaryFiles.find((file) => file.path === selectedDiffFilePath) ?? null
+        : null,
+    [diffSummaryFiles, selectedDiffFilePath]
+  );
+  const selectedFileDiff = useMemo(
+    () => (selectedDiffFile ? isolateFileDiff(diff.diff, selectedDiffFile.path) : null),
+    [diff.diff, selectedDiffFile]
   );
   const showScopeWarning =
     selectedTask?.change_scope === "only_selected_file" && outsideTargetFiles.length > 0;
@@ -917,6 +1182,8 @@ export default function App() {
         change_scope: changeScope,
       }, githubSessionId);
       await refreshTasks();
+      setIsRawDiffExpanded(false);
+      setSelectedDiffFilePath(null);
       await loadTaskDetail(created.task_id);
       setInstruction("");
       filePreviewRequestId.current += 1;
@@ -1002,6 +1269,40 @@ export default function App() {
     } finally {
       setIsActing(false);
     }
+  }
+
+  function confirmCommitOrReject(approve: boolean) {
+    if (!selectedTask) {
+      return;
+    }
+
+    if (approve) {
+      Alert.alert(
+        "Commit these changes?",
+        `${diffSummaryFiles.length} changed files\n+${diffSummaryTotals.additions} additions\n-${diffSummaryTotals.deletions} deletions`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Commit changes",
+            onPress: () => void handleCommitOrReject(true),
+          },
+        ]
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Reject this task?",
+      "This will discard the generated changes for this task.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reject task",
+          style: "destructive",
+          onPress: () => void handleCommitOrReject(false),
+        },
+      ]
+    );
   }
 
   async function handlePush() {
@@ -1128,6 +1429,8 @@ export default function App() {
               await deleteTask(selectedTask.task_id);
               await refreshTasks();
               setSelectedTask(null);
+              setIsRawDiffExpanded(false);
+              setSelectedDiffFilePath(null);
               setDiff(emptyDiff);
               setLogs(emptyLogs);
               setWorkspace(null);
@@ -2021,7 +2324,13 @@ export default function App() {
               {latestTasks.map((task) => (
                 <Pressable
                   key={task.task_id}
-                  onPress={() => loadTaskDetail(task.task_id)}
+                  onPress={() => {
+                    if (task.task_id !== selectedTaskId) {
+                      setIsRawDiffExpanded(false);
+                      setSelectedDiffFilePath(null);
+                    }
+                    void loadTaskDetail(task.task_id);
+                  }}
                   style={({ pressed }) => [
                     styles.taskItem,
                     selectedTask?.task_id === task.task_id && styles.taskItemSelected,
@@ -2064,16 +2373,68 @@ export default function App() {
         >
           {selectedTask ? (
             <>
-              <ChangedFiles files={diff.changed_files} targetFile={selectedTask.target_file ?? null} />
+              <DiffSummaryCard
+                status={selectedTask.status}
+                files={diffSummaryFiles}
+                targetFile={selectedTask.target_file ?? null}
+                selectedFilePath={selectedDiffFilePath}
+                onSelectFile={setSelectedDiffFilePath}
+              />
+              {selectedDiffFile ? (
+                <View style={styles.selectedFileDiffCard}>
+                  <View style={styles.selectedFileDiffHeader}>
+                    <View style={styles.selectedFileTitleBlock}>
+                      <Text style={styles.diffSummaryEyebrow}>Selected file diff</Text>
+                      <Text style={styles.selectedFilePath} numberOfLines={3}>
+                        {selectedDiffFile.path}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => setSelectedDiffFilePath(null)}
+                      style={({ pressed }) => [styles.clearSelectionButton, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.clearSelectionText}>View all files</Text>
+                    </Pressable>
+                  </View>
+                  <View style={styles.selectedFileMeta}>
+                    <Text style={styles.fileStatus}>{selectedDiffFile.status}</Text>
+                    <Text style={[styles.fileStats, styles.additionText]}>
+                      +{selectedDiffFile.additions}
+                    </Text>
+                    <Text style={[styles.fileStats, styles.deletionText]}>
+                      -{selectedDiffFile.deletions}
+                    </Text>
+                  </View>
+                  {selectedFileDiff ? (
+                    <SelectedFileDiffView diff={selectedFileDiff} />
+                  ) : (
+                    <Text style={styles.emptyText}>
+                      Could not isolate this file diff. Open raw diff to review the full patch.
+                    </Text>
+                  )}
+                </View>
+              ) : null}
               {showScopeWarning ? (
                 <Text style={styles.warningText}>
                   Scope warning: this diff includes {outsideTargetFiles.length} file
                   {outsideTargetFiles.length === 1 ? "" : "s"} outside the selected target.
                 </Text>
               ) : null}
-              <ScrollView horizontal style={styles.diffScroller}>
-                <Text style={styles.diffText}>{diff.diff || "No diff available."}</Text>
-              </ScrollView>
+              <Pressable
+                onPress={() => setIsRawDiffExpanded((expanded) => !expanded)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: isRawDiffExpanded }}
+                style={({ pressed }) => [styles.rawDiffToggle, pressed && styles.pressed]}
+              >
+                <Text style={styles.rawDiffToggleText}>
+                  {isRawDiffExpanded ? "Hide raw diff" : "Show raw diff"}
+                </Text>
+              </Pressable>
+              {isRawDiffExpanded ? (
+                <ScrollView horizontal style={styles.diffScroller}>
+                  <Text style={styles.diffText}>{diff.diff || "No diff available."}</Text>
+                </ScrollView>
+              ) : null}
             </>
           ) : (
             <Text style={styles.emptyText}>Diff appears after selecting a task.</Text>
@@ -2100,14 +2461,14 @@ export default function App() {
                       label="Commit"
                       icon={<CheckCircle2 size={18} color="#031014" />}
                       disabled={isActing}
-                      onPress={() => handleCommitOrReject(true)}
+                      onPress={() => confirmCommitOrReject(true)}
                       tone="approve"
                     />
                     <ActionButton
                       label="Reject"
                       icon={<XCircle size={18} color="#ffd4d8" />}
                       disabled={isActing}
-                      onPress={() => handleCommitOrReject(false)}
+                      onPress={() => confirmCommitOrReject(false)}
                       tone="reject"
                     />
                   </>
@@ -2254,6 +2615,10 @@ export default function App() {
           ) : (
             <Text style={styles.emptyText}>Select a task to inspect it.</Text>
           )}
+        </Section>
+
+        <Section title="Task timeline">
+          <TaskExecutionTimeline task={selectedTask} steps={taskTimelineSteps} />
         </Section>
 
         <Section title="Advanced details">
@@ -2461,12 +2826,107 @@ function Loader({ label }: { label: string }) {
   );
 }
 
+function SelectedFileDiffView({ diff }: { diff: string }) {
+  return (
+    <View style={styles.selectedFileDiffBox}>
+      <View style={styles.diffLegend}>
+        <Text style={[styles.diffLegendText, styles.additionText]}>+ added</Text>
+        <Text style={[styles.diffLegendText, styles.deletionText]}>- removed</Text>
+      </View>
+      <ScrollView style={styles.selectedFileDiffScroller}>
+        <View style={styles.selectedFileDiffLines}>
+          {diff.split("\n").map((line, index) => {
+            const tone = diffLineTone(line);
+            return (
+              <Text
+                key={`${index}-${line}`}
+                style={[
+                  styles.selectedDiffLine,
+                  tone === "muted" && styles.selectedDiffLineMuted,
+                  tone === "hunk" && styles.selectedDiffLineHunk,
+                  tone === "added" && styles.selectedDiffLineAdded,
+                  tone === "removed" && styles.selectedDiffLineRemoved,
+                ]}
+              >
+                {line || " "}
+              </Text>
+            );
+          })}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function DiffSummaryCard({
+  status,
+  files,
+  targetFile,
+  selectedFilePath,
+  onSelectFile,
+}: {
+  status: TaskStatus;
+  files: ChangedFile[];
+  targetFile?: string | null;
+  selectedFilePath?: string | null;
+  onSelectFile?: (path: string) => void;
+}) {
+  const totals = files.reduce(
+    (accumulator, file) => ({
+      additions: accumulator.additions + file.additions,
+      deletions: accumulator.deletions + file.deletions,
+    }),
+    { additions: 0, deletions: 0 }
+  );
+
+  return (
+    <View style={styles.diffSummaryCard}>
+      <View style={styles.diffSummaryTopline}>
+        <View style={styles.diffSummaryTitleBlock}>
+          <Text style={styles.diffSummaryEyebrow}>Diff summary</Text>
+          <Text style={styles.diffSummaryHelper}>Review the generated changes before committing.</Text>
+        </View>
+        <StatusBadge status={status} compact />
+      </View>
+
+      <View style={styles.diffSummaryMetrics}>
+        <View style={styles.diffSummaryMetric}>
+          <Text style={styles.diffSummaryMetricLabel}>Files</Text>
+          <Text style={styles.diffSummaryMetricValue}>{files.length}</Text>
+        </View>
+        <View style={styles.diffSummaryMetric}>
+          <Text style={styles.diffSummaryMetricLabel}>Additions</Text>
+          <Text style={[styles.diffSummaryMetricValue, styles.additionText]}>+{totals.additions}</Text>
+        </View>
+        <View style={styles.diffSummaryMetric}>
+          <Text style={styles.diffSummaryMetricLabel}>Deletions</Text>
+          <Text style={[styles.diffSummaryMetricValue, styles.deletionText]}>-{totals.deletions}</Text>
+        </View>
+      </View>
+
+      <ChangedFiles
+        files={files}
+        targetFile={targetFile}
+        compact
+        selectedFilePath={selectedFilePath}
+        onSelectFile={onSelectFile}
+      />
+    </View>
+  );
+}
+
 function ChangedFiles({
   files,
   targetFile,
+  compact = false,
+  selectedFilePath,
+  onSelectFile,
 }: {
-  files: { path: string; status: string; additions: number; deletions: number }[];
+  files: ChangedFile[];
   targetFile?: string | null;
+  compact?: boolean;
+  selectedFilePath?: string | null;
+  onSelectFile?: (path: string) => void;
 }) {
   if (files.length === 0) {
     return <Text style={styles.emptyText}>No changed files.</Text>;
@@ -2475,18 +2935,108 @@ function ChangedFiles({
   return (
     <View style={styles.fileList}>
       {files.slice(0, 8).map((file) => (
-        <View key={`${file.status}-${file.path}`} style={styles.filePill}>
+        <Pressable
+          key={`${file.status}-${file.path}`}
+          disabled={!onSelectFile}
+          onPress={() => onSelectFile?.(file.path)}
+          style={({ pressed }) => [
+            styles.filePill,
+            compact && styles.filePillCompact,
+            selectedFilePath === file.path && styles.filePillSelected,
+            pressed && styles.pressed,
+          ]}
+        >
           <GitBranch size={14} color="#8bdcff" />
-          <Text style={styles.fileText} numberOfLines={1}>
-            {file.status} {file.path}
+          <Text style={styles.fileText} numberOfLines={compact ? 2 : 1}>
+            {file.path}
             {targetFile === file.path ? " · target" : targetFile ? " · outside target" : ""}
           </Text>
-          <Text style={styles.fileStats}>
-            +{file.additions} -{file.deletions}
-          </Text>
-        </View>
+          <View style={styles.fileStatsGroup}>
+            <Text style={styles.fileStatus}>{file.status}</Text>
+            <Text style={[styles.fileStats, styles.additionText]}>+{file.additions}</Text>
+            <Text style={[styles.fileStats, styles.deletionText]}>-{file.deletions}</Text>
+          </View>
+        </Pressable>
       ))}
       {files.length > 8 ? <Text style={styles.emptyText}>+{files.length - 8} more files</Text> : null}
+    </View>
+  );
+}
+
+function TaskExecutionTimeline({
+  task,
+  steps,
+}: {
+  task: TaskSummary | null;
+  steps: ExecutionTimelineStep[];
+}) {
+  if (!task) {
+    return <Text style={styles.emptyText}>Select a task to inspect its execution pipeline.</Text>;
+  }
+
+  return (
+    <View style={styles.executionTimeline}>
+      <View style={styles.executionTimelineHeader}>
+        <StatusBadge status={task.status} compact />
+      </View>
+      {steps.map((step, index) => (
+        <View key={step.id} style={styles.executionStep}>
+          <View style={styles.executionRail}>
+            <View
+              style={[
+                styles.executionMarker,
+                step.state === "completed" && styles.executionMarkerCompleted,
+                step.state === "active" && styles.executionMarkerActive,
+                step.state === "failed" && styles.executionMarkerFailed,
+              ]}
+            >
+              {step.state === "completed" ? (
+                <CheckCircle2 size={13} color="#5eead4" />
+              ) : step.state === "failed" ? (
+                <XCircle size={13} color="#fca5a5" />
+              ) : (
+                <View style={styles.executionMarkerDot} />
+              )}
+            </View>
+            {index < steps.length - 1 ? (
+              <View
+                style={[
+                  styles.executionConnector,
+                  (step.state === "completed" || step.state === "active") &&
+                    styles.executionConnectorCompleted,
+                ]}
+              />
+            ) : null}
+          </View>
+          <View style={styles.executionStepBody}>
+            <View style={styles.executionStepTopline}>
+              <Text
+                style={[
+                  styles.executionStepTitle,
+                  step.state === "pending" && styles.executionStepPendingTitle,
+                ]}
+              >
+                {step.label}
+              </Text>
+              <Text
+                style={[
+                  styles.executionStepState,
+                  step.state === "active" && styles.executionStepStateActive,
+                  step.state === "failed" && styles.executionStepStateFailed,
+                ]}
+              >
+                {step.state}
+              </Text>
+            </View>
+            {step.detail || step.timestamp ? (
+              <Text style={styles.executionStepDetail}>
+                {step.detail}
+                {step.timestamp ? `${step.detail ? " · " : ""}${formatDate(step.timestamp)}` : ""}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      ))}
     </View>
   );
 }
@@ -2965,6 +3515,172 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     padding: 12,
+  },
+  rawDiffToggle: {
+    minHeight: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(65, 230, 189, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(65, 230, 189, 0.28)",
+  },
+  rawDiffToggleText: {
+    color: "#d8f9ff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  selectedFileDiffCard: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.42)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  selectedFileDiffHeader: {
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+  selectedFileTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  selectedFilePath: {
+    color: "#edf8ff",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+  },
+  selectedFileMeta: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    alignItems: "center",
+  },
+  selectedFileDiffBox: {
+    maxHeight: 320,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: "#02060b",
+    borderWidth: 1,
+    borderColor: "rgba(91, 129, 161, 0.22)",
+  },
+  diffLegend: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: "rgba(2, 6, 11, 0.96)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(91, 129, 161, 0.22)",
+  },
+  diffLegendText: {
+    fontFamily: "Courier",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  selectedFileDiffScroller: {
+    maxHeight: 278,
+  },
+  selectedFileDiffLines: {
+    paddingVertical: 8,
+  },
+  selectedDiffLine: {
+    paddingHorizontal: 12,
+    paddingVertical: 2,
+    color: "#c8e4f4",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
+    flexWrap: "wrap",
+  },
+  selectedDiffLineMuted: {
+    color: "#6f8298",
+  },
+  selectedDiffLineHunk: {
+    color: "#a7c7ff",
+    backgroundColor: "rgba(37, 99, 235, 0.16)",
+  },
+  selectedDiffLineAdded: {
+    color: "#bbf7d0",
+    backgroundColor: "rgba(22, 101, 52, 0.24)",
+  },
+  selectedDiffLineRemoved: {
+    color: "#fecaca",
+    backgroundColor: "rgba(127, 29, 29, 0.22)",
+  },
+  clearSelectionButton: {
+    minHeight: 34,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(148, 163, 184, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.18)",
+  },
+  clearSelectionText: {
+    color: "#d8f9ff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  diffSummaryCard: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(3, 12, 23, 0.58)",
+    borderWidth: 1,
+    borderColor: "rgba(65, 230, 189, 0.2)",
+  },
+  diffSummaryTopline: {
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+  diffSummaryTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  diffSummaryEyebrow: {
+    color: "#8bdcff",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  diffSummaryHelper: {
+    color: "#9db5ca",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  diffSummaryMetrics: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  diffSummaryMetric: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(15, 28, 42, 0.62)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.12)",
+  },
+  diffSummaryMetricLabel: {
+    color: "#8299ae",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  diffSummaryMetricValue: {
+    color: "#edf8ff",
+    fontSize: 18,
+    fontWeight: "900",
   },
   fileList: {
     gap: 8,
@@ -3495,6 +4211,7 @@ const styles = StyleSheet.create({
     minHeight: 38,
     borderRadius: 8,
     paddingHorizontal: 10,
+    paddingVertical: 8,
     backgroundColor: "rgba(45, 106, 150, 0.13)",
     borderWidth: 1,
     borderColor: "rgba(90, 177, 230, 0.18)",
@@ -3502,15 +4219,128 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  filePillCompact: {
+    minHeight: 42,
+    alignItems: "flex-start",
+  },
+  filePillSelected: {
+    backgroundColor: "rgba(65, 230, 189, 0.14)",
+    borderColor: "rgba(65, 230, 189, 0.44)",
+  },
   fileText: {
     flex: 1,
     color: "#cfe9f9",
     fontSize: 12,
+    lineHeight: 17,
+  },
+  fileStatsGroup: {
+    alignItems: "flex-end",
+    gap: 2,
+  },
+  fileStatus: {
+    color: "#9db5ca",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
   },
   fileStats: {
-    color: "#7deccf",
     fontSize: 12,
     fontWeight: "800",
+  },
+  additionText: {
+    color: "#7deccf",
+  },
+  deletionText: {
+    color: "#ff9dac",
+  },
+  executionTimeline: {
+    gap: 0,
+  },
+  executionTimelineHeader: {
+    alignItems: "flex-start",
+    marginBottom: 10,
+  },
+  executionStep: {
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 46,
+  },
+  executionRail: {
+    width: 26,
+    alignItems: "center",
+  },
+  executionMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15, 28, 42, 0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.24)",
+  },
+  executionMarkerCompleted: {
+    borderColor: "rgba(65, 230, 189, 0.52)",
+  },
+  executionMarkerActive: {
+    borderColor: "rgba(251, 191, 36, 0.68)",
+    backgroundColor: "rgba(251, 191, 36, 0.12)",
+  },
+  executionMarkerFailed: {
+    borderColor: "rgba(248, 113, 113, 0.68)",
+    backgroundColor: "rgba(248, 113, 113, 0.12)",
+  },
+  executionMarkerDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "rgba(157, 181, 202, 0.78)",
+  },
+  executionConnector: {
+    flex: 1,
+    width: 2,
+    backgroundColor: "rgba(124, 157, 188, 0.18)",
+  },
+  executionConnectorCompleted: {
+    backgroundColor: "rgba(65, 230, 189, 0.48)",
+  },
+  executionStepBody: {
+    flex: 1,
+    minWidth: 0,
+    paddingBottom: 14,
+  },
+  executionStepTopline: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  executionStepTitle: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  executionStepPendingTitle: {
+    color: "#8299ae",
+  },
+  executionStepState: {
+    color: "#8299ae",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  executionStepStateActive: {
+    color: "#fef3c7",
+  },
+  executionStepStateFailed: {
+    color: "#fca5a5",
+  },
+  executionStepDetail: {
+    marginTop: 4,
+    color: "#9db5ca",
+    fontSize: 12,
+    lineHeight: 17,
   },
   logList: {
     gap: 0,

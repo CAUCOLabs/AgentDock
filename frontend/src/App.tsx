@@ -61,6 +61,68 @@ type ChangedFile = {
   deletions: number
 }
 
+function isolateFileDiff(diff: string, filePath: string) {
+  if (!diff || !filePath) return null
+
+  const lines = diff.split('\n')
+  let currentBlock: string[] = []
+  let currentPaths: string[] = []
+
+  const finishBlock = () => {
+    if (!currentBlock.length) return null
+    return currentPaths.includes(filePath) ? currentBlock.join('\n') : null
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      const matchedBlock = finishBlock()
+      if (matchedBlock) return matchedBlock
+      currentBlock = [line]
+      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line)
+      currentPaths = match ? [match[1], match[2]] : []
+      continue
+    }
+
+    if (currentBlock.length) {
+      currentBlock.push(line)
+    }
+  }
+
+  return finishBlock()
+}
+
+function diffLineClassName(line: string) {
+  if (
+    line.startsWith('diff --git ') ||
+    line.startsWith('--- ') ||
+    line.startsWith('+++ ')
+  ) {
+    return 'diff-line diff-line-muted'
+  }
+  if (line.startsWith('@@')) return 'diff-line diff-line-hunk'
+  if (line.startsWith('+')) return 'diff-line diff-line-added'
+  if (line.startsWith('-')) return 'diff-line diff-line-removed'
+  return 'diff-line'
+}
+
+function SelectedFileDiffView({ diff }: { diff: string }) {
+  return (
+    <div className="selected-file-diff" role="region" aria-label="Selected file patch">
+      <div className="diff-legend" aria-label="Diff legend">
+        <span className="addition-count">+ added</span>
+        <span className="deletion-count">- removed</span>
+      </div>
+      <div className="selected-file-diff-lines">
+        {diff.split('\n').map((line, index) => (
+          <code className={diffLineClassName(line)} key={`${index}-${line}`}>
+            {line || ' '}
+          </code>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 type RepositoryFileEntry = {
   path: string
   type: 'file' | 'directory'
@@ -274,6 +336,29 @@ type TimelineLogEvent = TaskLogEvent & {
   label: string
 }
 
+type ExecutionTimelineStepState = 'pending' | 'active' | 'completed' | 'failed'
+
+type ExecutionTimelineStepId =
+  | 'preparing_workspace'
+  | 'repository_ready'
+  | 'running_codex'
+  | 'changes_generated'
+  | 'generating_diff'
+  | 'review_ready'
+  | 'waiting_approval'
+  | 'committed'
+  | 'pull_request_opened'
+  | 'merged'
+  | 'failed'
+
+type ExecutionTimelineStep = {
+  id: ExecutionTimelineStepId
+  label: string
+  state: ExecutionTimelineStepState
+  detail?: string | null
+  timestamp?: string | null
+}
+
 type TaskLogsResponse = {
   task_id: string
   events: TaskLogEvent[]
@@ -428,6 +513,13 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TaskSummary | null>(null)
   const [taskDiff, setTaskDiff] = useState<TaskDiffResponse | null>(null)
+  const [isRawDiffExpanded, setIsRawDiffExpanded] = useState(false)
+  const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string | null>(
+    null,
+  )
+  const [approvalConfirmation, setApprovalConfirmation] = useState<
+    'commit' | 'reject' | null
+  >(null)
   const [workspaceStatus, setWorkspaceStatus] =
     useState<WorkspaceStatusResponse | null>(null)
   const [taskLogs, setTaskLogs] = useState<TaskLogEvent[]>([])
@@ -574,12 +666,48 @@ function App() {
   const isTaskActive = activeTask ? isLiveActivityStatus(activeTask.status) : false
   const timelineLogs = useMemo(() => visibleTimelineLogs(taskLogs), [taskLogs])
   const rawLogs = useMemo(() => rawExecutionLogs(taskLogs), [taskLogs])
+  const taskTimelineSteps = useMemo(
+    () => buildExecutionTimeline(activeTask, taskLogs, taskDiff, workspaceStatus),
+    [activeTask, taskLogs, taskDiff, workspaceStatus],
+  )
+  const diffSummaryFiles = useMemo(
+    () =>
+      activeTask?.changed_files?.length
+        ? activeTask.changed_files
+        : taskDiff?.changed_files ?? [],
+    [activeTask?.changed_files, taskDiff?.changed_files],
+  )
   const activeTaskOutsideTargetFiles = useMemo(
     () =>
-      (taskDiff?.changed_files ?? []).filter(
+      diffSummaryFiles.filter(
         (file) => activeTask?.target_file && file.path !== activeTask.target_file,
       ),
-    [activeTask?.target_file, taskDiff?.changed_files],
+    [activeTask?.target_file, diffSummaryFiles],
+  )
+  const diffSummaryTotals = useMemo(
+    () =>
+      diffSummaryFiles.reduce(
+        (totals, file) => ({
+          additions: totals.additions + file.additions,
+          deletions: totals.deletions + file.deletions,
+        }),
+        { additions: 0, deletions: 0 },
+      ),
+    [diffSummaryFiles],
+  )
+  const selectedDiffFile = useMemo(
+    () =>
+      selectedDiffFilePath
+        ? diffSummaryFiles.find((file) => file.path === selectedDiffFilePath) ?? null
+        : null,
+    [diffSummaryFiles, selectedDiffFilePath],
+  )
+  const selectedFileDiff = useMemo(
+    () =>
+      selectedDiffFile
+        ? isolateFileDiff(taskDiff?.diff ?? '', selectedDiffFile.path)
+        : null,
+    [selectedDiffFile, taskDiff?.diff],
   )
   const showScopeWarning =
     activeTask?.change_scope === 'only_selected_file' &&
@@ -625,6 +753,9 @@ function App() {
   }, [githubSessionId])
 
   useEffect(() => {
+    setIsRawDiffExpanded(false)
+    setSelectedDiffFilePath(null)
+    setApprovalConfirmation(null)
     if (!selectedTaskId) {
       setSelectedTask(null)
       setTaskDiff(null)
@@ -1237,6 +1368,7 @@ function App() {
 
     setNotice(null)
     setError(null)
+    setApprovalConfirmation(null)
 
     try {
       const result = await request<TaskApprovalResponse>(
@@ -1485,6 +1617,7 @@ function App() {
     activeMergeAttempt?.status !== 'failed'
 
   return (
+    <>
     <main className="app-shell">
       <motion.header
         className="app-header"
@@ -2373,7 +2506,7 @@ function App() {
             Review Diff
           </h2>
           <div className="section-actions">
-            <span>{taskDiff?.changed_files.length ?? 0} changed files</span>
+            <span>{diffSummaryFiles.length} changed files</span>
             {taskDiff?.diff && (
               <button
                 type="button"
@@ -2400,26 +2533,101 @@ function App() {
           </div>
         </div>
 
-        {taskDiff?.changed_files.length ? (
-          <ul className="changed-files changed-files-summary">
-            {taskDiff.changed_files.map((file) => (
-              <li key={`${file.status}-${file.path}`}>
-                <span>
-                  {file.path}
-                  {activeTask?.target_file === file.path ? (
-                    <strong className="target-match">Target</strong>
-                  ) : activeTask?.target_file ? (
-                    <strong className="outside-target">Outside target</strong>
-                  ) : null}
-                </span>
-                <small>
-                  {file.status} +{file.additions} -{file.deletions}
-                </small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="empty-state">No changed files to show.</p>
+        <div className="diff-summary-card" aria-label="Diff summary">
+          <div className="diff-summary-topline">
+            <div>
+              <p className="eyebrow">Diff summary</p>
+              <p className="diff-summary-helper">
+                Review the generated changes before committing.
+              </p>
+            </div>
+            {activeTask ? (
+              <span className={`status-pill ${activeTask.status}`}>
+                {activeTask.status.replaceAll('_', ' ')}
+              </span>
+            ) : (
+              <span className="status-pill">No task selected</span>
+            )}
+          </div>
+
+          <div className="diff-summary-metrics" aria-label="Change totals">
+            <div>
+              <span>Files</span>
+              <strong>{diffSummaryFiles.length}</strong>
+            </div>
+            <div>
+              <span>Additions</span>
+              <strong className="addition-count">+{diffSummaryTotals.additions}</strong>
+            </div>
+            <div>
+              <span>Deletions</span>
+              <strong className="deletion-count">-{diffSummaryTotals.deletions}</strong>
+            </div>
+          </div>
+
+          {diffSummaryFiles.length ? (
+            <ul className="changed-files changed-files-summary">
+              {diffSummaryFiles.map((file) => (
+                <li
+                  key={`${file.status}-${file.path}`}
+                  className={
+                    selectedDiffFilePath === file.path ? 'selected-file-row' : undefined
+                  }
+                >
+                  <button
+                    type="button"
+                    className="changed-file-button"
+                    onClick={() => setSelectedDiffFilePath(file.path)}
+                  >
+                    <span>
+                      {file.path}
+                      {activeTask?.target_file === file.path ? (
+                        <strong className="target-match">Target</strong>
+                      ) : activeTask?.target_file ? (
+                        <strong className="outside-target">Outside target</strong>
+                      ) : null}
+                    </span>
+                    <small>
+                      <b>{file.status}</b>
+                      <em className="addition-count">+{file.additions}</em>
+                      <em className="deletion-count">-{file.deletions}</em>
+                    </small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="empty-state">No changed files to show.</p>
+          )}
+        </div>
+        {selectedDiffFile && (
+          <div className="selected-file-diff-card" aria-label="Selected file diff">
+            <div className="selected-file-diff-heading">
+              <div>
+                <p className="eyebrow">Selected file diff</p>
+                <h3>{selectedDiffFile.path}</h3>
+              </div>
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => setSelectedDiffFilePath(null)}
+              >
+                View all files
+              </button>
+            </div>
+            <div className="selected-file-meta">
+              <span>{selectedDiffFile.status}</span>
+              <span className="addition-count">+{selectedDiffFile.additions}</span>
+              <span className="deletion-count">-{selectedDiffFile.deletions}</span>
+            </div>
+            {selectedFileDiff ? (
+              <SelectedFileDiffView diff={selectedFileDiff} />
+            ) : (
+              <p className="empty-state">
+                Could not isolate this file diff. Open raw diff to review the full patch.
+              </p>
+            )}
+          </div>
         )}
         {showScopeWarning && (
           <p className="scope-warning">
@@ -2429,7 +2637,18 @@ function App() {
           </p>
         )}
 
-        <pre>{taskDiff?.diff || 'No diff loaded.'}</pre>
+        <button
+          type="button"
+          className="raw-diff-toggle"
+          onClick={() => setIsRawDiffExpanded((expanded) => !expanded)}
+          aria-expanded={isRawDiffExpanded}
+        >
+          {isRawDiffExpanded ? 'Hide raw diff' : 'Show raw diff'}
+        </button>
+
+        {isRawDiffExpanded && (
+          <pre>{taskDiff?.diff || 'No diff loaded.'}</pre>
+        )}
       </section>
 
       <section className="detail-grid result-grid">
@@ -2483,7 +2702,7 @@ function App() {
                   <>
                     <button
                       type="button"
-                      onClick={() => void commitOrRejectTask(true)}
+                      onClick={() => setApprovalConfirmation('commit')}
                     >
                       <CheckCircle2 size={16} />
                       Commit
@@ -2491,7 +2710,7 @@ function App() {
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => void commitOrRejectTask(false)}
+                      onClick={() => setApprovalConfirmation('reject')}
                     >
                       <XCircle size={16} />
                       Reject
@@ -2657,6 +2876,11 @@ function App() {
             </>
           )}
         </section>
+
+        <TaskExecutionTimeline
+          activeTask={activeTask}
+          steps={taskTimelineSteps}
+        />
 
         <details className="advanced-details glass-card">
           <summary>
@@ -2892,6 +3116,64 @@ function App() {
         </details>
       </section>
     </main>
+    {approvalConfirmation && activeTask && (
+      <div
+        className="confirmation-backdrop"
+        role="presentation"
+        onClick={() => setApprovalConfirmation(null)}
+      >
+        <section
+          className="confirmation-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="approval-confirmation-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <h2 id="approval-confirmation-title">
+            {approvalConfirmation === 'commit'
+              ? 'Commit these changes?'
+              : 'Reject this task?'}
+          </h2>
+          {approvalConfirmation === 'commit' ? (
+            <div className="confirmation-summary">
+              <div>
+                <span>Files</span>
+                <strong>{diffSummaryFiles.length}</strong>
+              </div>
+              <div>
+                <span>Additions</span>
+                <strong className="addition-count">+{diffSummaryTotals.additions}</strong>
+              </div>
+              <div>
+                <span>Deletions</span>
+                <strong className="deletion-count">-{diffSummaryTotals.deletions}</strong>
+              </div>
+            </div>
+          ) : (
+            <p className="confirmation-helper">
+              This will discard the generated changes for this task.
+            </p>
+          )}
+          <div className="confirmation-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setApprovalConfirmation(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={approvalConfirmation === 'reject' ? 'danger' : undefined}
+              onClick={() => void commitOrRejectTask(approvalConfirmation === 'commit')}
+            >
+              {approvalConfirmation === 'commit' ? 'Commit changes' : 'Reject task'}
+            </button>
+          </div>
+        </section>
+      </div>
+    )}
+    </>
   )
 }
 
@@ -3068,6 +3350,238 @@ function rawExecutionLogs(events: TaskLogEvent[]) {
     .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
     .filter((event) => !isInternalRuntimeLog(event.message))
     .filter((event) => isRawExecutionLog(event.message) || !timelineLabelForLog(event.message))
+}
+
+const executionTimelineDefinitions: Array<{
+  id: ExecutionTimelineStepId
+  label: string
+}> = [
+  { id: 'preparing_workspace', label: 'Preparing workspace' },
+  { id: 'repository_ready', label: 'Repository ready' },
+  { id: 'running_codex', label: 'Running Codex' },
+  { id: 'changes_generated', label: 'Changes generated' },
+  { id: 'generating_diff', label: 'Generating diff' },
+  { id: 'review_ready', label: 'Review ready' },
+  { id: 'waiting_approval', label: 'Waiting approval' },
+  { id: 'committed', label: 'Committed' },
+  { id: 'pull_request_opened', label: 'Pull request opened' },
+  { id: 'merged', label: 'Merged' },
+  { id: 'failed', label: 'Failed' },
+]
+
+const completedStatuses = new Set<TaskStatus>([
+  'committed',
+  'pushed',
+  'pull_request_opened',
+  'merged',
+  'completed',
+])
+
+function firstMatchingLog(
+  events: TaskLogEvent[],
+  patterns: RegExp[],
+): TaskLogEvent | null {
+  return (
+    events
+      .map((event) => ({ ...event, message: redactLogMessage(event.message) }))
+      .filter((event) => !isInternalRuntimeLog(event.message))
+      .find((event) => patterns.some((pattern) => pattern.test(event.message))) ?? null
+  )
+}
+
+function buildExecutionTimeline(
+  task: TaskSummary | null,
+  events: TaskLogEvent[],
+  diff?: TaskDiffResponse | null,
+  workspace?: WorkspaceStatusResponse | null,
+): ExecutionTimelineStep[] {
+  if (!task) return []
+
+  const logForStep: Partial<Record<ExecutionTimelineStepId, TaskLogEvent>> = {
+    preparing_workspace:
+      firstMatchingLog(events, [/Workspace preparation started/i, /Task created/i]) ??
+      undefined,
+    repository_ready:
+      firstMatchingLog(events, [/Workspace prepared/i, /repository ready/i]) ??
+      undefined,
+    running_codex:
+      firstMatchingLog(events, [/(codex|mock|local|openai|claude|ollama|local_model) started/i]) ??
+      undefined,
+    changes_generated:
+      firstMatchingLog(events, [/(codex|mock|local|openai|claude|ollama|local_model) completed/i, /Task completed by runner/i]) ??
+      undefined,
+    generating_diff:
+      firstMatchingLog(events, [/Diff generation started/i]) ?? undefined,
+    review_ready:
+      firstMatchingLog(events, [/Diff generated/i, /Diff ready for approval/i]) ??
+      undefined,
+    waiting_approval:
+      firstMatchingLog(events, [/Diff ready for approval/i, /waiting.*approval/i]) ??
+      undefined,
+    committed:
+      firstMatchingLog(events, [/Task locally committed/i, /Commit completed/i]) ??
+      undefined,
+    pull_request_opened:
+      firstMatchingLog(events, [/PR created/i, /PR creation completed/i, /pull request.*opened/i]) ??
+      undefined,
+    merged:
+      firstMatchingLog(events, [/Merge completed/i, /PR #.*merged/i]) ?? undefined,
+    failed:
+      firstMatchingLog(events, [/failed/i, /error/i]) ?? undefined,
+  }
+
+  const hasDiff = Boolean(diff?.diff || task.changed_files.length)
+  const hasWorkspace = Boolean(workspace?.repo_path || task.working_branch)
+  const hasCommit = Boolean(task.commit_sha || workspace?.commit_sha)
+  const hasPullRequest = Boolean(task.pr_url || workspace?.pr_url)
+  const hasMerged = task.status === 'merged' || workspace?.pr_state === 'merged'
+  const isFailed = task.status === 'failed'
+
+  const completed = new Set<ExecutionTimelineStepId>()
+  if (logForStep.repository_ready || hasWorkspace || task.status !== 'queued') {
+    completed.add('preparing_workspace')
+  }
+  if (logForStep.repository_ready || completedStatuses.has(task.status) || hasDiff) {
+    completed.add('repository_ready')
+  }
+  if (
+    logForStep.changes_generated ||
+    logForStep.generating_diff ||
+    hasDiff ||
+    task.status === 'waiting_for_approval' ||
+    completedStatuses.has(task.status)
+  ) {
+    completed.add('running_codex')
+    completed.add('changes_generated')
+  }
+  if (logForStep.review_ready || hasDiff || task.status === 'waiting_for_approval' || completedStatuses.has(task.status)) {
+    completed.add('generating_diff')
+    completed.add('review_ready')
+  }
+  if (completedStatuses.has(task.status) || task.status === 'rejected') {
+    completed.add('waiting_approval')
+  }
+  if (hasCommit || ['pushed', 'pull_request_opened', 'merged', 'completed'].includes(task.status)) {
+    completed.add('committed')
+  }
+  if (hasPullRequest || task.status === 'pull_request_opened' || task.status === 'merged') {
+    completed.add('pull_request_opened')
+  }
+  if (hasMerged) {
+    completed.add('merged')
+  }
+
+  let activeId: ExecutionTimelineStepId | null = null
+  if (isFailed) {
+    activeId = 'failed'
+  } else if (task.status === 'merged') {
+    activeId = 'merged'
+  } else if (task.status === 'pull_request_opened') {
+    activeId = 'pull_request_opened'
+  } else if (task.status === 'committed' || task.status === 'pushed' || task.status === 'completed') {
+    activeId = 'committed'
+  } else if (task.status === 'waiting_for_approval') {
+    activeId = 'waiting_approval'
+  } else if (task.status === 'running') {
+    if (logForStep.generating_diff && !logForStep.review_ready && !hasDiff) {
+      activeId = 'generating_diff'
+    } else if (logForStep.changes_generated && !logForStep.generating_diff) {
+      activeId = 'changes_generated'
+    } else if (logForStep.running_codex && !logForStep.changes_generated) {
+      activeId = 'running_codex'
+    } else if (logForStep.repository_ready && !logForStep.running_codex) {
+      activeId = 'repository_ready'
+    } else {
+      activeId = 'preparing_workspace'
+    }
+  } else {
+    activeId = 'preparing_workspace'
+  }
+
+  return executionTimelineDefinitions.map((definition) => {
+    const log = logForStep[definition.id]
+    const state: ExecutionTimelineStepState =
+      definition.id === 'failed' && isFailed
+        ? 'failed'
+        : definition.id === activeId
+          ? 'active'
+          : completed.has(definition.id)
+            ? 'completed'
+            : 'pending'
+
+    return {
+      ...definition,
+      state,
+      timestamp: log?.timestamp ?? null,
+      detail:
+        definition.id === 'failed'
+          ? task.error ?? log?.message ?? null
+          : definition.id === 'committed' && task.status === 'pushed'
+            ? 'Branch pushed; pull request has not been opened yet.'
+            : log?.message ?? null,
+    }
+  })
+}
+
+function TaskExecutionTimeline({
+  activeTask,
+  steps,
+}: {
+  activeTask: TaskSummary | null
+  steps: ExecutionTimelineStep[]
+}) {
+  return (
+    <section className="task-timeline glass-card" aria-labelledby="task-timeline-title">
+      <div className="section-heading">
+        <h2 id="task-timeline-title">
+          <Activity size={17} />
+          Task Timeline
+        </h2>
+        {activeTask && (
+          <span className={`status-pill ${activeTask.status}`}>
+            {activeTask.status.replaceAll('_', ' ')}
+          </span>
+        )}
+      </div>
+
+      {!activeTask ? (
+        <p className="empty-state">Select a task to inspect its execution pipeline.</p>
+      ) : (
+        <ol className="execution-timeline" aria-label="Task execution timeline">
+          {steps.map((step) => (
+            <li className={`execution-step ${step.state}`} key={step.id}>
+              <span className="execution-marker" aria-hidden="true">
+                {step.state === 'failed' ? (
+                  <XCircle size={14} />
+                ) : step.state === 'completed' ? (
+                  <CheckCircle2 size={14} />
+                ) : (
+                  <span />
+                )}
+              </span>
+              <div className="execution-step-body">
+                <div className="execution-step-topline">
+                  <strong>{step.label}</strong>
+                  <small>{step.state}</small>
+                </div>
+                {(step.detail || step.timestamp) && (
+                  <p>
+                    {step.detail}
+                    {step.timestamp ? (
+                      <>
+                        {step.detail ? ' · ' : ''}
+                        <time>{formatTimestamp(step.timestamp)}</time>
+                      </>
+                    ) : null}
+                  </p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  )
 }
 
 function upsertPromptAssistantProvider(
