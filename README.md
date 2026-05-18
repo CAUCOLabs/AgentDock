@@ -263,6 +263,14 @@ npm run preview
 
 ![Connected workspace](docs/screenshots/02-connected-workspace.png)
 
+### Repository Explorer
+
+![Repository explorer](docs/screenshots/03-repository-explorer.png)
+
+### File Preview And Selection
+
+![File preview and selection](docs/screenshots/04-file-preview-selection.png)
+
 ### Prompt Assistant — Compact Scrollable Idea Input
 
 ![Prompt Assistant mobile flow](docs/screenshots/prompt-assistant-compact-scrollable-idea-input.png)
