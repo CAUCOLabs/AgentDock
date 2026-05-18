@@ -279,6 +279,7 @@ npm run preview
 
 ![Codex Task mobile execution flow](docs/screenshots/codex-task-final-editable-prompt-flow.png)
 
+
 Suggested placeholders:
 
 - Repository selection
