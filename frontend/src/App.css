@@ -611,7 +611,7 @@ form {
   order: 3;
 }
 
-.safety-note {
+.execution-rules-toggle {
   order: 4;
 }
 
@@ -1016,6 +1016,21 @@ select option {
   min-height: 130px;
 }
 
+.assistant-draft-input,
+.codex-prompt-input {
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.textarea-helper {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: none;
+}
+
 .assistant-preview-card {
   display: grid;
   gap: 8px;
@@ -1055,6 +1070,39 @@ select option {
   max-height: 320px;
   overflow: auto;
   -webkit-line-clamp: unset;
+}
+
+.assistant-execution-rules,
+.execution-rules-toggle {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(2, 6, 23, 0.28);
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 12px;
+}
+
+.assistant-execution-rules summary,
+.execution-rules-toggle summary {
+  cursor: pointer;
+  color: var(--text-strong);
+  font-weight: 900;
+}
+
+.assistant-execution-rules pre,
+.execution-rules-toggle p {
+  margin: 0;
+}
+
+.assistant-execution-rules pre {
+  max-height: 220px;
+  overflow: auto;
+  color: var(--text);
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
 }
 
 .live-activity {
@@ -1144,17 +1192,6 @@ select option {
   color: #e0f2fe;
   background: rgba(37, 99, 235, 0.3);
   border-color: rgba(96, 165, 250, 0.45);
-}
-
-.safety-note {
-  padding: 13px 14px;
-  color: #bfdbfe;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.45;
-  background: rgba(37, 99, 235, 0.12);
-  border: 1px solid rgba(96, 165, 250, 0.24);
-  border-radius: 18px;
 }
 
 .form-pair {
@@ -1536,6 +1573,15 @@ pre {
     var(--code-bg);
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 18px;
+}
+
+@media (max-width: 759px) {
+  .prompt-assistant .assistant-draft-input,
+  .codex-task-section .codex-prompt-input {
+    min-height: 112px;
+    max-height: 168px;
+    resize: vertical;
+  }
 }
 
 @media (min-width: 760px) {

@@ -1,6 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import * as Clipboard from "expo-clipboard";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -160,6 +160,29 @@ const promptAssistantModes: Array<{
   { value: "openai", label: "ChatGPT / OpenAI" },
   // Claude provider is implemented backend-side but hidden in UI until enabled later.
 ];
+
+const executionRuleHeadings = ["Constraints:", "Expected output:", "Safety rules:"];
+
+function splitPromptForPreview(prompt: string) {
+  const lines = prompt.split("\n");
+  const firstRulesIndex = lines.findIndex((line) =>
+    executionRuleHeadings.some(
+      (heading) => line.trim().toLowerCase() === heading.toLowerCase()
+    )
+  );
+
+  if (firstRulesIndex === -1) {
+    return {
+      preview: prompt.trim(),
+      executionRules: "",
+    };
+  }
+
+  return {
+    preview: lines.slice(0, firstRulesIndex).join("\n").trim(),
+    executionRules: lines.slice(firstRulesIndex).join("\n").trim(),
+  };
+}
 
 function shortRepoName(repoUrl: string) {
   const trimmed = repoUrl.replace(/\/$/, "");
@@ -414,6 +437,8 @@ export default function App() {
   const [assistantProviderNotice, setAssistantProviderNotice] = useState<string | null>(null);
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false);
+  const [isAssistantRulesVisible, setIsAssistantRulesVisible] = useState(false);
+  const [isCodexRulesVisible, setIsCodexRulesVisible] = useState(false);
   const [promptSentToCodexTask, setPromptSentToCodexTask] = useState(false);
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
@@ -426,6 +451,7 @@ export default function App() {
   const [fileFilter, setFileFilter] = useState("");
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([]);
   const [filePreview, setFilePreview] = useState<RepositoryFilePreviewResponse | null>(null);
+  const filePreviewRequestId = useRef(0);
   const [apiConnection, setApiConnection] = useState<ApiConnectionState>({
     status: "checking",
     error: null,
@@ -480,6 +506,10 @@ export default function App() {
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
     [githubRepos, repoUrl]
+  );
+  const assistantPreview = useMemo(
+    () => splitPromptForPreview(assistantRefinedPrompt),
+    [assistantRefinedPrompt]
   );
   const agentProviderById = useMemo(
     () => new Map(agentProviders.map((provider) => [provider.id, provider])),
@@ -835,6 +865,7 @@ export default function App() {
     setAssistantError(null);
     setAssistantResult(null);
     setPromptSentToCodexTask(false);
+    setIsAssistantRulesVisible(false);
     try {
       const result = await refinePromptAssistant({
         provider: assistantProvider(),
@@ -849,6 +880,7 @@ export default function App() {
       setAssistantResult(result);
       setAssistantRefinedPrompt(result.refined_prompt);
       setIsAssistantPreviewExpanded(false);
+      setIsAssistantRulesVisible(false);
     } catch (generateError) {
       setAssistantError(generateError instanceof Error ? generateError.message : "Unable to refine prompt.");
     } finally {
@@ -887,6 +919,7 @@ export default function App() {
       await refreshTasks();
       await loadTaskDetail(created.task_id);
       setInstruction("");
+      filePreviewRequestId.current += 1;
       setTargetFile("");
       setFilePreview(null);
     } catch (launchError) {
@@ -902,6 +935,7 @@ export default function App() {
       return;
     }
 
+    filePreviewRequestId.current += 1;
     setIsLoadingFiles(true);
     setError(null);
     setFilePreview(null);
@@ -919,20 +953,33 @@ export default function App() {
   }
 
   async function handleSelectFile(path: string) {
+    if (targetFile === path) {
+      filePreviewRequestId.current += 1;
+      setTargetFile("");
+      setFilePreview(null);
+      setPreviewCopyStatus(null);
+      return;
+    }
+
+    const requestId = filePreviewRequestId.current + 1;
+    filePreviewRequestId.current = requestId;
     setTargetFile(path);
     setError(null);
     setPreviewCopyStatus(null);
     try {
-      setFilePreview(
-        await getRepositoryFilePreview({
-          repo_url: repoUrl.trim(),
-          base_branch: baseBranch.trim() || "main",
-          path,
-        }, githubSessionId)
-      );
+      const preview = await getRepositoryFilePreview({
+        repo_url: repoUrl.trim(),
+        base_branch: baseBranch.trim() || "main",
+        path,
+      }, githubSessionId);
+      if (filePreviewRequestId.current === requestId) {
+        setFilePreview(preview);
+      }
     } catch (previewError) {
-      setFilePreview(null);
-      setError(previewError instanceof Error ? previewError.message : "Unable to preview file.");
+      if (filePreviewRequestId.current === requestId) {
+        setFilePreview(null);
+        setError(previewError instanceof Error ? previewError.message : "Unable to preview file.");
+      }
     }
   }
 
@@ -1142,6 +1189,7 @@ export default function App() {
   }
 
   function handleSelectGitHubRepo(repo: GitHubRepository) {
+    filePreviewRequestId.current += 1;
     setRepoUrl(repo.clone_url);
     setBaseBranch(repo.default_branch);
     setIsManualRepoModeOpen(false);
@@ -1776,22 +1824,24 @@ export default function App() {
                 onChangeText={(value) => {
                   setAssistantRoughIdea(value);
                   setPromptSentToCodexTask(false);
+                  setIsAssistantRulesVisible(false);
                 }}
                 placeholder="Describe what you want Codex to do in plain language."
                 placeholderTextColor="#6f7f92"
                 multiline
+                scrollEnabled
                 textAlignVertical="top"
                 style={[styles.input, styles.assistantDraftInput]}
               />
+              <Text style={styles.textareaHelper}>
+                Tap to edit. Scroll inside the box for long text.
+              </Text>
             </Field>
             {promptSentToCodexTask ? (
               <View style={styles.assistantPreviewCard}>
                 <View style={styles.assistantPreviewHeader}>
                   <Text style={styles.providerOptionText}>Prompt sent to Codex Task.</Text>
                 </View>
-                <Text style={styles.assistantPreviewText}>
-                  Review or edit the final prompt below before launching Codex.
-                </Text>
               </View>
             ) : (
               <View style={styles.assistantPreviewCard}>
@@ -1815,8 +1865,23 @@ export default function App() {
                   numberOfLines={isAssistantPreviewExpanded ? undefined : 4}
                   style={styles.assistantPreviewText}
                 >
-                  {assistantRefinedPrompt || "Generate a prompt to preview it here."}
+                  {assistantPreview.preview || "Generate a prompt to preview it here."}
                 </Text>
+                {assistantPreview.executionRules ? (
+                  <View style={styles.executionRulesBox}>
+                    <Pressable
+                      onPress={() => setIsAssistantRulesVisible((current) => !current)}
+                      style={({ pressed }) => [styles.executionRulesToggle, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.executionRulesTitle}>
+                        {isAssistantRulesVisible ? "Hide execution rules" : "Show execution rules"}
+                      </Text>
+                    </Pressable>
+                    {isAssistantRulesVisible ? (
+                      <Text style={styles.executionRulesText}>{assistantPreview.executionRules}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
               </View>
             )}
             <View style={styles.assistantActionRow}>
@@ -1851,6 +1916,7 @@ export default function App() {
                 onPress={() => {
                   setInstruction(assistantRefinedPrompt);
                   setIsAssistantPreviewExpanded(false);
+                  setIsAssistantRulesVisible(false);
                   setPromptSentToCodexTask(true);
                 }}
                 style={({ pressed }) => [
@@ -1876,11 +1942,9 @@ export default function App() {
           <Text style={styles.promptAssistantCopy}>
             Codex will inspect the repository and execute the requested changes.
           </Text>
-          {hasCodexPrompt ? (
-            <Text style={styles.promptAssistantCopy}>
-              Review or edit the final prompt below before launching Codex.
-            </Text>
-          ) : null}
+          <Text style={styles.promptAssistantCopy}>
+            Review or edit the final prompt before launching Codex.
+          </Text>
           <Field label="Final editable Codex prompt">
             <TextInput
               value={instruction}
@@ -1888,9 +1952,13 @@ export default function App() {
               placeholder={promptPlaceholder}
               placeholderTextColor="#6f7f92"
               multiline
+              scrollEnabled
               textAlignVertical="top"
               style={[styles.input, hasCodexPrompt ? styles.promptInput : styles.promptInputCompact]}
             />
+            <Text style={styles.textareaHelper}>
+              Tap to edit. Scroll inside the box for long text.
+            </Text>
           </Field>
           {!hasCodexPrompt ? (
             <Text style={styles.promptAssistantCopy}>
@@ -1911,6 +1979,21 @@ export default function App() {
           </View>
           <View style={styles.launchRow}>
             <Text style={styles.counter}>{instruction.length} characters</Text>
+            <View style={styles.executionRulesBox}>
+              <Pressable
+                onPress={() => setIsCodexRulesVisible((current) => !current)}
+                style={({ pressed }) => [styles.executionRulesToggle, pressed && styles.pressed]}
+              >
+                <Text style={styles.executionRulesTitle}>
+                  {isCodexRulesVisible ? "Hide execution rules" : "Show execution rules"}
+                </Text>
+              </Pressable>
+              {isCodexRulesVisible ? (
+                <Text style={styles.executionRulesText}>
+                  AgentDock creates an isolated workspace and branch. Nothing is pushed or opened as a PR unless explicitly enabled.
+                </Text>
+              ) : null}
+            </View>
             <Pressable
               disabled={!canLaunch}
               onPress={handleLaunch}
@@ -2568,11 +2651,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   promptInput: {
-    minHeight: 148,
+    height: 148,
+    maxHeight: 148,
     lineHeight: 22,
   },
   promptInputCompact: {
-    minHeight: 104,
+    height: 104,
+    maxHeight: 104,
     lineHeight: 22,
   },
   row: {
@@ -3089,8 +3174,15 @@ const styles = StyleSheet.create({
     borderColor: "rgba(124, 157, 188, 0.16)",
   },
   assistantDraftInput: {
-    minHeight: 112,
+    height: 112,
+    maxHeight: 112,
     lineHeight: 21,
+  },
+  textareaHelper: {
+    color: "#8ea7bd",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
   },
   assistantPreviewCard: {
     gap: 8,
@@ -3108,6 +3200,29 @@ const styles = StyleSheet.create({
   },
   assistantPreviewText: {
     minHeight: 66,
+    color: "#dcecf7",
+    fontFamily: "Courier",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  executionRulesBox: {
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(2, 8, 15, 0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.16)",
+  },
+  executionRulesToggle: {
+    minHeight: 34,
+    justifyContent: "center",
+  },
+  executionRulesTitle: {
+    color: "#edf8ff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  executionRulesText: {
     color: "#dcecf7",
     fontFamily: "Courier",
     fontSize: 12,

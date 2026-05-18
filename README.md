@@ -255,7 +255,21 @@ npm run preview
 
 ## Screenshots
 
-Screenshots will be added as the mobile and web flows stabilize.
+### Initial application state
+
+![Initial load](docs/screenshots/01-initial-load.png)
+
+### GitHub and Codex connected
+
+![Connected workspace](docs/screenshots/02-connected-workspace.png)
+
+### Prompt Assistant — Compact Scrollable Idea Input
+
+![Prompt Assistant mobile flow](docs/screenshots/prompt-assistant-compact-scrollable-idea-input.png)
+
+### Codex Task — Final Editable Prompt Flow
+
+![Codex Task mobile execution flow](docs/screenshots/codex-task-final-editable-prompt-flow.png)
 
 Suggested placeholders:
 

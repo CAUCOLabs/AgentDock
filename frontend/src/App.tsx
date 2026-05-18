@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'framer-motion'
 import {
@@ -372,6 +372,29 @@ const promptAssistantModes: Array<{
   // Claude provider is implemented backend-side but hidden in UI until enabled later.
 ]
 
+const executionRuleHeadings = ['Constraints:', 'Expected output:', 'Safety rules:']
+
+function splitPromptForPreview(prompt: string) {
+  const lines = prompt.split('\n')
+  const firstRulesIndex = lines.findIndex((line) =>
+    executionRuleHeadings.some(
+      (heading) => line.trim().toLowerCase() === heading.toLowerCase(),
+    ),
+  )
+
+  if (firstRulesIndex === -1) {
+    return {
+      preview: prompt.trim(),
+      executionRules: '',
+    }
+  }
+
+  return {
+    preview: lines.slice(0, firstRulesIndex).join('\n').trim(),
+    executionRules: lines.slice(firstRulesIndex).join('\n').trim(),
+  }
+}
+
 const promptTemplates = [
   {
     label: 'Fix bug',
@@ -463,6 +486,7 @@ function App() {
   const [fileFilter, setFileFilter] = useState('')
   const [filePreview, setFilePreview] =
     useState<RepositoryFilePreviewResponse | null>(null)
+  const filePreviewRequestId = useRef(0)
   const [previewCopyStatus, setPreviewCopyStatus] = useState<
     'copied' | 'failed' | null
   >(null)
@@ -543,6 +567,10 @@ function App() {
     [form.repoUrl, githubRepos],
   )
   const hasCodexPrompt = form.instruction.trim().length > 0
+  const assistantPreview = useMemo(
+    () => splitPromptForPreview(assistantRefinedPrompt),
+    [assistantRefinedPrompt],
+  )
   const isTaskActive = activeTask ? isLiveActivityStatus(activeTask.status) : false
   const timelineLogs = useMemo(() => visibleTimelineLogs(taskLogs), [taskLogs])
   const rawLogs = useMemo(() => rawExecutionLogs(taskLogs), [taskLogs])
@@ -1011,6 +1039,7 @@ function App() {
       })
 
       setNotice(created.message)
+      filePreviewRequestId.current += 1
       setForm(initialForm)
       await loadTasks()
       setSelectedTaskId(created.task_id)
@@ -1083,6 +1112,7 @@ function App() {
   }
 
   function selectGithubRepo(repo: GitHubRepository) {
+    filePreviewRequestId.current += 1
     setForm((current) => ({
       ...current,
       repoUrl: repo.clone_url,
@@ -1101,6 +1131,7 @@ function App() {
       return
     }
 
+    filePreviewRequestId.current += 1
     setIsLoadingFiles(true)
     setError(null)
     setFilePreview(null)
@@ -1124,30 +1155,46 @@ function App() {
   }
 
   async function selectTargetFile(path: string) {
+    if (form.targetFile === path) {
+      filePreviewRequestId.current += 1
+      setForm((current) => ({ ...current, targetFile: '' }))
+      setFilePreview(null)
+      setIsLoadingPreview(false)
+      setPreviewCopyStatus(null)
+      return
+    }
+
+    const requestId = filePreviewRequestId.current + 1
+    filePreviewRequestId.current = requestId
     setForm((current) => ({ ...current, targetFile: path }))
     setIsLoadingPreview(true)
     setError(null)
     setPreviewCopyStatus(null)
 
     try {
-      setFilePreview(
-        await request<RepositoryFilePreviewResponse>(
-          '/repositories/file-preview',
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              repo_url: form.repoUrl,
-              base_branch: form.baseBranch || 'main',
-              path,
-            }),
-          },
-        ),
+      const preview = await request<RepositoryFilePreviewResponse>(
+        '/repositories/file-preview',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            repo_url: form.repoUrl,
+            base_branch: form.baseBranch || 'main',
+            path,
+          }),
+        },
       )
+      if (filePreviewRequestId.current === requestId) {
+        setFilePreview(preview)
+      }
     } catch (err) {
-      setFilePreview(null)
-      setError(formatError(err))
+      if (filePreviewRequestId.current === requestId) {
+        setFilePreview(null)
+        setError(formatError(err))
+      }
     } finally {
-      setIsLoadingPreview(false)
+      if (filePreviewRequestId.current === requestId) {
+        setIsLoadingPreview(false)
+      }
     }
   }
 
@@ -2141,6 +2188,7 @@ function App() {
                   <label>
                     Rough idea
                     <textarea
+                      className="assistant-draft-input"
                       rows={4}
                       value={assistantRoughIdea}
                       onChange={(event) => {
@@ -2149,6 +2197,9 @@ function App() {
                       }}
                       placeholder="Describe what you want Codex to do in plain language."
                     />
+                    <small className="textarea-helper">
+                      Tap to edit. Scroll inside the box for long text.
+                    </small>
                   </label>
                 </div>
                 {promptSentToCodexTask ? (
@@ -2156,9 +2207,6 @@ function App() {
                     <div className="assistant-preview-header">
                       <strong>Prompt sent to Codex Task.</strong>
                     </div>
-                    <p className="assistant-preview-text">
-                      Review or edit the final prompt below before launching Codex.
-                    </p>
                   </div>
                 ) : (
                   <div className="assistant-preview-card">
@@ -2181,9 +2229,15 @@ function App() {
                         isAssistantPreviewExpanded ? 'expanded' : '',
                       ].filter(Boolean).join(' ')}
                     >
-                      {assistantRefinedPrompt ||
+                      {assistantPreview.preview ||
                         'Generate a prompt to preview it here.'}
                     </p>
+                    {assistantPreview.executionRules && (
+                      <details className="assistant-execution-rules">
+                        <summary>Show execution rules</summary>
+                        <pre>{assistantPreview.executionRules}</pre>
+                      </details>
+                    )}
                   </div>
                 )}
 
@@ -2243,6 +2297,7 @@ function App() {
               <label className="prompt-field">
                 Final editable Codex prompt
                 <textarea
+                  className="codex-prompt-input"
                   required
                   minLength={10}
                   rows={hasCodexPrompt ? 6 : 4}
@@ -2252,15 +2307,16 @@ function App() {
                     setForm({ ...form, instruction: event.target.value })
                   }
                 />
+                <small className="textarea-helper">
+                  Tap to edit. Scroll inside the box for long text.
+                </small>
                 <span className="character-count">
                   {form.instruction.length} characters
                 </span>
               </label>
-              {hasCodexPrompt && (
-                <p className="provider-mode-note">
-                  Review or edit the final prompt below before launching Codex.
-                </p>
-              )}
+              <p className="provider-mode-note">
+                Review or edit the final prompt before launching Codex.
+              </p>
 
               {hasCodexPrompt ? (
                 <>
@@ -2291,10 +2347,13 @@ function App() {
 
             {hasCodexPrompt && (
               <>
-                <div className="safety-note">
-                  Safety: AgentDock creates an isolated workspace and branch.
-                  Nothing is pushed or opened as a PR unless explicitly enabled.
-                </div>
+                <details className="execution-rules-toggle">
+                  <summary>Show execution rules</summary>
+                  <p>
+                    AgentDock creates an isolated workspace and branch. Nothing is
+                    pushed or opened as a PR unless explicitly enabled.
+                  </p>
+                </details>
 
                 <button type="submit" disabled={isCreating}>
                   <Rocket size={17} />
