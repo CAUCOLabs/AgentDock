@@ -30,7 +30,6 @@ import {
 import {
   approveTask,
   connectAgentProvider,
-  connectAgentProviderApiKey,
   connectPromptAssistantProvider as connectPromptAssistantProviderApi,
   createPullRequest,
   createTask,
@@ -159,7 +158,7 @@ const promptAssistantModes: Array<{
 }> = [
   { value: "manual", label: "Manual mode" },
   { value: "openai", label: "ChatGPT / OpenAI" },
-  { value: "anthropic", label: "Claude / Anthropic" },
+  // Claude provider is implemented backend-side but hidden in UI until enabled later.
 ];
 
 function shortRepoName(repoUrl: string) {
@@ -337,36 +336,6 @@ function upsertPromptAssistantProvider(
   return [...existing, next].sort((left, right) => left.provider.localeCompare(right.provider));
 }
 
-function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
-  if (providerId === "codex") {
-    switch (readiness) {
-      case "ready":
-        return "AUTH STORED";
-      case "auth_required":
-        return "AUTH REQUIRED";
-      case "unavailable":
-        return "UNAVAILABLE";
-      case "not_configured":
-        return "CONFIG MISSING";
-      default:
-        return "UNKNOWN";
-    }
-  }
-
-  switch (readiness) {
-    case "ready":
-      return "READY";
-    case "auth_required":
-      return "AUTH REQUIRED";
-    case "unavailable":
-      return "UNAVAILABLE";
-    case "not_configured":
-      return "NOT CONFIGURED";
-    default:
-      return "UNKNOWN";
-  }
-}
-
 function providerPrimaryStatus(
   connection: ProviderConnectionStatus,
   readiness: ProviderReadiness
@@ -376,27 +345,6 @@ function providerPrimaryStatus(
   if (readiness === "ready" || readiness === "auth_required") return "disconnected";
   if (readiness === "unavailable") return "unavailable";
   return "not_configured";
-}
-
-function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimaryStatus) {
-  switch (status) {
-    case "connected":
-      return "CONNECTED";
-    case "connecting":
-      return "CONNECTING";
-    case "active":
-      return providerId === "codex" ? "CONNECTED" : "ACTIVE";
-    case "disconnected":
-      return "DISCONNECTED";
-    case "ready":
-      return "READY";
-    case "unavailable":
-      return "UNAVAILABLE";
-    case "not_configured":
-      return "NOT CONFIGURED";
-    default:
-      return "UNKNOWN";
-  }
 }
 
 function isCodexAuthFlowResponse(
@@ -466,6 +414,7 @@ export default function App() {
   const [assistantProviderNotice, setAssistantProviderNotice] = useState<string | null>(null);
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false);
+  const [promptSentToCodexTask, setPromptSentToCodexTask] = useState(false);
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
@@ -504,8 +453,6 @@ export default function App() {
   const [codexPendingAuth, setCodexPendingAuth] = useState(false);
   const [codexAuthFlow, setCodexAuthFlow] = useState<AgentProviderAuthFlowResponse | null>(null);
   const [codexCopyStatus, setCodexCopyStatus] = useState<"copied" | "failed" | null>(null);
-  const [isCodexApiKeyPanelOpen, setIsCodexApiKeyPanelOpen] = useState(false);
-  const [codexApiKey, setCodexApiKey] = useState("");
   const [connectingProviderId, setConnectingProviderId] = useState<AgentProvider | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -527,6 +474,9 @@ export default function App() {
     [activePromptAssistantProviderId, promptAssistantProviders]
   );
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
+  const isGithubConnected = Boolean(
+    connectedGithubLogin || githubSessionId || githubInstallation || githubAccount
+  );
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
     [githubRepos, repoUrl]
@@ -542,6 +492,20 @@ export default function App() {
       selectedTask.agent
     : null;
   const hasConnectedProvider = selectedAgentMetadata?.status === "connected";
+  const codexConnection =
+    codexPendingAuth || connectingProviderId === "codex"
+      ? "connecting"
+      : selectedAgentMetadata?.connection ?? selectedAgentMetadata?.status ?? "disconnected";
+  const codexReadiness = selectedAgentMetadata?.readiness ?? "not_configured";
+  const codexPrimaryStatus =
+    codexConnection === "connecting"
+      ? "connecting"
+      : selectedAgentMetadata?.primary_status ?? providerPrimaryStatus(codexConnection, codexReadiness);
+  const isCodexActive = codexPrimaryStatus === "active" || codexConnection === "connected";
+  const canConnectCodex =
+    codexConnection === "disconnected" && (codexReadiness === "auth_required" || codexReadiness === "ready");
+  const codexConnectionLabel =
+    codexConnection === "connecting" ? "Connecting" : isCodexActive ? "Connected" : "Disconnected";
   const outsideTargetFiles = useMemo(
     () =>
       diff.changed_files.filter(
@@ -742,28 +706,6 @@ export default function App() {
     }
   }
 
-  async function handleSubmitCodexApiKey() {
-    const apiKey = codexApiKey;
-    setConnectingProviderId("codex");
-    setError(null);
-
-    try {
-      await connectAgentProviderApiKey("codex", apiKey);
-      setIsCodexApiKeyPanelOpen(false);
-      setCodexCloudNotice(null);
-      setCodexAuthFlow(null);
-      setCodexPendingAuth(false);
-      setCodexApiKey("");
-      setAgentProviders(await getAgentProviders());
-    } catch (apiKeyError) {
-      setError(apiKeyError instanceof Error ? apiKeyError.message : "Unable to connect Codex with API key.");
-      setAgentProviders(await getAgentProviders());
-    } finally {
-      setCodexApiKey("");
-      setConnectingProviderId(null);
-    }
-  }
-
   async function handleDisconnectAgentProvider(providerId: AgentProvider) {
     try {
       await disconnectAgentProvider(providerId);
@@ -771,8 +713,6 @@ export default function App() {
         setCodexCloudNotice(null);
         setCodexAuthFlow(null);
         setCodexPendingAuth(false);
-        setIsCodexApiKeyPanelOpen(false);
-        setCodexApiKey("");
       }
       setAgentProviders(await getAgentProviders());
     } catch (disconnectError) {
@@ -894,6 +834,7 @@ export default function App() {
     setIsGeneratingPrompt(true);
     setAssistantError(null);
     setAssistantResult(null);
+    setPromptSentToCodexTask(false);
     try {
       const result = await refinePromptAssistant({
         provider: assistantProvider(),
@@ -907,6 +848,7 @@ export default function App() {
       });
       setAssistantResult(result);
       setAssistantRefinedPrompt(result.refined_prompt);
+      setIsAssistantPreviewExpanded(false);
     } catch (generateError) {
       setAssistantError(generateError instanceof Error ? generateError.message : "Unable to refine prompt.");
     } finally {
@@ -1306,43 +1248,38 @@ export default function App() {
                 <Text style={styles.githubTitle}>GitHub</Text>
               </View>
               <Text style={styles.githubSubtitle}>
-                {connectedGithubLogin
-                  ? `Connected as ${connectedGithubLogin}`
+                {isGithubConnected
+                  ? connectedGithubLogin
+                    ? `Connected as ${connectedGithubLogin}`
+                    : "Connected. Load repositories to continue."
                   : "Disconnected. Connect GitHub or use a manual repository URL in Codex Task."}
               </Text>
             </View>
             <View style={styles.githubButtonRow}>
               <Pressable
-                onPress={() => connectedGithubLogin ? void handleRefreshGitHub() : void handleConnectGitHub()}
+                onPress={() => isGithubConnected ? void handleRefreshGitHub() : void handleConnectGitHub()}
                 disabled={isConnectingGithub || isLoadingGithubRepos}
                 style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
               >
                 <Text style={styles.smallButtonText}>
-                  {connectedGithubLogin
+                  {isGithubConnected
                     ? isLoadingGithubRepos
                       ? "Loading repos"
-                      : "Refresh repos"
+                      : githubRepos.length > 0
+                        ? "Refresh repos"
+                        : "Load repositories"
                     : isConnectingGithub
                       ? "Connecting"
                       : "Connect GitHub"}
                 </Text>
               </Pressable>
-              {githubSessionId ? (
-                <>
-                  <Pressable
-                    onPress={() => void handleRefreshGitHub()}
-                    disabled={isLoadingGithubRepos}
-                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.smallButtonText}>Check status</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void handleLogoutGitHub()}
-                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.smallButtonText}>Logout</Text>
-                  </Pressable>
-                </>
+              {isGithubConnected ? (
+                <Pressable
+                  onPress={() => void handleLogoutGitHub()}
+                  style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                >
+                  <Text style={styles.smallButtonText}>Logout</Text>
+                </Pressable>
               ) : null}
             </View>
             {githubRepos.length > 0 ? (
@@ -1387,6 +1324,292 @@ export default function App() {
           </View>
         </Section>
 
+        <Section title="Codex connection">
+          <View style={styles.githubPanel}>
+            <View style={styles.githubHeader}>
+              <View style={styles.githubTitleRow}>
+                <Text style={styles.githubTitle}>OpenAI Codex</Text>
+              </View>
+              <Text style={styles.githubSubtitle}>
+                Codex executes repository changes. AgentDock uses OpenAI Codex to prepare code changes.
+              </Text>
+            </View>
+            <View style={styles.githubButtonRow}>
+              <Text
+                style={[
+                  styles.providerStatusBadge,
+                  codexPrimaryStatus === "connecting" && styles.providerStatusConnecting,
+                  codexPrimaryStatus === "active" && styles.providerStatusAvailable,
+                  codexPrimaryStatus === "connected" && styles.providerStatusAvailable,
+                  codexPrimaryStatus === "ready" && styles.providerStatusAvailable,
+                  codexPrimaryStatus === "unavailable" && styles.providerStatusUnavailable,
+                ]}
+              >
+                {codexConnectionLabel}
+              </Text>
+              {isCodexActive ? (
+                <>
+                  <Pressable
+                    disabled={connectingProviderId === "codex"}
+                    onPress={() => void handleVerifyCodexConnection(selectedAgentMetadata?.auth_mode)}
+                    style={({ pressed }) => [
+                      styles.smallButton,
+                      connectingProviderId === "codex" && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.smallButtonText}>Check connection</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void handleDisconnectAgentProvider("codex")}
+                    style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.smallButtonText}>Disconnect</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <Pressable
+                  disabled={!canConnectCodex || connectingProviderId === "codex"}
+                  onPress={() => void handleConnectAgentProvider("codex", "chatgpt")}
+                  style={({ pressed }) => [
+                    styles.smallButton,
+                    (!canConnectCodex || connectingProviderId === "codex") && styles.disabledButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.smallButtonText}>Sign in with ChatGPT</Text>
+                </Pressable>
+              )}
+            </View>
+            {codexCloudNotice && !isCodexActive ? (
+              <View style={styles.codexAuthPanel}>
+                <Text style={styles.providerOptionText}>OpenAI account connection</Text>
+                <Text style={styles.providerDescription}>{codexCloudNotice}</Text>
+                {codexAuthFlow?.verification_url ? (
+                  <Pressable
+                    onPress={() => void Linking.openURL(codexAuthFlow.verification_url ?? "")}
+                    style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.providerActionText}>Open verification URL</Text>
+                  </Pressable>
+                ) : null}
+                {codexAuthFlow?.user_code || codexAuthFlow?.device_code ? (
+                  <>
+                    <Text style={styles.providerDescription}>
+                      {codexAuthFlow.user_code ?? codexAuthFlow.device_code}
+                    </Text>
+                    <Pressable
+                      onPress={() =>
+                        void handleCopyCodexCode(codexAuthFlow.user_code ?? codexAuthFlow.device_code ?? "")
+                      }
+                      style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.providerActionText}>
+                        {codexCopyStatus === "copied" ? "Copied" : "Copy code"}
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : null}
+                <Pressable
+                  disabled={connectingProviderId === "codex"}
+                  onPress={() => void handleVerifyCodexConnection("chatgpt")}
+                  style={({ pressed }) => [
+                    styles.providerActionButton,
+                    connectingProviderId === "codex" && styles.disabledButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.providerActionText}>Check connection</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {!hasConnectedProvider ? (
+              <Text style={styles.providerModeNote}>Connect Codex before launching tasks.</Text>
+            ) : null}
+          </View>
+        </Section>
+
+        <Section title="Repository Explorer">
+          <Text style={styles.promptAssistantCopy}>
+            Load files, select target-file context, and preview content before writing the prompt.
+          </Text>
+          {selectedGithubRepo ? (
+            <View style={styles.selectedRepoCard}>
+              <Text style={styles.label}>Selected repository</Text>
+              <Text style={styles.selectedRepoTitle}>{selectedGithubRepo.full_name}</Text>
+              <View style={styles.repoBadgeRow}>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.private ? "Private" : "Public"}</Text>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.default_branch}</Text>
+                <Text style={styles.repoBadge}>{selectedGithubRepo.can_push ? "Read/write" : "Read only"}</Text>
+              </View>
+              <Text style={styles.filePath}>{selectedGithubRepo.clone_url}</Text>
+            </View>
+          ) : null}
+
+          <View style={styles.manualRepoBox}>
+            <Pressable
+              onPress={() => setIsManualRepoModeOpen((current) => !current)}
+              style={({ pressed }) => [styles.manualRepoSummary, pressed && styles.pressed]}
+            >
+              <View style={styles.flex}>
+                <Text style={styles.label}>Advanced: use manual repository URL</Text>
+                <Text style={styles.filePath}>
+                  {selectedGithubRepo
+                    ? "Selected GitHub repository will be used."
+                    : repoUrl
+                      ? shortRepoName(repoUrl)
+                      : "Fallback for repositories outside the GitHub picker."}
+                </Text>
+              </View>
+              <Text style={styles.manualRepoToggle}>
+                {showManualRepoMode ? "Hide" : "Edit"}
+              </Text>
+            </Pressable>
+            {showManualRepoMode ? (
+              <>
+                <TextInput
+                  value={repoUrl}
+                  onChangeText={setRepoUrl}
+                  placeholder="https://github.com/org/repo"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <TextInput
+                  value={baseBranch}
+                  onChangeText={setBaseBranch}
+                  placeholder="main"
+                  placeholderTextColor="#6f7f92"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+              </>
+            ) : null}
+          </View>
+
+          {repoUrl.trim() ? (
+            <View style={styles.filePicker}>
+              <View style={styles.filePickerHeader}>
+                <View style={styles.flex}>
+                  <Text style={styles.label}>Target file</Text>
+                  <Text style={styles.filePath}>
+                    {targetFile ||
+                      (changeScope === "whole_project"
+                        ? "Optional context for whole-project tasks"
+                        : "No file selected")}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => void handleLoadFiles()}
+                  disabled={isLoadingFiles}
+                  style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                >
+                  <Text style={styles.smallButtonText}>{isLoadingFiles ? "Loading" : "Load files"}</Text>
+                </Pressable>
+              </View>
+              {repoFiles.length > 0 ? (
+                <>
+                  <TextInput
+                    value={fileFilter}
+                    onChangeText={setFileFilter}
+                    placeholder="Filter files"
+                    placeholderTextColor="#6f7f92"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.input}
+                  />
+                  <ScrollView
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.fileListScroller}
+                    contentContainerStyle={styles.fileList}
+                  >
+                    {filteredRepoFiles.map((entry) => (
+                      <Pressable
+                        key={entry.path}
+                        onPress={() => void handleSelectFile(entry.path)}
+                        style={({ pressed }) => [
+                          styles.fileOption,
+                          targetFile === entry.path && styles.fileOptionSelected,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={styles.fileOptionPath}>{entry.path}</Text>
+                        <Text style={styles.fileOptionMeta}>
+                          {entry.extension ?? "file"}
+                          {typeof entry.size === "number" ? ` · ${entry.size} bytes` : ""}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </>
+              ) : (
+                <Text style={styles.emptyText}>Load files to browse and choose target-file context.</Text>
+              )}
+              {filePreview ? (
+                <View style={styles.previewCard}>
+                  <View style={styles.previewHeader}>
+                    <View style={styles.previewHeaderMain}>
+                      <View style={styles.flex}>
+                        <Text style={styles.previewPath}>{filePreview.path}</Text>
+                        <Text style={styles.previewMeta}>
+                          {formatBytes(filePreview.size)}
+                          {filePreview.truncated ? " · Preview truncated" : ""}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => void handleCopyPreview()}
+                        style={({ pressed }) => [styles.previewCopyButton, pressed && styles.pressed]}
+                      >
+                        <Text style={styles.previewCopyText}>Copy</Text>
+                      </Pressable>
+                    </View>
+                    {previewCopyStatus ? (
+                      <Text style={styles.previewCopyStatus}>
+                        {previewCopyStatus === "copied" ? "Copied" : "Copy failed"}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <ScrollView
+                    nestedScrollEnabled
+                    style={styles.previewScroller}
+                    contentContainerStyle={styles.previewContent}
+                  >
+                    <Text style={styles.previewText}>{filePreview.content}</Text>
+                  </ScrollView>
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <Text style={styles.emptyText}>Select a GitHub repository or enter a manual repository URL to browse files.</Text>
+          )}
+
+          <View style={styles.scopeBox}>
+            <Text style={styles.label}>Change scope</Text>
+            {scopeOptions.map((option) => (
+              <Pressable
+                key={option.value}
+                onPress={() => setChangeScope(option.value)}
+                style={[
+                  styles.scopeOption,
+                  changeScope === option.value && styles.scopeOptionSelected,
+                  option.broad && changeScope === option.value && styles.scopeOptionBroadSelected,
+                ]}
+              >
+                <Text style={styles.scopeTitle}>{option.label}</Text>
+                <Text style={styles.fileOptionMeta}>{option.description}</Text>
+                {option.broad ? (
+                  <Text style={styles.scopeBroadNote}>
+                    Broader repository access. More files may appear in diff review.
+                  </Text>
+                ) : null}
+              </Pressable>
+            ))}
+          </View>
+        </Section>
+
         <Section title="Prompt Assistant">
           <View style={styles.promptAssistantBox}>
             <View style={styles.promptAssistantHeader}>
@@ -1424,14 +1647,13 @@ export default function App() {
             </View>
             {promptAssistantMode === "manual" ? (
               <Text style={styles.promptAssistantCopy}>
-                Manual mode uses a local prompt template only. Connect OpenAI or Claude for AI-assisted prompt generation.
+                Manual mode uses a local prompt template only. Connect OpenAI for AI-assisted prompt generation.
               </Text>
             ) : (
               <View style={styles.assistantProviderCard}>
                 <View style={styles.flex}>
                   <Text style={styles.providerOptionText}>
-                    {activePromptAssistantProvider?.label ??
-                      (promptAssistantMode === "openai" ? "ChatGPT / OpenAI" : "Claude / Anthropic")}
+                    {activePromptAssistantProvider?.label ?? "ChatGPT / OpenAI"}
                   </Text>
                   <Text style={styles.fileOptionMeta}>
                     Status: {activePromptAssistantProvider?.connected ? "Connected" : "Not connected"}
@@ -1496,7 +1718,7 @@ export default function App() {
                     <TextInput
                       value={assistantApiKey}
                       onChangeText={setAssistantApiKey}
-                      placeholder={promptAssistantMode === "openai" ? "sk-..." : "sk-ant-..."}
+                      placeholder="sk-..."
                       placeholderTextColor="#6f7f92"
                       secureTextEntry
                       autoCapitalize="none"
@@ -1551,7 +1773,10 @@ export default function App() {
             <Field label="Rough idea">
               <TextInput
                 value={assistantRoughIdea}
-                onChangeText={setAssistantRoughIdea}
+                onChangeText={(value) => {
+                  setAssistantRoughIdea(value);
+                  setPromptSentToCodexTask(false);
+                }}
                 placeholder="Describe what you want Codex to do in plain language."
                 placeholderTextColor="#6f7f92"
                 multiline
@@ -1559,30 +1784,41 @@ export default function App() {
                 style={[styles.input, styles.assistantDraftInput]}
               />
             </Field>
-            <View style={styles.assistantPreviewCard}>
-              <View style={styles.assistantPreviewHeader}>
-                <Text style={styles.providerOptionText}>Generated prompt</Text>
-                <Pressable
-                  disabled={!assistantRefinedPrompt.trim()}
-                  onPress={() => setIsAssistantPreviewExpanded((current) => !current)}
-                  style={({ pressed }) => [
-                    styles.providerActionButton,
-                    !assistantRefinedPrompt.trim() && styles.disabledButton,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.providerActionText}>
-                    {isAssistantPreviewExpanded ? "Collapse" : "Expand"}
-                  </Text>
-                </Pressable>
+            {promptSentToCodexTask ? (
+              <View style={styles.assistantPreviewCard}>
+                <View style={styles.assistantPreviewHeader}>
+                  <Text style={styles.providerOptionText}>Prompt sent to Codex Task.</Text>
+                </View>
+                <Text style={styles.assistantPreviewText}>
+                  Review or edit the final prompt below before launching Codex.
+                </Text>
               </View>
-              <Text
-                numberOfLines={isAssistantPreviewExpanded ? undefined : 4}
-                style={styles.assistantPreviewText}
-              >
-                {assistantRefinedPrompt || "Generate a prompt to preview it here."}
-              </Text>
-            </View>
+            ) : (
+              <View style={styles.assistantPreviewCard}>
+                <View style={styles.assistantPreviewHeader}>
+                  <Text style={styles.providerOptionText}>Generated prompt</Text>
+                  <Pressable
+                    disabled={!assistantRefinedPrompt.trim()}
+                    onPress={() => setIsAssistantPreviewExpanded((current) => !current)}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      !assistantRefinedPrompt.trim() && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>
+                      {isAssistantPreviewExpanded ? "Collapse" : "Expand"}
+                    </Text>
+                  </Pressable>
+                </View>
+                <Text
+                  numberOfLines={isAssistantPreviewExpanded ? undefined : 4}
+                  style={styles.assistantPreviewText}
+                >
+                  {assistantRefinedPrompt || "Generate a prompt to preview it here."}
+                </Text>
+              </View>
+            )}
             <View style={styles.assistantActionRow}>
               <Pressable
                 disabled={!assistantRoughIdea.trim() || isGeneratingPrompt}
@@ -1612,7 +1848,11 @@ export default function App() {
               </Pressable>
               <Pressable
                 disabled={!assistantRefinedPrompt.trim()}
-                onPress={() => setInstruction(assistantRefinedPrompt)}
+                onPress={() => {
+                  setInstruction(assistantRefinedPrompt);
+                  setIsAssistantPreviewExpanded(false);
+                  setPromptSentToCodexTask(true);
+                }}
                 style={({ pressed }) => [
                   styles.providerActionButton,
                   !assistantRefinedPrompt.trim() && styles.disabledButton,
@@ -1636,6 +1876,11 @@ export default function App() {
           <Text style={styles.promptAssistantCopy}>
             Codex will inspect the repository and execute the requested changes.
           </Text>
+          {hasCodexPrompt ? (
+            <Text style={styles.promptAssistantCopy}>
+              Review or edit the final prompt below before launching Codex.
+            </Text>
+          ) : null}
           <Field label="Final editable Codex prompt">
             <TextInput
               value={instruction}
@@ -1653,372 +1898,6 @@ export default function App() {
             </Text>
           ) : (
             <>
-          <Text style={styles.launcherGroupTitle}>Codex</Text>
-          <View style={styles.agentProviderBox}>
-            <Text style={styles.fileOptionMeta}>AgentDock uses OpenAI Codex to prepare code changes.</Text>
-            <View style={styles.providerGrid}>
-              {(() => {
-                const metadata = selectedAgentMetadata;
-                const connection =
-                  codexPendingAuth || connectingProviderId === "codex"
-                    ? "connecting"
-                    : metadata?.connection ?? metadata?.status ?? "disconnected";
-                const readiness = metadata?.readiness ?? "not_configured";
-                const primaryStatus =
-                  connection === "connecting"
-                    ? "connecting"
-                    : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness);
-                const isActive = primaryStatus === "active" || connection === "connected";
-                const canConnect =
-                  connection === "disconnected" && (readiness === "auth_required" || readiness === "ready");
-
-                return (
-                  <View
-                    style={[styles.providerOption, styles.providerOptionSelected]}
-                  >
-                    <View style={styles.providerSelectArea}>
-                      <Text style={styles.providerOptionText}>OpenAI Codex</Text>
-                      <Text
-                        style={[
-                          styles.providerStatusBadge,
-                          primaryStatus === "connecting" && styles.providerStatusConnecting,
-                          primaryStatus === "active" && styles.providerStatusAvailable,
-                          primaryStatus === "connected" && styles.providerStatusAvailable,
-                          primaryStatus === "ready" && styles.providerStatusAvailable,
-                          primaryStatus === "unavailable" && styles.providerStatusUnavailable,
-                        ]}
-                      >
-                        {formatPrimaryStatus("codex", primaryStatus)}
-                      </Text>
-                      <Text style={styles.providerDescription}>
-                        {formatReadinessStatus("codex", readiness)}
-                      </Text>
-                    </View>
-                    {isActive ? (
-                      <View style={styles.providerCardActions}>
-                        <Pressable
-                          disabled={connectingProviderId === "codex"}
-                          onPress={() => void handleVerifyCodexConnection(metadata?.auth_mode)}
-                          style={({ pressed }) => [
-                            styles.providerActionButton,
-                            connectingProviderId === "codex" && styles.disabledButton,
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={styles.providerActionText}>Check connection</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => void handleDisconnectAgentProvider("codex")}
-                          style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
-                        >
-                          <Text style={styles.providerActionText}>Disconnect</Text>
-                        </Pressable>
-                      </View>
-                    ) : (
-                      <View style={styles.providerCardActions}>
-                        <Pressable
-                          disabled={!canConnect || connectingProviderId === "codex"}
-                          onPress={() => void handleConnectAgentProvider("codex", "chatgpt")}
-                          style={({ pressed }) => [
-                            styles.providerActionButton,
-                            (!canConnect || connectingProviderId === "codex") && styles.disabledButton,
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={styles.providerActionText}>Sign in with ChatGPT</Text>
-                        </Pressable>
-                        <Pressable
-                          disabled={connectingProviderId === "codex"}
-                          onPress={() => {
-                            setCodexPendingAuth(false);
-                            setCodexCloudNotice(null);
-                            setCodexAuthFlow(null);
-                            setCodexApiKey("");
-                            setIsCodexApiKeyPanelOpen(true);
-                          }}
-                          style={({ pressed }) => [
-                            styles.providerActionButton,
-                            connectingProviderId === "codex" && styles.disabledButton,
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={styles.providerActionText}>Use API Key</Text>
-                        </Pressable>
-                      </View>
-                    )}
-                    {codexCloudNotice ? (
-                      <View style={styles.codexAuthPanel}>
-                        <Text style={styles.providerOptionText}>OpenAI account connection</Text>
-                        <Text style={styles.providerDescription}>{codexCloudNotice}</Text>
-                        {codexAuthFlow?.verification_url ? (
-                          <Pressable
-                            onPress={() => void Linking.openURL(codexAuthFlow.verification_url ?? "")}
-                            style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
-                          >
-                            <Text style={styles.providerActionText}>Open verification URL</Text>
-                          </Pressable>
-                        ) : null}
-                        {codexAuthFlow?.user_code || codexAuthFlow?.device_code ? (
-                          <>
-                            <Text style={styles.providerDescription}>
-                              {codexAuthFlow.user_code ?? codexAuthFlow.device_code}
-                            </Text>
-                            <Pressable
-                              onPress={() =>
-                                void handleCopyCodexCode(
-                                  codexAuthFlow.user_code ?? codexAuthFlow.device_code ?? ""
-                                )
-                              }
-                              style={({ pressed }) => [styles.providerActionButton, pressed && styles.pressed]}
-                            >
-                              <Text style={styles.providerActionText}>
-                                {codexCopyStatus === "copied" ? "Copied" : "Copy code"}
-                              </Text>
-                            </Pressable>
-                          </>
-                        ) : null}
-                        <Pressable
-                          disabled={connectingProviderId === "codex"}
-                          onPress={() => void handleVerifyCodexConnection("chatgpt")}
-                          style={({ pressed }) => [
-                            styles.providerActionButton,
-                            connectingProviderId === "codex" && styles.disabledButton,
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={styles.providerActionText}>Check connection</Text>
-                        </Pressable>
-                      </View>
-                    ) : null}
-                    {isCodexApiKeyPanelOpen ? (
-                      <View style={styles.codexAuthPanel}>
-                        <Text style={styles.providerOptionText}>Enter your OpenAI API key</Text>
-                        <TextInput
-                          value={codexApiKey}
-                          onChangeText={setCodexApiKey}
-                          placeholder="sk-..."
-                          placeholderTextColor="#6f7f92"
-                          secureTextEntry
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          style={styles.input}
-                        />
-                        <Pressable
-                          onPress={() => void Linking.openURL("https://platform.openai.com/api-keys")}
-                          style={({ pressed }) => [pressed && styles.pressed]}
-                        >
-                          <Text style={styles.linkText}>Get API Key</Text>
-                        </Pressable>
-                        <View style={styles.providerCardActions}>
-                          <Pressable
-                            onPress={() => {
-                              setCodexApiKey("");
-                              setIsCodexApiKeyPanelOpen(false);
-                            }}
-                            style={({ pressed }) => [
-                              styles.providerActionButton,
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <Text style={styles.providerActionText}>Cancel</Text>
-                          </Pressable>
-                          <Pressable
-                            disabled={!codexApiKey.trim() || connectingProviderId === "codex"}
-                            onPress={() => void handleSubmitCodexApiKey()}
-                            style={({ pressed }) => [
-                              styles.providerActionButton,
-                              (!codexApiKey.trim() || connectingProviderId === "codex") && styles.disabledButton,
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <Text style={styles.providerActionText}>OK</Text>
-                          </Pressable>
-                        </View>
-                      </View>
-                    ) : null}
-                  </View>
-                );
-              })()}
-            </View>
-            {!hasConnectedProvider ? (
-              <Text style={styles.providerModeNote}>
-                Connect Codex before launching tasks.
-              </Text>
-            ) : null}
-          </View>
-
-          <Text style={styles.launcherGroupTitle}>Repository</Text>
-          {selectedGithubRepo ? (
-            <View style={styles.selectedRepoCard}>
-              <Text style={styles.label}>Selected repository</Text>
-              <Text style={styles.selectedRepoTitle}>{selectedGithubRepo.full_name}</Text>
-              <View style={styles.repoBadgeRow}>
-                <Text style={styles.repoBadge}>{selectedGithubRepo.private ? "Private" : "Public"}</Text>
-                <Text style={styles.repoBadge}>{selectedGithubRepo.default_branch}</Text>
-                <Text style={styles.repoBadge}>{selectedGithubRepo.can_push ? "Read/write" : "Read only"}</Text>
-              </View>
-              <Text style={styles.filePath}>{selectedGithubRepo.clone_url}</Text>
-            </View>
-          ) : null}
-
-          <View style={styles.manualRepoBox}>
-            <Pressable
-              onPress={() => setIsManualRepoModeOpen((current) => !current)}
-              style={({ pressed }) => [styles.manualRepoSummary, pressed && styles.pressed]}
-            >
-              <View style={styles.flex}>
-                <Text style={styles.label}>Advanced: use manual repository URL</Text>
-                <Text style={styles.filePath}>
-                  {selectedGithubRepo
-                    ? "Selected GitHub repository will be used."
-                    : repoUrl
-                      ? shortRepoName(repoUrl)
-                      : "Fallback for repositories outside the GitHub picker."}
-                </Text>
-              </View>
-              <Text style={styles.manualRepoToggle}>
-                {showManualRepoMode ? "Hide" : "Edit"}
-              </Text>
-            </Pressable>
-            {showManualRepoMode ? (
-              <>
-                <TextInput
-                  value={repoUrl}
-                  onChangeText={setRepoUrl}
-                  placeholder="https://github.com/org/repo"
-                  placeholderTextColor="#6f7f92"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-                <TextInput
-                  value={baseBranch}
-                  onChangeText={setBaseBranch}
-                  placeholder="main"
-                  placeholderTextColor="#6f7f92"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-              </>
-            ) : null}
-          </View>
-
-          <Text style={styles.launcherGroupTitle}>Target file</Text>
-          <View style={styles.filePicker}>
-            <View style={styles.filePickerHeader}>
-              <View style={styles.flex}>
-                <Text style={styles.label}>Repository Explorer</Text>
-                <Text style={styles.filePath}>
-                  {targetFile ||
-                    (changeScope === "whole_project"
-                      ? "Optional context for whole-project tasks"
-                      : "No file selected")}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => void handleLoadFiles()}
-                disabled={isLoadingFiles}
-                style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
-              >
-                <Text style={styles.smallButtonText}>{isLoadingFiles ? "Loading" : "Load files"}</Text>
-              </Pressable>
-            </View>
-            {repoFiles.length > 0 ? (
-              <>
-                <TextInput
-                  value={fileFilter}
-                  onChangeText={setFileFilter}
-                  placeholder="Filter files"
-                  placeholderTextColor="#6f7f92"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-                <ScrollView
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  style={styles.fileListScroller}
-                  contentContainerStyle={styles.fileList}
-                >
-                  {filteredRepoFiles.map((entry) => (
-                    <Pressable
-                      key={entry.path}
-                      onPress={() => void handleSelectFile(entry.path)}
-                      style={({ pressed }) => [
-                        styles.fileOption,
-                        targetFile === entry.path && styles.fileOptionSelected,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text style={styles.fileOptionPath}>{entry.path}</Text>
-                      <Text style={styles.fileOptionMeta}>
-                        {entry.extension ?? "file"}
-                        {typeof entry.size === "number" ? ` · ${entry.size} bytes` : ""}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </>
-            ) : null}
-            {filePreview ? (
-              <View style={styles.previewCard}>
-                <View style={styles.previewHeader}>
-                  <View style={styles.previewHeaderMain}>
-                    <View style={styles.flex}>
-                      <Text style={styles.previewPath}>{filePreview.path}</Text>
-                      <Text style={styles.previewMeta}>
-                        {formatBytes(filePreview.size)}
-                        {filePreview.truncated ? " · Preview truncated" : ""}
-                      </Text>
-                    </View>
-                    <Pressable
-                      onPress={() => void handleCopyPreview()}
-                      style={({ pressed }) => [styles.previewCopyButton, pressed && styles.pressed]}
-                    >
-                      <Text style={styles.previewCopyText}>Copy</Text>
-                    </Pressable>
-                  </View>
-                  {previewCopyStatus ? (
-                    <Text style={styles.previewCopyStatus}>
-                      {previewCopyStatus === "copied" ? "Copied" : "Copy failed"}
-                    </Text>
-                  ) : null}
-                </View>
-                <ScrollView
-                  nestedScrollEnabled
-                  style={styles.previewScroller}
-                  contentContainerStyle={styles.previewContent}
-                >
-                  <Text style={styles.previewText}>{filePreview.content}</Text>
-                </ScrollView>
-              </View>
-            ) : null}
-          </View>
-
-          <View style={styles.scopeBox}>
-            <Text style={styles.label}>Change scope</Text>
-            {scopeOptions.map((option) => (
-              <Pressable
-                key={option.value}
-                onPress={() => setChangeScope(option.value)}
-                style={[
-                  styles.scopeOption,
-                  changeScope === option.value && styles.scopeOptionSelected,
-                  option.broad && changeScope === option.value && styles.scopeOptionBroadSelected,
-                ]}
-              >
-                <Text style={styles.scopeTitle}>{option.label}</Text>
-                <Text style={styles.fileOptionMeta}>{option.description}</Text>
-                {option.broad ? (
-                  <Text style={styles.scopeBroadNote}>
-                    Broader repository access. More files may appear in diff review.
-                  </Text>
-                ) : null}
-              </Pressable>
-            ))}
-          </View>
-
           <View style={styles.templateRow}>
             {templates.map((template) => (
               <Pressable

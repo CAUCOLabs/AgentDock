@@ -369,7 +369,7 @@ const promptAssistantModes: Array<{
 }> = [
   { value: 'manual', label: 'Manual mode' },
   { value: 'openai', label: 'ChatGPT / OpenAI' },
-  { value: 'anthropic', label: 'Claude / Anthropic' },
+  // Claude provider is implemented backend-side but hidden in UI until enabled later.
 ]
 
 const promptTemplates = [
@@ -440,6 +440,7 @@ function App() {
   )
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false)
   const [isAssistantPreviewExpanded, setIsAssistantPreviewExpanded] = useState(false)
+  const [promptSentToCodexTask, setPromptSentToCodexTask] = useState(false)
   const [githubSessionId, setGithubSessionId] = useState<string | null>(() =>
     localStorage.getItem(GITHUB_SESSION_STORAGE_KEY),
   )
@@ -456,8 +457,6 @@ function App() {
   const [codexCopyStatus, setCodexCopyStatus] = useState<'copied' | 'failed' | null>(
     null,
   )
-  const [isCodexApiKeyPanelOpen, setIsCodexApiKeyPanelOpen] = useState(false)
-  const [codexApiKey, setCodexApiKey] = useState('')
   const [connectingProviderId, setConnectingProviderId] =
     useState<AgentProvider | null>(null)
   const [repoFiles, setRepoFiles] = useState<RepositoryFileEntry[]>([])
@@ -484,6 +483,9 @@ function App() {
   )
   const connectedGithubLogin =
     githubInstallation?.account_login ?? githubAccount?.login ?? null
+  const isGithubConnected = Boolean(
+    connectedGithubLogin || githubSessionId || githubInstallation || githubAccount,
+  )
 
   const selectedTaskFromList = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
@@ -554,6 +556,27 @@ function App() {
   const showScopeWarning =
     activeTask?.change_scope === 'only_selected_file' &&
     activeTaskOutsideTargetFiles.length > 0
+  const codexConnection =
+    codexPendingAuth || connectingProviderId === 'codex'
+      ? 'connecting'
+      : codexProvider?.connection ?? codexProvider?.status ?? 'disconnected'
+  const codexReadiness = codexProvider?.readiness ?? 'not_configured'
+  const codexPrimaryStatus =
+    codexConnection === 'connecting'
+      ? 'connecting'
+      : codexProvider?.primary_status ??
+        providerPrimaryStatus(codexConnection, codexReadiness)
+  const isCodexActive =
+    codexPrimaryStatus === 'active' || codexConnection === 'connected'
+  const canConnectCodex =
+    codexConnection === 'disconnected' &&
+    (codexReadiness === 'auth_required' || codexReadiness === 'ready')
+  const codexConnectionLabel =
+    codexConnection === 'connecting'
+      ? 'Connecting'
+      : isCodexActive
+        ? 'Connected'
+        : 'Disconnected'
 
   useEffect(() => {
     void loadTasks()
@@ -807,33 +830,6 @@ function App() {
     }
   }
 
-  async function submitCodexApiKey(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const apiKey = codexApiKey
-    setConnectingProviderId('codex')
-    setError(null)
-    setNotice(null)
-
-    try {
-      await request<AgentProviderMetadata>('/agent-providers/api-key', {
-        method: 'POST',
-        body: JSON.stringify({ provider_id: 'codex', api_key: apiKey }),
-      })
-      setIsCodexApiKeyPanelOpen(false)
-      setCodexCloudNotice(null)
-      setCodexAuthFlow(null)
-      setCodexPendingAuth(false)
-      setNotice('OpenAI API key accepted. Codex is connected.')
-      await loadAgentProviders()
-    } catch (err) {
-      setError(formatError(err))
-      await loadAgentProviders()
-    } finally {
-      setCodexApiKey('')
-      setConnectingProviderId(null)
-    }
-  }
-
   async function disconnectAgentProvider(providerId: AgentProvider) {
     await request<AgentProviderMetadata>('/agent-providers/disconnect', {
       method: 'POST',
@@ -843,8 +839,6 @@ function App() {
       setCodexCloudNotice(null)
       setCodexAuthFlow(null)
       setCodexPendingAuth(false)
-      setIsCodexApiKeyPanelOpen(false)
-      setCodexApiKey('')
     }
     await loadAgentProviders()
   }
@@ -1377,6 +1371,7 @@ function App() {
     setIsGeneratingPrompt(true)
     setAssistantError(null)
     setAssistantResult(null)
+    setPromptSentToCodexTask(false)
 
     try {
       const result = await request<PromptAssistantRefineResponse>(
@@ -1400,6 +1395,7 @@ function App() {
       )
       setAssistantResult(result)
       setAssistantRefinedPrompt(result.refined_prompt)
+      setIsAssistantPreviewExpanded(false)
     } catch (err) {
       setAssistantError(formatError(err))
     } finally {
@@ -1565,8 +1561,10 @@ function App() {
               GitHub connection
             </strong>
             <span>
-              {connectedGithubLogin
-                ? `Connected as ${connectedGithubLogin}`
+              {isGithubConnected
+                ? connectedGithubLogin
+                  ? `Connected as ${connectedGithubLogin}`
+                  : 'Connected. Load repositories to continue.'
                 : 'Disconnected. Connect GitHub or use a manual repository URL in Codex Task.'}
             </span>
           </div>
@@ -1576,21 +1574,23 @@ function App() {
               type="button"
               className="mini-action"
               onClick={() =>
-                connectedGithubLogin
+                isGithubConnected
                   ? void loadGithubRepos()
                   : void connectGithub()
               }
               disabled={isConnectingGithub || isLoadingGithubRepos}
             >
-              {connectedGithubLogin
+              {isGithubConnected
                 ? isLoadingGithubRepos
                   ? 'Loading repos'
-                  : 'Refresh repos'
+                  : githubRepos.length > 0
+                    ? 'Refresh repos'
+                    : 'Load repositories'
                 : isConnectingGithub
                   ? 'Connecting'
                   : 'Connect GitHub'}
             </button>
-            {connectedGithubLogin && (
+            {isGithubConnected && (
               <button
                 type="button"
                 className="mini-action secondary"
@@ -1637,6 +1637,324 @@ function App() {
           )}
         </section>
 
+        <section className="github-connect glass-card" aria-labelledby="codex-connect-title">
+          <div>
+            <strong id="codex-connect-title">
+              <Terminal size={17} />
+              OpenAI Codex
+            </strong>
+            <span>
+              Codex executes repository changes. AgentDock uses OpenAI Codex to prepare code changes.
+            </span>
+          </div>
+
+          <div className="github-actions">
+            <small className={`provider-status-badge ${codexPrimaryStatus}`}>
+              {codexConnectionLabel}
+            </small>
+            {isCodexActive ? (
+              <>
+                <button
+                  type="button"
+                  className="mini-action secondary"
+                  disabled={connectingProviderId === 'codex'}
+                  onClick={() => void verifyCodexConnection(codexProvider?.auth_mode)}
+                >
+                  Check connection
+                </button>
+                <button
+                  type="button"
+                  className="mini-action"
+                  onClick={() => void disconnectAgentProvider('codex')}
+                >
+                  Disconnect
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="mini-action"
+                disabled={!canConnectCodex || connectingProviderId === 'codex'}
+                onClick={() => void connectAgentProvider('codex', 'chatgpt')}
+              >
+                Sign in with ChatGPT
+              </button>
+            )}
+          </div>
+
+          {codexCloudNotice && !isCodexActive && (
+            <div className="codex-auth-panel">
+              <strong>OpenAI account connection</strong>
+              <p>{codexCloudNotice}</p>
+              {codexAuthFlow?.verification_url && (
+                <a
+                  href={codexAuthFlow.verification_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mini-action"
+                >
+                  Open verification URL
+                </a>
+              )}
+              {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
+                <button
+                  type="button"
+                  className="mini-action secondary"
+                  onClick={() =>
+                    void copyCodexCode(
+                      codexAuthFlow.user_code ?? codexAuthFlow.device_code ?? '',
+                    )
+                  }
+                >
+                  {codexCopyStatus === 'copied' ? 'Copied' : 'Copy code'}
+                </button>
+              )}
+              {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
+                <code>{codexAuthFlow.user_code ?? codexAuthFlow.device_code}</code>
+              )}
+              <button
+                type="button"
+                className="mini-action"
+                disabled={connectingProviderId === 'codex'}
+                onClick={() => void verifyCodexConnection('chatgpt')}
+              >
+                Check connection
+              </button>
+            </div>
+          )}
+
+          {!hasConnectedProvider && (
+            <p className="provider-mode-note">Connect Codex before launching tasks.</p>
+          )}
+        </section>
+
+        <section className="task-create glass-card" aria-labelledby="repository-explorer-title">
+          <div className="launcher-heading">
+            <div>
+              <h2 id="repository-explorer-title">
+                <FileText size={20} />
+                Repository Explorer
+              </h2>
+              <p>
+                Select a repository, load files, choose a target file, and preview content before writing the prompt.
+              </p>
+            </div>
+          </div>
+
+          <div className="selected-repo-card">
+            <strong>Repository target</strong>
+            <small>
+              {selectedGithubRepo
+                ? selectedGithubRepo.full_name
+                : form.repoUrl || 'No repository selected'}
+            </small>
+            {selectedGithubRepo && (
+              <div className="badge-row">
+                <span className="meta-badge">
+                  {selectedGithubRepo.private ? 'Private' : 'Public'}
+                </span>
+                <span className="meta-badge">
+                  {selectedGithubRepo.default_branch}
+                </span>
+                <span className={selectedGithubRepo.can_push ? 'meta-badge ok' : 'meta-badge'}>
+                  {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {githubRepos.length > 0 && (
+            <details className="repo-select-panel" open={!selectedGithubRepo}>
+              <summary>Choose from connected repositories</summary>
+              <div className="github-repo-picker">
+                <input
+                  value={githubRepoFilter}
+                  onChange={(event) => setGithubRepoFilter(event.target.value)}
+                  placeholder="Filter GitHub repositories"
+                />
+                <div className="github-repos">
+                  {filteredGithubRepos.map((repo) => (
+                    <button
+                      type="button"
+                      key={repo.id}
+                      className={
+                        form.repoUrl === repo.clone_url
+                          ? 'github-repo selected'
+                          : 'github-repo'
+                      }
+                      onClick={() => selectGithubRepo(repo)}
+                    >
+                      <span>{repo.full_name}</span>
+                      <small>
+                        {repo.private ? 'private' : 'public'} ·{' '}
+                        {repo.default_branch}
+                        {' · '}
+                        {repo.can_push ? 'push' : 'read'}
+                      </small>
+                    </button>
+                  ))}
+                  {filteredGithubRepos.length === 0 && (
+                    <p className="empty-state">No repositories match.</p>
+                  )}
+                </div>
+              </div>
+            </details>
+          )}
+
+          <details className="manual-repo-panel">
+            <summary>Advanced: use manual repository URL</summary>
+            <div className="form-pair">
+              <label>
+                Repository URL
+                <input
+                  type="url"
+                  placeholder="https://github.com/org/repo"
+                  value={form.repoUrl}
+                  onChange={(event) =>
+                    setForm({ ...form, repoUrl: event.target.value })
+                  }
+                />
+              </label>
+              <label>
+                Base Branch
+                <input
+                  value={form.baseBranch}
+                  onChange={(event) =>
+                    setForm({ ...form, baseBranch: event.target.value })
+                  }
+                />
+              </label>
+            </div>
+          </details>
+
+          {form.repoUrl ? (
+            <div className="repository-explorer">
+              <div className="launcher-step">
+                <span>1</span>
+                <div>
+                  <strong>Target file</strong>
+                  <small>
+                    {form.targetFile ||
+                      (form.changeScope === 'whole_project'
+                        ? 'Optional context for whole-project tasks'
+                        : 'Select a target file')}
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  className="mini-action"
+                  disabled={isLoadingFiles || !form.repoUrl}
+                  onClick={() => void loadRepositoryFiles()}
+                >
+                  {isLoadingFiles ? 'Loading files' : 'Load files'}
+                </button>
+              </div>
+
+              {repoFiles.length > 0 ? (
+                <div className="explorer-grid">
+                  <div className="explorer-list">
+                    <input
+                      value={fileFilter}
+                      onChange={(event) => setFileFilter(event.target.value)}
+                      placeholder="Search files by path"
+                    />
+                    <div className="file-list">
+                      {filteredRepoFiles.map((entry) => (
+                        <button
+                          type="button"
+                          key={entry.path}
+                          className={
+                            form.targetFile === entry.path
+                              ? 'file-option selected'
+                              : 'file-option'
+                          }
+                          onClick={() => void selectTargetFile(entry.path)}
+                        >
+                          <span>{entry.path}</span>
+                          <small>
+                            {entry.extension ?? 'file'}
+                            {typeof entry.size === 'number'
+                              ? ` · ${entry.size} bytes`
+                              : ''}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="explorer-preview">
+                    {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
+                    {filePreview ? (
+                      <>
+                        <div className="file-preview-header">
+                          <div className="file-preview-title">
+                            <div>
+                              <strong>{filePreview.path}</strong>
+                              <small>
+                                {formatBytes(filePreview.size)}
+                                {filePreview.truncated ? ' · Preview truncated' : ''}
+                              </small>
+                            </div>
+                            <button
+                              type="button"
+                              className="preview-copy-button"
+                              onClick={() => void copyFilePreview()}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                          {previewCopyStatus && (
+                            <small className="preview-copy-status">
+                              {previewCopyStatus === 'copied'
+                                ? 'Copied'
+                                : 'Copy failed'}
+                            </small>
+                          )}
+                        </div>
+                        <pre className="file-preview">{filePreview.content}</pre>
+                      </>
+                    ) : (
+                      <p className="empty-state">A read-only preview appears here after selecting a file.</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="empty-state">Load files to browse and choose target-file context.</p>
+              )}
+            </div>
+          ) : (
+            <p className="empty-state">Select a GitHub repository or enter a manual repository URL to browse files.</p>
+          )}
+
+          <div className="scope-options">
+            {scopeOptions.map((option) => (
+              <label
+                key={option.value}
+                className={[
+                  'scope-option',
+                  form.changeScope === option.value ? 'selected' : '',
+                  option.broad ? 'broad' : '',
+                ].filter(Boolean).join(' ')}
+              >
+                <input
+                  type="radio"
+                  name="changeScope"
+                  checked={form.changeScope === option.value}
+                  onChange={() =>
+                    setForm({ ...form, changeScope: option.value })
+                  }
+                />
+                <span>{option.label}</span>
+                <small>{option.description}</small>
+                {option.broad && (
+                  <em>
+                    Broader repository access. More files may appear in diff review.
+                  </em>
+                )}
+              </label>
+            ))}
+          </div>
+        </section>
+
         <section className="task-create prompt-launcher glass-card" aria-labelledby="create-task-title">
           <div className="launcher-heading">
             <div>
@@ -1651,182 +1969,6 @@ function App() {
           </div>
 
           <form onSubmit={(event) => void createTask(event)}>
-            <div className="launcher-panel codex-auth-section">
-              <div className="launcher-step">
-                <span>2</span>
-                <div>
-                  <strong>Codex</strong>
-                  <small>AgentDock uses OpenAI Codex to prepare code changes.</small>
-                </div>
-              </div>
-              <div className="provider-options">
-                {(() => {
-                  const metadata = codexProvider
-                  const connection =
-                    codexPendingAuth || connectingProviderId === 'codex'
-                      ? 'connecting'
-                      : metadata?.connection ?? metadata?.status ?? 'disconnected'
-                  const readiness = metadata?.readiness ?? 'not_configured'
-                  const primaryStatus =
-                    connection === 'connecting'
-                      ? 'connecting'
-                      : metadata?.primary_status ?? providerPrimaryStatus(connection, readiness)
-                  const isActive = primaryStatus === 'active' || connection === 'connected'
-                  const canConnect =
-                    connection === 'disconnected' &&
-                    (readiness === 'auth_required' || readiness === 'ready')
-
-                  return (
-                  <div
-                    className="provider-option selected"
-                  >
-                    <span>OpenAI Codex</span>
-                    <small className={`provider-status-badge ${primaryStatus}`}>
-                      {formatPrimaryStatus('codex', primaryStatus)}
-                    </small>
-                    <small className="provider-readiness">
-                      {formatReadinessStatus('codex', readiness)}
-                    </small>
-                    <div className="provider-card-actions">
-                      {isActive ? (
-                        <>
-                          <button
-                            type="button"
-                            className="mini-action secondary"
-                            disabled={connectingProviderId === 'codex'}
-                            onClick={() => void verifyCodexConnection(metadata?.auth_mode)}
-                          >
-                            Check connection
-                          </button>
-                          <button
-                            type="button"
-                            className="mini-action"
-                            onClick={() => void disconnectAgentProvider('codex')}
-                          >
-                            Disconnect
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="mini-action"
-                            disabled={!canConnect || connectingProviderId === 'codex'}
-                            onClick={() => void connectAgentProvider('codex', 'chatgpt')}
-                          >
-                            Sign in with ChatGPT
-                          </button>
-                          <button
-                            type="button"
-                            className="mini-action secondary"
-                            disabled={connectingProviderId === 'codex'}
-                            onClick={() => {
-                              setCodexPendingAuth(false)
-                              setCodexCloudNotice(null)
-                              setCodexAuthFlow(null)
-                              setCodexApiKey('')
-                              setIsCodexApiKeyPanelOpen(true)
-                            }}
-                          >
-                            Use API Key
-                          </button>
-                        </>
-                      )}
-                    </div>
-                    {codexCloudNotice && (
-                      <div className="codex-auth-panel">
-                        <strong>OpenAI account connection</strong>
-                        <p>{codexCloudNotice}</p>
-                        {codexAuthFlow?.verification_url && (
-                          <a
-                            href={codexAuthFlow.verification_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mini-action"
-                          >
-                            Open verification URL
-                          </a>
-                        )}
-                        {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
-                          <button
-                            type="button"
-                            className="mini-action secondary"
-                            onClick={() =>
-                              void copyCodexCode(
-                                codexAuthFlow.user_code ??
-                                  codexAuthFlow.device_code ??
-                                  '',
-                              )
-                            }
-                          >
-                            {codexCopyStatus === 'copied' ? 'Copied' : 'Copy code'}
-                          </button>
-                        )}
-                        {(codexAuthFlow?.user_code || codexAuthFlow?.device_code) && (
-                          <code>
-                            {codexAuthFlow.user_code ?? codexAuthFlow.device_code}
-                          </code>
-                        )}
-                        <button
-                          type="button"
-                          className="mini-action"
-                          disabled={connectingProviderId === 'codex'}
-                          onClick={() => void verifyCodexConnection('chatgpt')}
-                        >
-                          Check connection
-                        </button>
-                      </div>
-                    )}
-                    {isCodexApiKeyPanelOpen && (
-                      <form className="codex-auth-panel" onSubmit={submitCodexApiKey}>
-                        <strong>Enter your OpenAI API key</strong>
-                        <input
-                          type="password"
-                          value={codexApiKey}
-                          onChange={(event) => setCodexApiKey(event.target.value)}
-                          autoComplete="off"
-                          spellCheck={false}
-                          placeholder="sk-..."
-                        />
-                        <a
-                          href="https://platform.openai.com/api-keys"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Get API Key
-                        </a>
-                        <div className="provider-card-actions">
-                          <button
-                            type="button"
-                            className="mini-action secondary"
-                            onClick={() => {
-                              setCodexApiKey('')
-                              setIsCodexApiKeyPanelOpen(false)
-                            }}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="submit"
-                            className="mini-action"
-                            disabled={!codexApiKey.trim() || connectingProviderId === 'codex'}
-                          >
-                            OK
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </div>
-                  )
-                })()}
-              </div>
-              {!hasConnectedProvider && (
-                <p className="provider-mode-note">
-                  Connect Codex before launching tasks.
-                </p>
-              )}
-            </div>
-
             <div className="launcher-panel prompt-assistant" aria-labelledby="prompt-assistant-title">
                 <div className="prompt-assistant-header">
                   <div>
@@ -1868,16 +2010,14 @@ function App() {
 
                 {promptAssistantMode === 'manual' ? (
                   <p className="assistant-mode-note">
-                    Manual mode uses a local prompt template only. Connect OpenAI or Claude for AI-assisted prompt generation.
+                    Manual mode uses a local prompt template only. Connect OpenAI for AI-assisted prompt generation.
                   </p>
                 ) : (
                   <div className="assistant-provider-card">
                     <div>
                       <strong>
                         {activePromptAssistantProvider?.label ??
-                          (promptAssistantMode === 'openai'
-                            ? 'ChatGPT / OpenAI'
-                            : 'Claude / Anthropic')}
+                          'ChatGPT / OpenAI'}
                       </strong>
                       <span>
                         Status:{' '}
@@ -1947,11 +2087,7 @@ function App() {
                             onChange={(event) => setAssistantApiKey(event.target.value)}
                             autoComplete="off"
                             spellCheck={false}
-                            placeholder={
-                              promptAssistantMode === 'openai'
-                                ? 'sk-...'
-                                : 'sk-ant-...'
-                            }
+                            placeholder="sk-..."
                           />
                         </label>
                         <div className="provider-card-actions">
@@ -2007,35 +2143,49 @@ function App() {
                     <textarea
                       rows={4}
                       value={assistantRoughIdea}
-                      onChange={(event) => setAssistantRoughIdea(event.target.value)}
+                      onChange={(event) => {
+                        setAssistantRoughIdea(event.target.value)
+                        setPromptSentToCodexTask(false)
+                      }}
                       placeholder="Describe what you want Codex to do in plain language."
                     />
                   </label>
                 </div>
-                <div className="assistant-preview-card">
-                  <div className="assistant-preview-header">
-                    <strong>Generated prompt</strong>
-                    <button
-                      type="button"
-                      className="mini-action secondary"
-                      disabled={!assistantRefinedPrompt.trim()}
-                      onClick={() =>
-                        setIsAssistantPreviewExpanded((current) => !current)
-                      }
-                    >
-                      {isAssistantPreviewExpanded ? 'Collapse' : 'Expand'}
-                    </button>
+                {promptSentToCodexTask ? (
+                  <div className="assistant-preview-card">
+                    <div className="assistant-preview-header">
+                      <strong>Prompt sent to Codex Task.</strong>
+                    </div>
+                    <p className="assistant-preview-text">
+                      Review or edit the final prompt below before launching Codex.
+                    </p>
                   </div>
-                  <p
-                    className={[
-                      'assistant-preview-text',
-                      isAssistantPreviewExpanded ? 'expanded' : '',
-                    ].filter(Boolean).join(' ')}
-                  >
-                    {assistantRefinedPrompt ||
-                      'Generate a prompt to preview it here.'}
-                  </p>
-                </div>
+                ) : (
+                  <div className="assistant-preview-card">
+                    <div className="assistant-preview-header">
+                      <strong>Generated prompt</strong>
+                      <button
+                        type="button"
+                        className="mini-action secondary"
+                        disabled={!assistantRefinedPrompt.trim()}
+                        onClick={() =>
+                          setIsAssistantPreviewExpanded((current) => !current)
+                        }
+                      >
+                        {isAssistantPreviewExpanded ? 'Collapse' : 'Expand'}
+                      </button>
+                    </div>
+                    <p
+                      className={[
+                        'assistant-preview-text',
+                        isAssistantPreviewExpanded ? 'expanded' : '',
+                      ].filter(Boolean).join(' ')}
+                    >
+                      {assistantRefinedPrompt ||
+                        'Generate a prompt to preview it here.'}
+                    </p>
+                  </div>
+                )}
 
                 <div className="assistant-actions">
                   <button
@@ -2058,12 +2208,14 @@ function App() {
                     type="button"
                     className="mini-action secondary"
                     disabled={!assistantRefinedPrompt.trim()}
-                    onClick={() =>
+                    onClick={() => {
                       setForm((current) => ({
                         ...current,
                         instruction: assistantRefinedPrompt,
                       }))
-                    }
+                      setIsAssistantPreviewExpanded(false)
+                      setPromptSentToCodexTask(true)
+                    }}
                   >
                     Use Prompt
                   </button>
@@ -2104,6 +2256,11 @@ function App() {
                   {form.instruction.length} characters
                 </span>
               </label>
+              {hasCodexPrompt && (
+                <p className="provider-mode-note">
+                  Review or edit the final prompt below before launching Codex.
+                </p>
+              )}
 
               {hasCodexPrompt ? (
                 <>
@@ -2124,212 +2281,6 @@ function App() {
                     ))}
                   </div>
 
-                  <div className="scope-options">
-                    {scopeOptions.map((option) => (
-                      <label
-                        key={option.value}
-                        className={[
-                          'scope-option',
-                          form.changeScope === option.value ? 'selected' : '',
-                          option.broad ? 'broad' : '',
-                        ].filter(Boolean).join(' ')}
-                      >
-                        <input
-                          type="radio"
-                          name="changeScope"
-                          checked={form.changeScope === option.value}
-                          onChange={() =>
-                            setForm({ ...form, changeScope: option.value })
-                          }
-                        />
-                        <span>{option.label}</span>
-                        <small>{option.description}</small>
-                        {option.broad && (
-                          <em>
-                            Broader repository access. More files may appear in diff review.
-                          </em>
-                        )}
-                      </label>
-                    ))}
-                  </div>
-
-                  <div className="selected-repo-card">
-                    <strong>Repository target</strong>
-                    <small>
-                      {selectedGithubRepo
-                        ? selectedGithubRepo.full_name
-                        : form.repoUrl || 'No repository selected'}
-                    </small>
-                    {selectedGithubRepo && (
-                      <div className="badge-row">
-                        <span className="meta-badge">
-                          {selectedGithubRepo.private ? 'Private' : 'Public'}
-                        </span>
-                        <span className="meta-badge">
-                          {selectedGithubRepo.default_branch}
-                        </span>
-                        <span className={selectedGithubRepo.can_push ? 'meta-badge ok' : 'meta-badge'}>
-                          {selectedGithubRepo.can_push ? 'Read/write' : 'Read only'}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {githubRepos.length > 0 && (
-                    <details className="repo-select-panel" open={!selectedGithubRepo}>
-                      <summary>Choose from connected repositories</summary>
-                      <div className="github-repo-picker">
-                        <input
-                          value={githubRepoFilter}
-                          onChange={(event) => setGithubRepoFilter(event.target.value)}
-                          placeholder="Filter GitHub repositories"
-                        />
-                        <div className="github-repos">
-                          {filteredGithubRepos.map((repo) => (
-                            <button
-                              type="button"
-                              key={repo.id}
-                              className={
-                                form.repoUrl === repo.clone_url
-                                  ? 'github-repo selected'
-                                  : 'github-repo'
-                              }
-                              onClick={() => selectGithubRepo(repo)}
-                            >
-                              <span>{repo.full_name}</span>
-                              <small>
-                                {repo.private ? 'private' : 'public'} ·{' '}
-                                {repo.default_branch}
-                                {' · '}
-                                {repo.can_push ? 'push' : 'read'}
-                              </small>
-                            </button>
-                          ))}
-                          {filteredGithubRepos.length === 0 && (
-                            <p className="empty-state">No repositories match.</p>
-                          )}
-                        </div>
-                      </div>
-                    </details>
-                  )}
-
-                  <details className="manual-repo-panel">
-                    <summary>Advanced: use manual repository URL</summary>
-                    <div className="form-pair">
-                      <label>
-                        Repository URL
-                        <input
-                          type="url"
-                          placeholder="https://github.com/org/repo"
-                          value={form.repoUrl}
-                          onChange={(event) =>
-                            setForm({ ...form, repoUrl: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Base Branch
-                        <input
-                          value={form.baseBranch}
-                          onChange={(event) =>
-                            setForm({ ...form, baseBranch: event.target.value })
-                          }
-                        />
-                      </label>
-                    </div>
-                  </details>
-
-                  <div className="repository-explorer">
-                    <div className="launcher-step">
-                      <span>4</span>
-                      <div>
-                        <strong>Target file</strong>
-                        <small>
-                          {form.targetFile ||
-                            (form.changeScope === 'whole_project'
-                              ? 'Optional context for whole-project tasks'
-                              : 'Select a target file')}
-                        </small>
-                      </div>
-                      <button
-                        type="button"
-                        className="mini-action"
-                        disabled={isLoadingFiles || !form.repoUrl}
-                        onClick={() => void loadRepositoryFiles()}
-                      >
-                        {isLoadingFiles ? 'Loading files' : 'Browse files'}
-                      </button>
-                    </div>
-
-                    {repoFiles.length > 0 && (
-                      <div className="explorer-grid">
-                        <div className="explorer-list">
-                          <input
-                            value={fileFilter}
-                            onChange={(event) => setFileFilter(event.target.value)}
-                            placeholder="Search files by path"
-                          />
-                          <div className="file-list">
-                            {filteredRepoFiles.map((entry) => (
-                              <button
-                                type="button"
-                                key={entry.path}
-                                className={
-                                  form.targetFile === entry.path
-                                    ? 'file-option selected'
-                                    : 'file-option'
-                                }
-                                onClick={() => void selectTargetFile(entry.path)}
-                              >
-                                <span>{entry.path}</span>
-                                <small>
-                                  {entry.extension ?? 'file'}
-                                  {typeof entry.size === 'number'
-                                    ? ` · ${entry.size} bytes`
-                                    : ''}
-                                </small>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="explorer-preview">
-                          {isLoadingPreview && <p className="empty-state">Loading preview.</p>}
-                          {filePreview ? (
-                            <>
-                              <div className="file-preview-header">
-                                <div className="file-preview-title">
-                                  <div>
-                                    <strong>{filePreview.path}</strong>
-                                    <small>
-                                      {formatBytes(filePreview.size)}
-                                      {filePreview.truncated ? ' · Preview truncated' : ''}
-                                    </small>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="preview-copy-button"
-                                    onClick={() => void copyFilePreview()}
-                                  >
-                                    Copy
-                                  </button>
-                                </div>
-                                {previewCopyStatus && (
-                                  <small className="preview-copy-status">
-                                    {previewCopyStatus === 'copied'
-                                      ? 'Copied'
-                                      : 'Copy failed'}
-                                  </small>
-                                )}
-                              </div>
-                              <pre className="file-preview">{filePreview.content}</pre>
-                            </>
-                          ) : (
-                            <p className="empty-state">A read-only preview appears here after selecting a file.</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
                 </>
               ) : (
                 <p className="assistant-mode-note">
@@ -2938,36 +2889,6 @@ function formatBytes(value: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
 }
 
-function formatReadinessStatus(providerId: AgentProvider, readiness?: ProviderReadiness) {
-  if (providerId === 'codex') {
-    switch (readiness) {
-      case 'ready':
-        return 'AUTH STORED'
-      case 'auth_required':
-        return 'AUTH REQUIRED'
-      case 'unavailable':
-        return 'UNAVAILABLE'
-      case 'not_configured':
-        return 'CONFIG MISSING'
-      default:
-        return 'UNKNOWN'
-    }
-  }
-
-  switch (readiness) {
-    case 'ready':
-      return 'READY'
-    case 'auth_required':
-      return 'AUTH REQUIRED'
-    case 'unavailable':
-      return 'UNAVAILABLE'
-    case 'not_configured':
-      return 'NOT CONFIGURED'
-    default:
-      return 'UNKNOWN'
-  }
-}
-
 function providerPrimaryStatus(
   connection: ProviderConnectionStatus,
   readiness: ProviderReadiness,
@@ -2976,27 +2897,6 @@ function providerPrimaryStatus(
   if (readiness === 'ready' || readiness === 'auth_required') return 'disconnected'
   if (readiness === 'unavailable') return 'unavailable'
   return 'not_configured'
-}
-
-function formatPrimaryStatus(providerId: AgentProvider, status?: ProviderPrimaryStatus) {
-  switch (status) {
-    case 'connected':
-      return 'CONNECTED'
-    case 'connecting':
-      return 'CONNECTING'
-    case 'active':
-      return providerId === 'codex' ? 'CONNECTED' : 'ACTIVE'
-    case 'disconnected':
-      return 'DISCONNECTED'
-    case 'ready':
-      return 'READY'
-    case 'unavailable':
-      return 'UNAVAILABLE'
-    case 'not_configured':
-      return 'NOT CONFIGURED'
-    default:
-      return 'UNKNOWN'
-  }
 }
 
 function isLiveActivityStatus(status: TaskStatus) {
