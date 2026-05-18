@@ -271,6 +271,42 @@ npm run preview
 
 ![File preview and selection](docs/screenshots/04-file-preview-selection.png)
 
+### Review Diff Summary
+
+![Review diff summary](docs/screenshots/05-review-diff-summary.png)
+
+### Selected File Diff Review
+
+![Selected file diff](docs/screenshots/06-selected-file-diff.png)
+
+### Commit Confirmation
+
+![Commit confirmation](docs/screenshots/07-commit-confirmation.png)
+
+### Task Timeline — Committed State
+
+![Task timeline committed](docs/screenshots/08-task-timeline-committed.png)
+
+### Pull Request Ready
+
+![Pull request ready](docs/screenshots/09-pull-request-ready.png)
+
+### Pull Request Opened
+
+![Pull request opened](docs/screenshots/10-pull-request-opened.png)
+
+### Pull Request Merge Confirmation
+
+![Pull request merge confirmation](docs/screenshots/11-pull-request-merge-confirmation.png)
+
+### Open Repository After Merge
+
+![Open repository after merge](docs/screenshots/12-open-repository-after-merge.png)
+
+### Task Timeline — Merged State
+
+![Task timeline merged](docs/screenshots/13-task-timeline-merged.png)
+
 ### Prompt Assistant — Compact Scrollable Idea Input
 
 ![Prompt Assistant mobile flow](docs/screenshots/prompt-assistant-compact-scrollable-idea-input.png)
@@ -278,7 +314,6 @@ npm run preview
 ### Codex Task — Final Editable Prompt Flow
 
 ![Codex Task mobile execution flow](docs/screenshots/codex-task-final-editable-prompt-flow.png)
-
 
 Suggested placeholders:
 
