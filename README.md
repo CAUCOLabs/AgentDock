@@ -1,149 +1,297 @@
 # AgentDock
 
-**AgentDock is a mobile-first command center for AI coding agents.**
+AgentDock is a mobile command center for AI coding agents.
 
-It lets developers orchestrate AI coding tasks from a phone or lightweight interface without cloning repositories locally, writing code on a small screen, or keeping a laptop open.
+It gives developers a lightweight interface for starting, guiding, reviewing, and shipping AI-assisted coding work from a phone or web panel. AgentDock is not a mobile IDE. It is an orchestration layer around repositories, agent sessions, diffs, approvals, commits, and pull requests.
 
-AgentDock connects to GitHub repositories, creates safe working branches, runs AI-assisted development tasks in isolated workspaces, shows diffs and test results, and only commits changes after human approval.
+## Product Overview
 
-## Vision
+AgentDock coordinates the operational parts of agentic development:
 
-AI development is moving from manual coding to agent orchestration.
+- Connect to GitHub repositories.
+- Create isolated workspaces for coding tasks.
+- Start Codex-backed implementation sessions.
+- Use a Prompt Assistant to refine task instructions before execution.
+- Review generated diffs before committing.
+- Commit, push, open pull requests, and merge through an explicit approval flow.
 
-Developers should be able to:
+The goal is to keep the developer in control while reducing the amount of laptop-bound work required to manage coding agents.
 
-- Start an AI coding task from anywhere
-- Continue an existing agent session
-- Review generated changes safely
-- Run tests before approving
-- Commit to a dedicated branch
-- Open a pull request
-- Keep full control over what reaches the repository
-
-AgentDock is not a mobile IDE.
-
-It is a control layer for AI coding agents.
-
-## Core Idea
+## Core Workflow
 
 ```text
-Mobile App / Web Panel
-        ↓
-AgentDock Backend
-        ↓
-Isolated Workspace
-        ↓
-GitHub Repository
-        ↓
-AI Coding Agent
-        ↓
-Diff + Tests + Approval
-        ↓
-Commit + Pull Request
+GitHub
+  -> Codex
+  -> Prompt Assistant
+  -> Diff
+  -> Commit
+  -> Push
+  -> PR
+  -> Merge
 ```
 
-## MVP Scope
+In practice:
 
-The first version focuses on a simple and safe workflow:
+1. Select a GitHub repository.
+2. Create a task with a clear objective.
+3. AgentDock prepares a workspace and branch.
+4. Codex runs the implementation task.
+5. Prompt Assistant helps clarify or improve instructions where needed.
+6. AgentDock presents the resulting diff.
+7. The developer approves the changes.
+8. AgentDock commits and pushes to the working branch.
+9. AgentDock opens a pull request.
+10. The pull request can be merged after review.
 
-1. Connect a GitHub repository
-2. Create a new agent task
-3. Clone the repository into an isolated workspace
-4. Create a dedicated working branch
-5. Run an AI coding agent with clear instructions
-6. Generate a diff
-7. Show changed files and test results
-8. Ask for human approval
-9. Commit and push only after approval
-10. Open a pull request
+## Current Features
 
-## Safety Principles
-
-AgentDock is designed around safe agentic development:
-
-- Never modify `main` directly
-- Always work in a dedicated branch
-- Always show the diff before commit
-- Never commit without human approval
-- Keep logs and task history visible
-- Avoid exposing secrets to the agent
-- Run tasks in isolated workspaces
-- Make every change reviewable
-
-## Planned Features
-
-### MVP
-
-- GitHub repository connection
-- Task creation
-- Temporary workspace creation
-- Branch creation
-- Diff generation
-- Human approval workflow
-- Commit and push
-- Pull request creation
-
-### Later
-
-- Mobile app with Expo / React Native
-- Web dashboard
-- Multiple AI agent providers
-- Test runner integration
-- Session history
-- Notifications
-- Team approvals
-- Policy rules
-- MCP support
-- Remote terminal with restricted commands
-
-## Tech Stack
-
-Initial development stack:
-
-- Backend: FastAPI
-- Workers: Python subprocess / Docker
-- Git Provider: GitHub API
-- Database: PostgreSQL or SQLite for MVP
-- Queue: Redis / RQ later
-- Mobile App: Expo / React Native
-- AI Providers: OpenAI first, others later
+- FastAPI backend for task orchestration.
+- Expo mobile app shell for the command center interface.
+- Vite React frontend for local web use.
+- GitHub repository browsing and authentication support.
+- GitHub App configuration path, with OAuth fallback for local development.
+- Task creation and persistence.
+- Workspace and branch management.
+- Diff generation.
+- Approval workflow for generated changes.
+- Commit, push, pull request, and merge controls behind safety flags.
+- Prompt Assistant provider support.
+- Mock, local, and Codex-oriented agent runner configuration.
+- Backend test coverage for task storage, GitHub integration, agent providers, Prompt Assistant, repo browsing, and approval workflow.
 
 ## Repository Structure
 
 ```text
-agentdock/
-  backend/
-    app/
-      main.py
-      models.py
-      github_client.py
-      workspace.py
-      task_runner.py
-      diff_service.py
-      agent_runner.py
-    requirements.txt
-
-  mobile/
-    app/
-    package.json
-
-  docker/
-    worker.Dockerfile
-
-  README.md
+AgentDock/
+  backend/      FastAPI API, task orchestration, GitHub, agents, diffs
+  mobile/       Expo / React Native mobile client
+  frontend/     Vite / React web client
+  docker/       Worker image scaffold
+  docs/         Architecture and roadmap notes
+  scripts/      Development helper scripts
 ```
+
+## Local Setup
+
+### Prerequisites
+
+- Python 3.11
+- Node.js and npm
+- Git
+- Optional: Codex CLI, if running real Codex tasks locally
+- Optional: GitHub App or OAuth credentials, if testing authenticated GitHub flows
+
+### Backend
+
+```bash
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python -m uvicorn app.main:app --reload
+```
+
+The API defaults to `http://127.0.0.1:8000`.
+
+You can also start the backend from the repository root:
+
+```bash
+./scripts/dev_backend.sh
+```
+
+### Mobile App
+
+```bash
+cd mobile
+npm install
+cp .env.example .env
+npm run start
+```
+
+Set `EXPO_PUBLIC_AGENTDOCK_API_URL` to the backend URL reachable from the device or simulator.
+
+### Web Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Set `VITE_AGENTDOCK_API_URL` to the backend URL.
+
+## Required Environment Variables
+
+Backend configuration lives in `backend/.env`. Start from `backend/.env.example`.
+
+### Core Backend
+
+```env
+APP_NAME=AgentDock
+APP_ENV=development
+APP_DEBUG=true
+API_HOST=127.0.0.1
+API_PORT=8000
+WORKSPACES_DIR=./workspaces
+LOGS_DIR=./logs
+AGENTDOCK_DB_PATH=./data/agentdock.sqlite3
+```
+
+### GitHub
+
+For production-like GitHub integration, configure a GitHub App:
+
+```env
+GITHUB_APP_ID=
+GITHUB_APP_SLUG=
+GITHUB_APP_PRIVATE_KEY_PATH=
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+GITHUB_APP_INSTALL_URL=
+GITHUB_APP_CALLBACK_URL=http://127.0.0.1:8000/auth/github-app/callback
+GITHUB_PR_MERGE_METHOD=squash
+DELETE_BRANCH_AFTER_MERGE=false
+```
+
+For local development, the backend also supports fallback token or OAuth configuration:
+
+```env
+GITHUB_TOKEN=
+GITHUB_OWNER=
+GITHUB_DEFAULT_BRANCH=main
+GITHUB_OAUTH_CLIENT_ID=
+GITHUB_OAUTH_CLIENT_SECRET=
+GITHUB_OAUTH_REDIRECT_URI=http://127.0.0.1:8000/auth/github/callback
+```
+
+### Prompt Assistant And Agent Providers
+
+```env
+AI_PROVIDER=mock
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+PROMPT_ASSISTANT_OPENAI_MODEL=gpt-5.5
+PROMPT_ASSISTANT_ANTHROPIC_MODEL=claude-sonnet-4-5
+```
+
+Use `AI_PROVIDER=mock` for local development without external model calls.
+
+### Codex And Local Runner
+
+```env
+AGENT_RUNNER=mock
+CODEX_CLI_COMMAND=codex
+CODEX_ENABLED=false
+CODEX_TIMEOUT_SECONDS=900
+LOCAL_RUNNER_COMMAND=
+LOCAL_RUNNER_TIMEOUT_SECONDS=900
+```
+
+Use `AGENT_RUNNER=mock` for local UI and workflow testing. Use the local or Codex runner only in an environment prepared for agent execution.
+
+### Safety Flags
+
+```env
+ALLOW_PUSH=false
+ALLOW_PR_CREATION=false
+MAX_TASK_RUNTIME_SECONDS=900
+```
+
+Keep push and pull request creation disabled until credentials and repository permissions are configured intentionally.
+
+### Client Apps
+
+Mobile:
+
+```env
+EXPO_PUBLIC_AGENTDOCK_API_URL=http://127.0.0.1:8000
+```
+
+Web:
+
+```env
+VITE_AGENTDOCK_API_URL=http://127.0.0.1:8000
+```
+
+## Development Commands
+
+From the repository root:
+
+```bash
+./scripts/check_project.sh
+./scripts/dev_backend.sh
+```
+
+Backend:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m uvicorn app.main:app --reload
+python -m pytest
+```
+
+Mobile:
+
+```bash
+cd mobile
+npm run start
+npm run ios
+npm run android
+npm run web
+```
+
+Web frontend:
+
+```bash
+cd frontend
+npm run dev
+npm run build
+npm run lint
+npm run preview
+```
+
+## Screenshots
+
+Screenshots will be added as the mobile and web flows stabilize.
+
+Suggested placeholders:
+
+- Repository selection
+- Task creation
+- Prompt Assistant
+- Diff review
+- Approval and pull request status
+
+## Security Notes
+
+- API keys and GitHub credentials stay backend-side.
+- Mobile and web clients should call AgentDock APIs, not provider APIs directly.
+- Codex authentication is separate from Prompt Assistant provider keys.
+- Prompt Assistant keys configure model calls used to refine or support task instructions.
+- Codex CLI authentication is owned by the backend or worker runtime used to execute coding tasks.
+- Generated changes are shown as diffs before commit.
+- Push, pull request creation, and merge behavior are gated by backend configuration and approval flow.
+- Workspaces should be treated as isolated execution environments and cleaned up according to deployment policy.
+
+## Roadmap v0.2
+
+- Complete mobile-first task workflow from repository selection through pull request.
+- Improve Codex session lifecycle management.
+- Add richer Prompt Assistant controls for task clarification and iteration.
+- Add task logs and execution status streaming.
+- Add test command configuration per repository.
+- Improve diff review ergonomics on mobile.
+- Add notification hooks for task completion and review requests.
+- Add team approval and policy controls.
+- Harden workspace isolation and cleanup.
+- Expand provider support after the core workflow is stable.
 
 ## Development Status
 
-AgentDock is currently in early MVP development.
-
-The first goal is to build the backend workflow:
-
-```text
-Create task → clone repo → create branch → modify safely → generate diff → approve → commit → push
-```
-
-AI integration will be added after the core repository workflow is stable.
+AgentDock is in early product development. The repository contains the core backend workflow, client shells, and tests for the main orchestration paths. The project is still evolving, and safety defaults are intentionally conservative.
 
 ## License
 
