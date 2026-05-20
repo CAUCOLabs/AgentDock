@@ -95,6 +95,8 @@ const templates = [
 const promptPlaceholder =
   "Describe the task. Examples:\n- Create project scaffold\n- Build desktop app structure\n- Implement authentication flow\n- Refactor backend architecture\n- Create REST API and models";
 
+const privacyPolicyUrl = "https://aisosu.fi/privacy-policy.html";
+
 const scopeOptions: Array<{
   value: ChangeScope;
   label: string;
@@ -2728,6 +2730,18 @@ export default function App() {
             </View>
           ) : null}
         </Section>
+
+        <Section title="Legal">
+          <Pressable
+            onPress={() => void Linking.openURL(privacyPolicyUrl)}
+            style={({ pressed }) => [styles.legalLinkCard, pressed && styles.pressed]}
+          >
+            <Text style={styles.legalLinkTitle}>Privacy Policy</Text>
+            <Text style={[styles.legalLinkUrl, styles.linkText]} numberOfLines={2}>
+              {privacyPolicyUrl}
+            </Text>
+          </Pressable>
+        </Section>
       </ScrollView>
     </SafeAreaView>
   );
@@ -3464,6 +3478,25 @@ const styles = StyleSheet.create({
   },
   linkText: {
     color: "#58dfff",
+  },
+  legalLinkCard: {
+    gap: 4,
+    minHeight: 56,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.32)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.14)",
+    justifyContent: "center",
+  },
+  legalLinkTitle: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  legalLinkUrl: {
+    fontSize: 13,
+    lineHeight: 18,
   },
   actionRow: {
     flexDirection: "row",
