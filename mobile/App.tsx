@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Linking,
   Pressable,
   RefreshControl,
@@ -1572,9 +1573,20 @@ export default function App() {
         }
       >
         <View style={styles.header}>
-          <View style={styles.headerText}>
-            <Text style={styles.title}>AgentDock</Text>
-            <Text style={styles.subtitle}>Mobile command center for AI coding agents</Text>
+          <View style={styles.brandLockup}>
+            <View style={styles.logoFrame}>
+              <Image
+                source={require("./assets/logosinfondo.png")}
+                style={styles.logo}
+                resizeMode="contain"
+              />
+            </View>
+            <View style={styles.headerText}>
+              <Text style={styles.title} numberOfLines={1}>
+                AgentDock
+              </Text>
+              <Text style={styles.subtitle}>Mobile command center for AI coding agents</Text>
+            </View>
           </View>
           <View style={[styles.healthPill, apiConnection.status === "online" ? styles.healthOnline : styles.healthOffline]}>
             {apiConnection.status === "checking" ? (
@@ -3112,38 +3124,70 @@ const styles = StyleSheet.create({
   },
   header: {
     minHeight: 112,
+    position: "relative",
     borderRadius: 8,
-    padding: 20,
+    padding: 22,
     backgroundColor: "rgba(9, 18, 30, 0.92)",
     borderWidth: 1,
     borderColor: "rgba(70, 211, 255, 0.18)",
     flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 14,
+    alignItems: "center",
+    gap: 18,
+  },
+  brandLockup: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 18,
+    minWidth: 0,
+    paddingRight: 104,
+  },
+  logoFrame: {
+    width: 112,
+    height: 112,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    backgroundColor: "rgba(7, 18, 31, 0.78)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 217, 255, 0.35)",
+    shadowColor: "#38d9ff",
+    shadowOpacity: 0.24,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  logo: {
+    width: 92,
+    height: 92,
   },
   headerText: {
     flex: 1,
     gap: 6,
+    minWidth: 0,
   },
   title: {
     color: "#f4fbff",
-    fontSize: 34,
-    fontWeight: "800",
+    fontSize: 23,
+    lineHeight: 29,
+    fontWeight: "900",
   },
   subtitle: {
     color: "#91a8bd",
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 23,
   },
   healthPill: {
-    minHeight: 34,
-    paddingHorizontal: 12,
+    position: "absolute",
+    top: 20,
+    right: 20,
+    minHeight: 30,
+    paddingHorizontal: 9,
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 6,
   },
   healthOnline: {
     backgroundColor: "rgba(43, 232, 194, 0.12)",
@@ -3164,7 +3208,7 @@ const styles = StyleSheet.create({
   },
   healthText: {
     color: "#d8f9ff",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     textTransform: "uppercase",
   },
