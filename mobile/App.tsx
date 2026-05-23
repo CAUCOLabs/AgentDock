@@ -1582,19 +1582,28 @@ export default function App() {
               />
             </View>
             <View style={styles.headerText}>
-              <Text style={styles.title} numberOfLines={1}>
-                AisoFlow
+              <View style={styles.headerTopRow}>
+                <View style={[styles.healthPill, apiConnection.status === "online" ? styles.healthOnline : styles.healthOffline]}>
+                  {apiConnection.status === "checking" ? (
+                    <ActivityIndicator size="small" color="#9eefff" />
+                  ) : (
+                    <View style={[styles.healthDot, apiConnection.status === "offline" && styles.healthDotOffline]} />
+                  )}
+                  <Text style={styles.healthText}>{apiConnection.status}</Text>
+                </View>
+              </View>
+              <View style={styles.wordmarkRow}>
+                <Text style={styles.wordmarkAiso}>Aiso</Text>
+                <Text style={styles.wordmarkFlow}>Flow</Text>
+              </View>
+              <Text style={styles.subtitle}>
+                Mobile-first command center{"\n"}for AI coding workflows
               </Text>
-              <Text style={styles.subtitle}>Mobile command center for AI coding workflows</Text>
+              <View style={styles.brandAccent}>
+                <View style={styles.brandAccentLine} />
+                <View style={styles.brandAccentDot} />
+              </View>
             </View>
-          </View>
-          <View style={[styles.healthPill, apiConnection.status === "online" ? styles.healthOnline : styles.healthOffline]}>
-            {apiConnection.status === "checking" ? (
-              <ActivityIndicator size="small" color="#9eefff" />
-            ) : (
-              <View style={[styles.healthDot, apiConnection.status === "offline" && styles.healthDotOffline]} />
-            )}
-            <Text style={styles.healthText}>{apiConnection.status}</Text>
           </View>
         </View>
 
@@ -3124,7 +3133,6 @@ const styles = StyleSheet.create({
   },
   header: {
     minHeight: 112,
-    position: "relative",
     borderRadius: 8,
     padding: 22,
     backgroundColor: "rgba(9, 18, 30, 0.92)",
@@ -3140,7 +3148,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 18,
     minWidth: 0,
-    paddingRight: 104,
   },
   logoFrame: {
     width: 112,
@@ -3163,26 +3170,64 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
-    gap: 6,
     minWidth: 0,
+    alignItems: "flex-start",
   },
-  title: {
+  headerTopRow: {
+    width: "100%",
+    alignItems: "flex-end",
+    marginBottom: 14,
+  },
+  wordmarkRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+  },
+  wordmarkAiso: {
     color: "#f4fbff",
-    fontSize: 23,
-    lineHeight: 29,
+    fontSize: 30,
+    lineHeight: 36,
     fontWeight: "900",
   },
+  wordmarkFlow: {
+    color: "#38d9ff",
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: "900",
+    textShadowColor: "rgba(56, 217, 255, 0.45)",
+    textShadowRadius: 12,
+    textShadowOffset: { width: 0, height: 0 },
+  },
   subtitle: {
-    color: "#91a8bd",
-    fontSize: 16,
-    lineHeight: 23,
+    color: "#9fb2c7",
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "500",
+  },
+  brandAccent: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    width: 120,
+  },
+  brandAccentLine: {
+    height: 2,
+    flex: 1,
+    backgroundColor: "#38d9ff",
+    opacity: 0.85,
+  },
+  brandAccentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#38d9ff",
+    shadowColor: "#38d9ff",
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
   },
   healthPill: {
-    position: "absolute",
-    top: 20,
-    right: 20,
-    minHeight: 30,
-    paddingHorizontal: 9,
+    minHeight: 28,
+    paddingHorizontal: 8,
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: "row",
