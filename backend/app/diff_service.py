@@ -14,7 +14,7 @@ class DiffServiceError(Exception):
 
 class DiffService:
     """
-    Provides Git diff utilities for AgentDock task workspaces.
+    Provides Git diff utilities for AisoFlow task workspaces.
 
     The service expects a valid Git repository path.
     """

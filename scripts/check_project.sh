@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
-# AgentDock project health check
+# AisoFlow project health check
 # Runs lightweight checks for the current MVP.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 
-echo "AgentDock project check"
+echo "AisoFlow project check"
 echo "Root: $ROOT_DIR"
 echo ""
 
@@ -53,9 +53,9 @@ python -c "import httpx; print('httpx OK')"
 echo ""
 
 # -----------------------------
-# AgentDock app imports
+# AisoFlow app imports
 # -----------------------------
-echo "Checking AgentDock app imports..."
+echo "Checking AisoFlow app imports..."
 python -c "from app.config import get_settings; s=get_settings(); print(f'config OK: {s.app_name}')"
 python -c "from app.models import create_task_id; print(f'models OK: {create_task_id()}')"
 python -c "from app.main import app; print(f'api OK: {app.title}')"

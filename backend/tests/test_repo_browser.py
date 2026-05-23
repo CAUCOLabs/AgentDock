@@ -113,7 +113,7 @@ class RepoBrowserTests(unittest.TestCase):
                 [event.message for event in TaskStore(settings).get_logs(task_id)],
             )
             self.assertIn(
-                "TODO(AgentDock)",
+                "TODO(AisoFlow)",
                 TaskStore(settings).get_diff(task_id),
             )
             self.assertIn("src/App.tsx", TaskStore(settings).get_diff(task_id))
@@ -236,8 +236,8 @@ class RepoBrowserTests(unittest.TestCase):
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
-            config.set_value("user", "name", "AgentDock Tests")
-            config.set_value("user", "email", "agentdock-tests@example.local")
+            config.set_value("user", "name", "AisoFlow Tests")
+            config.set_value("user", "email", "aisoflow-tests@example.local")
 
         (repo_path / "src").mkdir()
         (repo_path / "src" / "App.tsx").write_text(

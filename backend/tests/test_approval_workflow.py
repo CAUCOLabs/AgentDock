@@ -47,7 +47,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             repo = Repo(repo_path)
             self.assertFalse(repo.is_dirty(untracked_files=True))
             self.assertFalse(repo.untracked_files)
-            self.assertIn("AgentDock task: task_approvetest", repo.head.commit.message)
+            self.assertIn("AisoFlow task: task_approvetest", repo.head.commit.message)
 
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
@@ -220,7 +220,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self._save_pushed_task(settings, task_id)
 
             async def fake_create_pull_request(*args, **kwargs):
-                self.assertEqual(kwargs["title"], f"AgentDock task: {task_id}")
+                self.assertEqual(kwargs["title"], f"AisoFlow task: {task_id}")
                 self.assertIn("Task prompt:", kwargs["body"])
                 self.assertIn("Target file:", kwargs["body"])
                 self.assertIn("Agent provider:", kwargs["body"])
@@ -454,7 +454,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             async def fake_merge_pull_request(client, *args, **kwargs):
                 self.assertEqual(client.github_token, "ghs_installation_token")
                 self.assertEqual(kwargs["merge_method"], "squash")
-                self.assertEqual(kwargs["commit_title"], f"AgentDock task: {task_id}")
+                self.assertEqual(kwargs["commit_title"], f"AisoFlow task: {task_id}")
                 self.assertIn("Task prompt:", kwargs["commit_message"])
                 self.assertIn("Target file or change scope:", kwargs["commit_message"])
                 self.assertIn("Agent provider:", kwargs["commit_message"])
@@ -686,7 +686,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
-            self.assertIn("AgentDock task: task_mainpush", repo.head.commit.message)
+            self.assertIn("AisoFlow task: task_mainpush", repo.head.commit.message)
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
             self.assertEqual(task.status, TaskStatus.committed)
@@ -750,7 +750,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
-            self.assertIn("AgentDock task: task_noorigin", repo.head.commit.message)
+            self.assertIn("AisoFlow task: task_noorigin", repo.head.commit.message)
             task = TaskStore(settings).get_task(task_id)
             self.assertIsNotNone(task)
             self.assertEqual(task.status, TaskStatus.committed)
@@ -784,7 +784,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(push_response.status_code, 500)
             repo = Repo(repo_path)
-            self.assertIn("AgentDock task: task_pushfail", repo.head.commit.message)
+            self.assertIn("AisoFlow task: task_pushfail", repo.head.commit.message)
             restarted_store = TaskStore(settings)
             task = restarted_store.get_task(task_id)
             self.assertIsNotNone(task)
@@ -809,7 +809,7 @@ class ApprovalWorkflowTests(unittest.TestCase):
 
         for source in (web_app, mobile_app):
             self.assertIn("OpenAI Codex", source)
-            self.assertIn("AgentDock uses OpenAI Codex to prepare code changes.", source)
+            self.assertIn("AisoFlow uses OpenAI Codex to prepare code changes.", source)
             self.assertNotIn("Ollama", source)
             self.assertNotIn("Local model", source)
             self.assertNotIn("Choose the agent profile for this task.", source)
@@ -925,8 +925,8 @@ class ApprovalWorkflowTests(unittest.TestCase):
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
-            config.set_value("user", "name", "AgentDock Tests")
-            config.set_value("user", "email", "agentdock-tests@example.local")
+            config.set_value("user", "name", "AisoFlow Tests")
+            config.set_value("user", "email", "aisoflow-tests@example.local")
         (repo_path / "README.md").write_text("initial\n", encoding="utf-8")
         repo.git.add(A=True)
         repo.index.commit("initial")

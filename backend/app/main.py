@@ -77,7 +77,7 @@ from app.workspace import WorkspaceError, WorkspaceManager
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="AgentDock API",
+    title="AisoFlow API",
     description="Mobile-first command center for AI coding agents.",
     version="0.1.0",
 )
@@ -311,7 +311,7 @@ def root() -> dict[str, str]:
     """
 
     return {
-        "message": "AgentDock API is running",
+        "message": "AisoFlow API is running",
         "docs": "/docs",
         "health": "/health",
     }
@@ -363,7 +363,7 @@ async def complete_github_app_auth(
         "<!doctype html><html><body>"
         "<h1>GitHub App installed</h1>"
         f"<p>Connected {installation.account_login}. "
-        "You can return to AgentDock.</p>"
+        "You can return to AisoFlow.</p>"
         "</body></html>"
     )
 
@@ -465,7 +465,7 @@ async def complete_github_auth(
     return (
         "<!doctype html><html><body>"
         "<h1>GitHub connected</h1>"
-        f"<p>Signed in as {account.login}. You can return to AgentDock.</p>"
+        f"<p>Signed in as {account.login}. You can return to AisoFlow.</p>"
         "</body></html>"
     )
 
@@ -1228,7 +1228,7 @@ async def approve_or_reject_task(
         github_client = GitHubClient(settings)
         repo = github_client.open_repository(repo_path)
         remote_info = github_client.get_remote_info(repo, task.base_branch)
-        commit_sha = github_client.commit_all(repo, f"AgentDock task: {task_id}")
+        commit_sha = github_client.commit_all(repo, f"AisoFlow task: {task_id}")
     except (GitHubClientError, WorkspaceError) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1471,7 +1471,7 @@ async def create_task_pull_request(
     task_store: TaskStore = Depends(get_task_store),
 ) -> TaskPullRequestResponse:
     """
-    Create a pull request from a pushed AgentDock task branch.
+    Create a pull request from a pushed AisoFlow task branch.
     """
 
     task = task_store.get_task(task_id)
@@ -1528,7 +1528,7 @@ async def create_task_pull_request(
 
     github_client = GitHubClient(settings, github_token=github_token)
     body = (
-        "Automated AgentDock task.\n\n"
+        "Automated AisoFlow task.\n\n"
         f"Task prompt:\n{task.instruction}\n\n"
         f"Target file:\n{task.target_file or 'None'}\n\n"
         f"Agent provider:\n{task.agent.value}\n\n"
@@ -1541,7 +1541,7 @@ async def create_task_pull_request(
             repo_url=task.repo_url,
             head_branch=task.working_branch,
             base_branch=task.base_branch,
-            title=f"AgentDock task: {task_id}",
+            title=f"AisoFlow task: {task_id}",
             body=body,
         )
     except GitHubClientError as exc:
@@ -1589,7 +1589,7 @@ async def merge_task_pull_request(
     task_store: TaskStore = Depends(get_task_store),
 ) -> TaskMergePullRequestResponse:
     """
-    Merge an opened AgentDock pull request.
+    Merge an opened AisoFlow pull request.
     """
 
     task = task_store.get_task(task_id)
@@ -1630,7 +1630,7 @@ async def merge_task_pull_request(
         merge_result = await github_client.merge_pull_request(
             repo_url=task.repo_url,
             pr_number=task.pr_number,
-            commit_title=f"AgentDock task: {task_id}",
+            commit_title=f"AisoFlow task: {task_id}",
             commit_message=commit_message,
             merge_method=merge_method,
         )
@@ -1710,7 +1710,7 @@ async def merge_task_pull_request(
     task.pr_state = "merged"
     task.merged_at = merged_at
     task.merge_commit_sha = pr_status.merge_commit_sha or merge_result.sha
-    task.merged_by = pr_status.merged_by or "AgentDock"
+    task.merged_by = pr_status.merged_by or "AisoFlow"
     task.merged_source = token_source
     task.error = None
     task.updated_at = merged_at

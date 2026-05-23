@@ -288,8 +288,8 @@ class GitHubAuthTests(unittest.TestCase):
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
-            config.set_value("user", "name", "AgentDock Tests")
-            config.set_value("user", "email", "agentdock-tests@example.local")
+            config.set_value("user", "name", "AisoFlow Tests")
+            config.set_value("user", "email", "aisoflow-tests@example.local")
         (repo_path / "README.md").write_text("hello\n", encoding="utf-8")
         repo.git.add(A=True)
         repo.index.commit("initial")

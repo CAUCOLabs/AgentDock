@@ -230,8 +230,8 @@ class TaskCreationErrorTests(unittest.TestCase):
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
-            config.set_value("user", "name", "AgentDock Tests")
-            config.set_value("user", "email", "agentdock-tests@example.local")
+            config.set_value("user", "name", "AisoFlow Tests")
+            config.set_value("user", "email", "aisoflow-tests@example.local")
         (repo_path / "src").mkdir()
         (repo_path / "src" / "App.tsx").write_text(
             "export function App() { return null; }\n",

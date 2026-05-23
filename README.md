@@ -1,12 +1,12 @@
-# AgentDock
+# AisoFlow
 
-AgentDock is a mobile command center for AI coding agents.
+AisoFlow is a mobile command center for AI coding workflows.
 
-It gives developers a lightweight interface for starting, guiding, reviewing, and shipping AI-assisted coding work from a phone or web panel. AgentDock is not a mobile IDE. It is an orchestration layer around repositories, agent sessions, diffs, approvals, commits, and pull requests.
+It gives developers a lightweight interface for starting, guiding, reviewing, and shipping AI-assisted coding work from a phone or web panel. AisoFlow is not a mobile IDE. It is an orchestration layer around repositories, agent sessions, diffs, approvals, commits, and pull requests.
 
 ## Product Overview
 
-AgentDock coordinates the operational parts of agentic development:
+AisoFlow coordinates the operational parts of agentic development:
 
 - Connect to GitHub repositories.
 - Create isolated workspaces for coding tasks.
@@ -34,13 +34,13 @@ In practice:
 
 1. Select a GitHub repository.
 2. Create a task with a clear objective.
-3. AgentDock prepares a workspace and branch.
+3. AisoFlow prepares a workspace and branch.
 4. Codex runs the implementation task.
 5. Prompt Assistant helps clarify or improve instructions where needed.
-6. AgentDock presents the resulting diff.
+6. AisoFlow presents the resulting diff.
 7. The developer approves the changes.
-8. AgentDock commits and pushes to the working branch.
-9. AgentDock opens a pull request.
+8. AisoFlow commits and pushes to the working branch.
+9. AisoFlow opens a pull request.
 10. The pull request can be merged after review.
 
 ## Current Features
@@ -129,7 +129,7 @@ Backend configuration lives in `backend/.env`. Start from `backend/.env.example`
 ### Core Backend
 
 ```env
-APP_NAME=AgentDock
+APP_NAME=AisoFlow
 APP_ENV=development
 APP_DEBUG=true
 API_HOST=127.0.0.1
@@ -326,7 +326,7 @@ Suggested placeholders:
 ## Security Notes
 
 - API keys and GitHub credentials stay backend-side.
-- Mobile and web clients should call AgentDock APIs, not provider APIs directly.
+- Mobile and web clients should call AisoFlow APIs, not provider APIs directly.
 - Codex authentication is separate from Prompt Assistant provider keys.
 - Prompt Assistant keys configure model calls used to refine or support task instructions.
 - Codex CLI authentication is owned by the backend or worker runtime used to execute coding tasks.
@@ -349,7 +349,7 @@ Suggested placeholders:
 
 ## Development Status
 
-AgentDock is in early product development. The repository contains the core backend workflow, client shells, and tests for the main orchestration paths. The project is still evolving, and safety defaults are intentionally conservative.
+AisoFlow is in early product development. The repository contains the core backend workflow, client shells, and tests for the main orchestration paths. The project is still evolving, and safety defaults are intentionally conservative.
 
 ## License
 

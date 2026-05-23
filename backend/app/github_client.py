@@ -104,7 +104,7 @@ class GitPullRequestStatusResult:
 
 class GitHubClient:
     """
-    GitHub and Git operations used by AgentDock.
+    GitHub and Git operations used by AisoFlow.
 
     For the MVP, this class uses GitPython for local repository operations.
     Pull request creation through the GitHub API will be added later.
@@ -180,15 +180,15 @@ class GitHubClient:
 
     def configure_git_user(self, repo: Repo) -> None:
         """
-        Configure a local Git identity for AgentDock commits.
+        Configure a local Git identity for AisoFlow commits.
 
         This only affects the cloned workspace repository.
         """
 
         try:
             with repo.config_writer() as config:
-                config.set_value("user", "name", "AgentDock")
-                config.set_value("user", "email", "agentdock@example.local")
+                config.set_value("user", "name", "AisoFlow")
+                config.set_value("user", "email", "aisoflow@example.local")
         except Exception as exc:
             raise GitHubClientError("Failed to configure Git user.") from exc
 
@@ -620,7 +620,7 @@ class GitHubClient:
 
         if not branch.startswith("agentdock/"):
             raise GitHubClientError(
-                f"Refusing to push non-AgentDock task branch: {branch}"
+                f"Refusing to push non-AisoFlow task branch: {branch}"
             )
 
         if self._current_branch(repo) != branch:

@@ -375,7 +375,7 @@ function timelineLabelForLog(message: string) {
   if (/diff.*(generated|ready|loaded)|changes.*ready/.test(normalized)) {
     return "Diff generated";
   }
-  if (/(commit|committed).*(completed|created|ready|from agentdock)|committed locally/.test(normalized)) {
+  if (/(commit|committed).*(completed|created|ready|from aisoflow)|committed locally/.test(normalized)) {
     return "Commit completed";
   }
   if (/(push|pushed).*(completed|ready|to branch)|pushed /.test(normalized)) {
@@ -623,7 +623,7 @@ function fallbackCodexAuthFlow(metadata: AgentProviderMetadata): AgentProviderAu
     device_code: null,
     user_code: null,
     instructions: [
-      "AgentDock does not collect your OpenAI password.",
+      "AisoFlow does not collect your OpenAI password.",
       "Codex auth completes only after the backend accepts a callback or API key.",
     ],
     metadata,
@@ -1263,7 +1263,7 @@ export default function App() {
     try {
       await approveTask(selectedTask.task_id, {
         approve,
-        message: approve ? "Committed from AgentDock mobile." : "Rejected from AgentDock mobile.",
+        message: approve ? "Committed from AisoFlow mobile." : "Rejected from AisoFlow mobile.",
       });
       await refreshTasks();
       await loadTaskDetail(selectedTask.task_id);
@@ -1583,9 +1583,9 @@ export default function App() {
             </View>
             <View style={styles.headerText}>
               <Text style={styles.title} numberOfLines={1}>
-                AgentDock
+                AisoFlow
               </Text>
-              <Text style={styles.subtitle}>Mobile command center for AI coding agents</Text>
+              <Text style={styles.subtitle}>Mobile command center for AI coding workflows</Text>
             </View>
           </View>
           <View style={[styles.healthPill, apiConnection.status === "online" ? styles.healthOnline : styles.healthOffline]}>
@@ -1696,7 +1696,7 @@ export default function App() {
                 <Text style={styles.githubTitle}>OpenAI Codex</Text>
               </View>
               <Text style={styles.githubSubtitle}>
-                Codex executes repository changes. AgentDock uses OpenAI Codex to prepare code changes.
+                Codex executes repository changes. AisoFlow uses OpenAI Codex to prepare code changes.
               </Text>
             </View>
             <View style={styles.githubButtonRow}>
@@ -2129,7 +2129,7 @@ export default function App() {
                 ) : null}
                 {assistantResult?.used_fallback ? (
                   <Text style={styles.fileOptionMeta}>
-                    Provider is not connected or failed, so AgentDock used the fallback prompt template.
+                    Provider is not connected or failed, so AisoFlow used the fallback prompt template.
                   </Text>
                 ) : null}
                 <Text style={styles.fileOptionMeta}>API keys are stored server-side for Prompt Assistant only.</Text>
@@ -2307,7 +2307,7 @@ export default function App() {
               </Pressable>
               {isCodexRulesVisible ? (
                 <Text style={styles.executionRulesText}>
-                  AgentDock creates an isolated workspace and branch. Nothing is pushed or opened as a PR unless explicitly enabled.
+                  AisoFlow creates an isolated workspace and branch. Nothing is pushed or opened as a PR unless explicitly enabled.
                 </Text>
               ) : null}
             </View>
@@ -2748,7 +2748,7 @@ export default function App() {
             onPress={() => void Linking.openURL(privacyPolicyUrl)}
             style={({ pressed }) => [styles.legalLinkCard, pressed && styles.pressed]}
           >
-            <Text style={styles.legalLinkTitle}>Privacy Policy</Text>
+            <Text style={styles.legalLinkTitle}>AisoFlow Privacy Policy</Text>
             <Text style={[styles.legalLinkUrl, styles.linkText]} numberOfLines={2}>
               {privacyPolicyUrl}
             </Text>

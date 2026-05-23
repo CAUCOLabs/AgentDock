@@ -26,7 +26,7 @@ import type {
   WorkspaceStatusResponse,
 } from "./types";
 
-type AgentDockRequestInit = RequestInit & {
+type AisoFlowRequestInit = RequestInit & {
   sessionId?: string | null;
 };
 
@@ -58,7 +58,7 @@ function reportApiConnectivity(snapshot: ApiConnectivitySnapshot) {
   connectivityListener?.(snapshot);
 }
 
-async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T> {
+async function request<T>(path: string, init?: AisoFlowRequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
   const { sessionId, ...requestInit } = init ?? {};
 
@@ -74,7 +74,7 @@ async function request<T>(path: string, init?: AgentDockRequestInit): Promise<T>
       },
     });
   } catch (error) {
-    const message = `Unable to reach AgentDock API at ${API_BASE_URL}. For Android emulator use http://10.0.2.2:8000. For a physical Android device, set EXPO_PUBLIC_AGENTDOCK_API_URL to your Mac LAN IP, for example http://192.168.0.185:8000.`;
+    const message = `Unable to reach AisoFlow API at ${API_BASE_URL}. For Android emulator use http://10.0.2.2:8000. For a physical Android device, set EXPO_PUBLIC_AISOFLOW_API_URL to your Mac LAN IP, for example http://192.168.0.185:8000.`;
     reportApiConnectivity({ status: "offline", error: message });
     throw new Error(message);
   }

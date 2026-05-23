@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """
-    Central configuration for the AgentDock backend.
+    Central configuration for the AisoFlow backend.
 
     Values are loaded from environment variables and, during local
     development, from a .env file placed inside the backend directory.
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = Field(default="AgentDock", alias="APP_NAME")
+    app_name: str = Field(default="AisoFlow", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
 

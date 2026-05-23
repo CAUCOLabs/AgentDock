@@ -397,10 +397,10 @@ type CreateTaskForm = {
 }
 
 const API_URL =
-  import.meta.env.VITE_AGENTDOCK_API_URL?.replace(/\/$/, '') ??
+  import.meta.env.VITE_AISOFLOW_API_URL?.replace(/\/$/, '') ??
   'http://127.0.0.1:8000'
 
-const GITHUB_SESSION_STORAGE_KEY = 'agentdock.githubSessionId'
+const GITHUB_SESSION_STORAGE_KEY = 'aisoflow.githubSessionId'
 
 const initialForm: CreateTaskForm = {
   repoUrl: '',
@@ -798,7 +798,7 @@ function App() {
         ...init,
       })
     } catch {
-      const message = `Unable to reach AgentDock API at ${API_URL}.`
+      const message = `Unable to reach AisoFlow API at ${API_URL}.`
       setApiConnectionError(message)
       throw new Error(message)
     }
@@ -1638,18 +1638,18 @@ function App() {
         <div className="hero-copy">
           <p className="eyebrow">
             <Bot size={15} />
-            AgentDock
+            AisoFlow
           </p>
-          <h1>AgentDock</h1>
+          <h1>AisoFlow</h1>
           <p className="subtitle">
-            Mobile-first command center for AI coding agents
+            Mobile command center for AI coding workflows
           </p>
           <p className="hero-description">
             Launch coding agents into safe branches, review diffs, approve
             commits, and optionally push or open PRs - all from a lightweight
             control layer.
           </p>
-          <div className="hero-pills" aria-label="AgentDock capabilities">
+          <div className="hero-pills" aria-label="AisoFlow capabilities">
             <span>
               <Terminal size={14} />
               Local-first
@@ -1673,7 +1673,7 @@ function App() {
             <span></span>
             <span></span>
             <span></span>
-            <strong>agentdock/run</strong>
+            <strong>aisoflow/run</strong>
           </div>
           <div className="console-body">
             <p>
@@ -1824,7 +1824,7 @@ function App() {
               OpenAI Codex
             </strong>
             <span>
-              Codex executes repository changes. AgentDock uses OpenAI Codex to prepare code changes.
+              Codex executes repository changes. AisoFlow uses OpenAI Codex to prepare code changes.
             </span>
           </div>
 
@@ -2308,7 +2308,7 @@ function App() {
                     )}
                     {assistantResult?.used_fallback && (
                       <small>
-                        Provider is not connected or failed, so AgentDock used the fallback prompt template.
+                        Provider is not connected or failed, so AisoFlow used the fallback prompt template.
                       </small>
                     )}
                     <small>
@@ -2483,7 +2483,7 @@ function App() {
                 <details className="execution-rules-toggle">
                   <summary>Show execution rules</summary>
                   <p>
-                    AgentDock creates an isolated workspace and branch. Nothing is
+                    AisoFlow creates an isolated workspace and branch. Nothing is
                     pushed or opened as a PR unless explicitly enabled.
                   </p>
                 </details>
@@ -3303,7 +3303,7 @@ function timelineLabelForLog(message: string) {
   if (/diff.*(generated|ready|loaded)|changes.*ready/.test(normalized)) {
     return 'Diff generated'
   }
-  if (/(commit|committed).*(completed|created|ready|from agentdock)|committed locally/.test(normalized)) {
+  if (/(commit|committed).*(completed|created|ready|from aisoflow)|committed locally/.test(normalized)) {
     return 'Commit completed'
   }
   if (/(push|pushed).*(completed|ready|to branch)|pushed /.test(normalized)) {
@@ -3616,7 +3616,7 @@ function fallbackCodexAuthFlow(
     device_code: null,
     user_code: null,
     instructions: [
-      'AgentDock does not collect your OpenAI password.',
+      'AisoFlow does not collect your OpenAI password.',
       'Codex auth completes only after the backend accepts a callback or API key.',
     ],
     metadata,

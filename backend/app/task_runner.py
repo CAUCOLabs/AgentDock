@@ -34,7 +34,7 @@ class TaskRunnerError(Exception):
 @dataclass
 class TaskRunResult:
     """
-    Result produced by running an AgentDock task.
+    Result produced by running an AisoFlow task.
     """
 
     diff: str

@@ -13,7 +13,7 @@ class WorkspaceError(Exception):
 
 class WorkspaceManager:
     """
-    Manages local isolated workspaces for AgentDock tasks.
+    Manages local isolated workspaces for AisoFlow tasks.
 
     Each task gets its own folder under the configured workspaces directory.
     The repository will later be cloned inside that folder.

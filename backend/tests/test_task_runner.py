@@ -53,7 +53,7 @@ class TaskRunnerTests(unittest.TestCase):
             )
 
             self.assertIn("src/App.tsx", result.diff)
-            self.assertIn("TODO(AgentDock)", result.diff)
+            self.assertIn("TODO(AisoFlow)", result.diff)
             self.assertEqual(
                 [changed_file.path for changed_file in result.changed_files],
                 ["src/App.tsx"],
@@ -62,7 +62,7 @@ class TaskRunnerTests(unittest.TestCase):
             workspace_repo = settings.workspace_root / "task_target" / "repo"
             self.assertFalse((workspace_repo / "AGENTDOCK_TASK.md").exists())
             self.assertIn(
-                "TODO(AgentDock)",
+                "TODO(AisoFlow)",
                 (workspace_repo / "src/App.tsx").read_text(encoding="utf-8"),
             )
             self.assertEqual(
@@ -88,7 +88,7 @@ class TaskRunnerTests(unittest.TestCase):
 
             self.assertIn("README.md", result.diff)
             self.assertIn(
-                "> TODO(AgentDock): AgentDock development note:",
+                "> TODO(AisoFlow): AisoFlow development note:",
                 result.diff,
             )
             self.assertEqual(
@@ -121,7 +121,7 @@ class TaskRunnerTests(unittest.TestCase):
 
             self.assertIn("src/styles.css", result.diff)
             self.assertIn(
-                "/* TODO(AgentDock): AgentDock development note:",
+                "/* TODO(AisoFlow): AisoFlow development note:",
                 result.diff,
             )
             self.assertEqual(
@@ -240,8 +240,8 @@ class TaskRunnerTests(unittest.TestCase):
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch="main")
         with repo.config_writer() as config:
-            config.set_value("user", "name", "AgentDock Tests")
-            config.set_value("user", "email", "agentdock-tests@example.local")
+            config.set_value("user", "name", "AisoFlow Tests")
+            config.set_value("user", "email", "aisoflow-tests@example.local")
         (repo_path / "README.md").write_text("initial\n", encoding="utf-8")
         src_dir = repo_path / "src"
         src_dir.mkdir()

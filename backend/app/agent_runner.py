@@ -137,7 +137,7 @@ class LocalRunner(AgentProviderBase):
 
     def _validate_repo_path(self, repo_path: Path) -> Path:
         """
-        Keep local commands constrained to AgentDock task workspaces.
+        Keep local commands constrained to AisoFlow task workspaces.
         """
 
         workspace_root = self.settings.workspace_root.resolve()
@@ -332,7 +332,7 @@ class CodexCliProvider(AgentProviderBase):
             )
 
         return (
-            "You are running inside an AgentDock task workspace.\n"
+            "You are running inside an AisoFlow task workspace.\n"
             "Leave all changes as working tree edits for git diff review.\n"
             "Do not commit, push, create branches, open pull requests, or run destructive git commands.\n\n"
             f"{target_context}\n"

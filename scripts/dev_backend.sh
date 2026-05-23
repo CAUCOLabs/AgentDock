@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# AgentDock backend development server
+# AisoFlow backend development server
 # Always runs uvicorn through the backend virtual environment.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +21,7 @@ fi
 
 source .venv/bin/activate
 
-echo "Starting AgentDock backend..."
+echo "Starting AisoFlow backend..."
 echo "Python: $(which python)"
 echo "Version: $(python --version)"
 

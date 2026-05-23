@@ -1,5 +1,5 @@
 # =========================================
-# AgentDock .gitignore
+# AisoFlow .gitignore
 # Python / FastAPI / Node / Expo / macOS
 # =========================================
 
@@ -136,7 +136,7 @@ docker-data/
 *.db-journal
 *.sqlite-journal
 
-# AgentDock runtime artifacts
+# AisoFlow runtime artifacts
 .agentdock/
 workspaces/
 task-runs/

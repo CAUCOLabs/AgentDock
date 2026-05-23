@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class TaskStatus(str, Enum):
     """
-    Lifecycle states for an AgentDock task.
+    Lifecycle states for an AisoFlow task.
     """
 
     queued = "queued"

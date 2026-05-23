@@ -72,7 +72,7 @@ class PromptAssistantCredentialStore:
     """
     SQLite-backed server-side credential storage for Prompt Assistant providers.
 
-    Keys are intentionally isolated from task logs and API responses. AgentDock
+    Keys are intentionally isolated from task logs and API responses. AisoFlow
     does not currently have a general encryption layer, so callers must never
     expose raw credential rows outside this class.
     """
