@@ -30,8 +30,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "c644e559-638f-4ed4-9f55-5593036deda5"
+        "projectId": "2ea173aa-f58c-4eb4-9bec-3d3de515310b"
       }
-    }
+    },
+    "owner": "mestizo"
   }
 }
