@@ -1857,7 +1857,11 @@ function App() {
                 disabled={!canConnectCodex || connectingProviderId === 'codex'}
                 onClick={() => void connectAgentProvider('codex', 'chatgpt')}
               >
-                Sign in with ChatGPT
+                {connectingProviderId === 'codex'
+                  ? 'Connecting...'
+                  : canConnectCodex
+                    ? 'Connect Codex'
+                    : 'Codex not configured'}
               </button>
             )}
           </div>
@@ -1904,7 +1908,11 @@ function App() {
           )}
 
           {!hasConnectedProvider && (
-            <p className="provider-mode-note">Connect Codex before launching tasks.</p>
+            <p className="provider-mode-note">
+              {canConnectCodex
+                ? 'Connect Codex before launching tasks.'
+                : 'Codex requires backend configuration before it can run tasks.'}
+            </p>
           )}
         </section>
 
