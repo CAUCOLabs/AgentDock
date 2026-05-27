@@ -2,6 +2,7 @@
   "expo": {
     "name": "AisoFlow",
     "slug": "aisoflow",
+    "scheme": "aisoflow",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -33,6 +34,9 @@
         "projectId": "2ea173aa-f58c-4eb4-9bec-3d3de515310b"
       }
     },
-    "owner": "mestizo"
+    "owner": "mestizo",
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }

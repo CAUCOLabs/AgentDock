@@ -606,9 +606,9 @@ def start_codex_account_flow(settings: Settings) -> AgentProviderAuthFlowRespons
         device_code=flow.get("device_code"),
         user_code=flow.get("user_code"),
         instructions=[
-            "Open the verification URL.",
-            "Enter the code if prompted.",
-            "Return to AisoFlow and check the connection.",
+            "Open the verification URL on your phone.",
+            "Enter the one-time code if prompted.",
+            "Return to AisoFlow and tap Check connection.",
         ],
         metadata=metadata,
     )
@@ -910,7 +910,7 @@ def _start_codex_device_auth(settings: Settings) -> dict[str, str]:
 
     try:
         process = subprocess.Popen(
-            [*command, "login"],
+            [*command, "login", "--device-auth"],
             cwd=settings.workspace_root,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -933,8 +933,11 @@ def _start_codex_device_auth(settings: Settings) -> dict[str, str]:
         )
 
     if not parsed.get("verification_url"):
+        output = _redact_secret_text("\n".join(lines)).strip() or "<no output>"
+        logger.warning("Unable to parse Codex device authentication output: %s", output)
         raise AgentProviderError(
-            "Codex did not return an authentication URL. Update the Codex CLI and try again."
+            "Codex did not return a device authentication URL. "
+            f"Update the Codex CLI and try again. CLI output: {output}"
         )
 
     return parsed
@@ -974,7 +977,9 @@ def _read_initial_process_output(
 
         lines.append(item)
         parsed = parse_codex_device_auth_output("\n".join(lines))
-        if parsed.get("verification_url"):
+        if parsed.get("verification_url") and (
+            parsed.get("user_code") or parsed.get("device_code")
+        ):
             break
 
     return lines
@@ -984,14 +989,15 @@ def parse_codex_device_auth_output(output: str) -> dict[str, str]:
     verification_url = _first_match(
         output,
         [
-            r"https?://[^\s'\"<>]+",
+            r"(?im)^\s*(?:visit|open)\s*:\s*(https://[^\s'\"<>]+)",
+            r"https://[^\s'\"<>]+",
         ],
     )
     user_code = _first_match(
         output,
         [
-            r"(?i)user\s+code\s*[:=]\s*([A-Z0-9][A-Z0-9\-]{3,})",
-            r"(?i)enter\s+(?:the\s+)?code\s+([A-Z0-9][A-Z0-9\-]{3,})",
+            r"(?i)\buser\s+code\s*[:=]\s*([A-Z0-9][A-Z0-9\-]{3,})",
+            r"(?i)\benter\s+(?:the\s+)?code\s*[:=]?\s*([A-Z0-9][A-Z0-9\-]{3,})",
             r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b",
         ],
     )

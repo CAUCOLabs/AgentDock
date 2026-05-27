@@ -82,17 +82,33 @@ async function request<T>(path: string, init?: AisoFlowRequestInit): Promise<T> 
   reportApiConnectivity({ status: "online", error: null });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      data = null;
+    }
+  }
 
   if (!response.ok) {
+    const errorData = data as {
+      detail?: string | { error?: string };
+      error?: string;
+      message?: string;
+    } | null;
     const detail =
-      typeof data?.detail === "string"
-        ? data.detail
-        : typeof data?.detail?.error === "string"
-          ? data.detail.error
-          : typeof data?.error === "string"
-            ? data.error
-            : response.statusText;
+      typeof errorData?.detail === "string"
+        ? errorData.detail
+        : typeof errorData?.detail?.error === "string"
+          ? errorData.detail.error
+          : typeof errorData?.error === "string"
+            ? errorData.error
+            : typeof errorData?.message === "string"
+              ? errorData.message
+              : text
+                ? text
+                : response.statusText || "Request failed";
     throw new Error(`${response.status} ${detail}`);
   }
 

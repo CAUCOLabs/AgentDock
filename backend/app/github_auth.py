@@ -1,11 +1,13 @@
+import hashlib
 import secrets
 import sqlite3
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -16,6 +18,8 @@ from app.models import (
     GitHubRepositorySummary,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class GitHubAuthError(Exception):
     """
@@ -24,6 +28,37 @@ class GitHubAuthError(Exception):
 
 
 GITHUB_APP_NOT_CONFIGURED = "GitHub App is not configured"
+GITHUB_APP_SESSION_MISSING = (
+    "GitHub App session is missing. Reconnect GitHub on this device "
+    "if the app is already installed."
+)
+GITHUB_APP_INSTALLATION_REQUIRED = (
+    "GitHub App installation is required. Complete the installation in GitHub, "
+    "then return to AisoFlow."
+)
+
+
+def github_auth_correlation_id(value: str | None) -> str:
+    if not value:
+        return "missing"
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def log_safe_url(url: str) -> str:
+    split_url = urlsplit(url)
+    redacted_query = urlencode(
+        [(key, "[REDACTED]") for key, _value in parse_qsl(split_url.query)]
+    )
+    return urlunsplit(
+        (
+            split_url.scheme,
+            split_url.netloc,
+            split_url.path,
+            redacted_query,
+            split_url.fragment,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -184,6 +219,35 @@ class GitHubAuthStore:
                 )
 
         return str(row["session_id"])
+
+    def get_pending_session_id(self, state: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT session_id
+                FROM github_oauth_states
+                WHERE state = ? AND consumed_at IS NULL
+                """,
+                (state,),
+            ).fetchone()
+
+        if row is None:
+            raise GitHubAuthError("Invalid or expired GitHub auth state.")
+
+        return str(row["session_id"])
+
+    def has_pending_session(self, session_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM github_oauth_states
+                WHERE session_id = ? AND consumed_at IS NULL
+                """,
+                (session_id,),
+            ).fetchone()
+
+        return row is not None
 
     def save_authenticated_session(
         self,
@@ -464,10 +528,27 @@ class GitHubAuthService:
         install_url = self._app_install_url()
 
         session_id, state = self.store.create_pending_session()
-        separator = "&" if "?" in install_url else "?"
-        auth_url = (
-            f"{install_url}"
-            f"{separator}{urlencode({'state': state})}"
+        split_url = urlsplit(install_url)
+        query_params = [
+            (key, value)
+            for key, value in parse_qsl(split_url.query, keep_blank_values=True)
+            if key != "state"
+        ]
+        query_params.append(("state", state))
+        auth_url = urlunsplit(
+            (
+                split_url.scheme,
+                split_url.netloc,
+                split_url.path,
+                urlencode(query_params),
+                split_url.fragment,
+            )
+        )
+        logger.info(
+            "GitHub App installation started: session_id=%s state_id=%s auth_url=%s",
+            github_auth_correlation_id(session_id),
+            github_auth_correlation_id(state),
+            log_safe_url(auth_url),
         )
 
         return auth_url, session_id, state
@@ -477,7 +558,23 @@ class GitHubAuthService:
         installation_id: int,
         state: str,
     ) -> GitHubInstallationResponse:
-        session_id = self.store.consume_state(state)
+        state_id = github_auth_correlation_id(state)
+        try:
+            session_id = self.store.get_pending_session_id(state)
+        except GitHubAuthError:
+            logger.warning(
+                "GitHub App callback state lookup failed: installation_id=%s state_id=%s",
+                installation_id,
+                state_id,
+            )
+            raise
+
+        logger.info(
+            "GitHub App callback state matched: installation_id=%s state_id=%s session_id=%s",
+            installation_id,
+            state_id,
+            github_auth_correlation_id(session_id),
+        )
         installation_data = await self.get_app_installation_metadata(installation_id)
         installation_token = await self.create_installation_token(installation_id)
         repositories = await self._list_installation_repository_data(installation_token)
@@ -487,8 +584,12 @@ class GitHubAuthService:
             if item.get("full_name")
         ]
         account = installation_data.get("account") or {}
+        consumed_session_id = self.store.consume_state(state)
 
-        return self.store.save_app_installation(
+        if consumed_session_id != session_id:
+            raise GitHubAuthError("Invalid or expired GitHub auth state.")
+
+        installation = self.store.save_app_installation(
             session_id=session_id,
             installation_id=installation_id,
             account_login=str(account.get("login") or "unknown"),
@@ -499,18 +600,28 @@ class GitHubAuthService:
                 for key, value in (installation_data.get("permissions") or {}).items()
             },
         )
+        logger.info(
+            "GitHub App installation linked: installation_id=%s state_id=%s session_id=%s",
+            installation_id,
+            state_id,
+            github_auth_correlation_id(session_id),
+        )
+        return installation
 
     def get_app_session(
         self,
         session_id: str | None,
     ) -> StoredGitHubAppSession:
         if not session_id:
-            raise GitHubAuthError("GitHub App installation is required.")
+            raise GitHubAuthError(GITHUB_APP_SESSION_MISSING)
 
         session = self.store.get_app_session(session_id)
 
         if session is None:
-            raise GitHubAuthError("GitHub App installation is required.")
+            if self.store.has_pending_session(session_id):
+                raise GitHubAuthError(GITHUB_APP_INSTALLATION_REQUIRED)
+
+            raise GitHubAuthError(GITHUB_APP_SESSION_MISSING)
 
         return session
 

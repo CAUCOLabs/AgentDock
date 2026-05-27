@@ -12,6 +12,7 @@ from app.agent_providers import (
     CODEX_API_KEY_AUTH_MODE,
     CODEX_CHATGPT_OAUTH_AUTH_MODE,
     AgentProviderConnectionStore,
+    AgentProviderError,
     connect_provider,
     parse_codex_device_auth_output,
     provider_metadata,
@@ -192,29 +193,46 @@ class AgentProviderStatusTests(unittest.TestCase):
             self.assertIsNone(flow.command)
             self.assertEqual(flow.verification_url, "https://auth.openai.com/device")
             self.assertEqual(flow.user_code, "ABCD-EFGH")
+            self.assertEqual(
+                flow.instructions,
+                [
+                    "Open the verification URL on your phone.",
+                    "Enter the one-time code if prompted.",
+                    "Return to AisoFlow and tap Check connection.",
+                ],
+            )
             self.assertNotIn("codex", AgentProviderConnectionStore(settings).connected_auth_modes())
             self.assertEqual(flow.metadata.connection.value, "disconnected")
 
     def test_codex_device_auth_output_parsing(self) -> None:
         parsed = parse_codex_device_auth_output(
-            "Open https://auth.openai.com/device and enter code ABCD-EFGH\n"
+            "Visit: https://auth.openai.com/device\n"
+            "Enter code: ABCD-1234\n"
             "device code: device-secret"
         )
 
         self.assertEqual(parsed["verification_url"], "https://auth.openai.com/device")
-        self.assertEqual(parsed["user_code"], "ABCD-EFGH")
+        self.assertEqual(parsed["user_code"], "ABCD-1234")
         self.assertEqual(parsed["device_code"], "device-secret")
 
-    def test_codex_auth_output_strips_callback_tokens(self) -> None:
-        parsed = parse_codex_device_auth_output(
-            "Signed in at http://localhost:1455/success?id_token=secret-token&state=ok"
+    def test_codex_device_auth_parser_supports_open_and_https_fallback(self) -> None:
+        opened = parse_codex_device_auth_output(
+            "Open: https://auth.openai.com/device\nUser code: WXYZ-5678"
+        )
+        fallback = parse_codex_device_auth_output(
+            "Continue at https://auth.openai.com/device\nEnter code: EFGH-9012"
+        )
+        localhost = parse_codex_device_auth_output(
+            "Signed in at http://localhost:1455/success?state=ok"
         )
 
-        self.assertEqual(parsed["verification_url"], "http://localhost:1455/success?state=ok")
-        self.assertNotIn("secret-token", parsed["verification_url"])
-        self.assertNotIn("id_token", parsed["verification_url"])
+        self.assertEqual(opened["verification_url"], "https://auth.openai.com/device")
+        self.assertEqual(opened["user_code"], "WXYZ-5678")
+        self.assertEqual(fallback["verification_url"], "https://auth.openai.com/device")
+        self.assertEqual(fallback["user_code"], "EFGH-9012")
+        self.assertNotIn("verification_url", localhost)
 
-    def test_codex_account_flow_starts_official_login_process(self) -> None:
+    def test_codex_account_flow_starts_device_auth_login_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), codex_enabled=True)
             process = Mock()
@@ -226,13 +244,59 @@ class AgentProviderStatusTests(unittest.TestCase):
                 patch("app.agent_providers.subprocess.Popen", return_value=process) as popen,
                 patch(
                     "app.agent_providers._read_initial_process_output",
-                    return_value=["Open https://auth.openai.com/oauth/start"],
+                    return_value=[
+                        "Visit: https://auth.openai.com/device",
+                        "Enter code: ABCD-1234",
+                    ],
                 ),
             ):
                 flow = agent_providers._start_codex_device_auth(settings)
 
-            self.assertEqual(flow["verification_url"], "https://auth.openai.com/oauth/start")
-            self.assertEqual(popen.call_args.args[0], ["codex", "login"])
+            self.assertEqual(flow["verification_url"], "https://auth.openai.com/device")
+            self.assertEqual(flow["user_code"], "ABCD-1234")
+            self.assertEqual(popen.call_args.args[0], ["codex", "login", "--device-auth"])
+
+    def test_codex_device_auth_reader_collects_url_and_code_from_separate_lines(self) -> None:
+        process = Mock()
+        process.poll.return_value = None
+        process.stdout = iter(
+            [
+                "Visit: https://auth.openai.com/device\n",
+                "Enter code: ABCD-1234\n",
+                "Not needed after code\n",
+            ]
+        )
+
+        lines = agent_providers._read_initial_process_output(process, timeout_seconds=1)
+
+        self.assertEqual(
+            lines,
+            ["Visit: https://auth.openai.com/device", "Enter code: ABCD-1234"],
+        )
+
+    def test_codex_device_auth_parse_failure_reports_redacted_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir), codex_enabled=True)
+            process = Mock()
+            process.poll.return_value = None
+            process.stdout = None
+
+            with (
+                patch("app.agent_providers.shutil.which", return_value="/usr/bin/codex"),
+                patch("app.agent_providers.subprocess.Popen", return_value=process),
+                patch(
+                    "app.agent_providers._read_initial_process_output",
+                    return_value=["Authentication error: token=secret-token"],
+                ),
+                self.assertLogs("app.agent_providers", level="WARNING") as logs,
+            ):
+                with self.assertRaises(AgentProviderError) as error:
+                    agent_providers._start_codex_device_auth(settings)
+
+            self.assertIn("[REDACTED]", str(error.exception))
+            self.assertNotIn("secret-token", str(error.exception))
+            self.assertIn("[REDACTED]", "\n".join(logs.output))
+            self.assertNotIn("secret-token", "\n".join(logs.output))
 
     def test_successful_codex_verification_marks_connected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

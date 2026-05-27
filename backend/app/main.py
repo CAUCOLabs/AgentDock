@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 import logging
 import re
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.agent_providers import (
     AgentProviderError,
@@ -23,6 +24,7 @@ from app.github_auth import (
     GitHubAuthError,
     GitHubAuthService,
     GitHubAuthStore,
+    github_auth_correlation_id,
 )
 from app.models import (
     AgentProviderStatusResponse,
@@ -75,6 +77,7 @@ from app.task_store import TaskStore
 from app.workspace import WorkspaceError, WorkspaceManager
 
 logger = logging.getLogger(__name__)
+GITHUB_APP_CALLBACK_ERROR_MESSAGE = "Unable to connect GitHub. Please try again."
 
 app = FastAPI(
     title="AisoFlow API",
@@ -85,6 +88,7 @@ app = FastAPI(
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_\-]{4,}"),
     re.compile(r"(?i)(authorization:\s*bearer\s+)[^\s]+"),
     re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
@@ -328,6 +332,25 @@ def github_app_http_error(exc: GitHubAuthError) -> HTTPException:
     )
 
 
+def github_app_mobile_callback_url(
+    settings: Settings,
+    *,
+    state: str | None,
+    status_value: str,
+    installation_id: int | None = None,
+    message: str | None = None,
+) -> str:
+    query_params = [("state", state or ""), ("status", status_value)]
+
+    if installation_id is not None:
+        query_params.append(("installation_id", str(installation_id)))
+
+    if message is not None:
+        query_params.append(("message", message))
+
+    return f"{settings.github_app_mobile_callback_url}?{urlencode(query_params)}"
+
+
 @app.get("/auth/github-app/start", response_model=GitHubAuthStartResponse)
 @app.post("/auth/github-app/start", response_model=GitHubAuthStartResponse)
 def start_github_app_auth(
@@ -345,26 +368,77 @@ def start_github_app_auth(
     )
 
 
-@app.get("/auth/github-app/callback", response_class=HTMLResponse)
+@app.get("/auth/github-app/callback", response_class=RedirectResponse)
 async def complete_github_app_auth(
-    installation_id: int,
-    state: str,
+    installation_id: int | None = None,
+    state: str | None = None,
+    setup_action: str | None = None,
+    settings: Settings = Depends(get_settings),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
-) -> str:
+) -> RedirectResponse:
+    safe_setup_action = (
+        setup_action
+        if setup_action in {"install", "update"}
+        else "missing" if setup_action is None else "other"
+    )
+    logger.info(
+        "GitHub App callback received: installation_id=%s setup_action=%s state_id=%s",
+        installation_id if installation_id is not None else "missing",
+        safe_setup_action,
+        github_auth_correlation_id(state),
+    )
+
+    if installation_id is None or not state:
+        logger.warning(
+            "GitHub App callback cannot link installation: installation_id=%s state_id=%s",
+            installation_id if installation_id is not None else "missing",
+            github_auth_correlation_id(state),
+        )
+        return RedirectResponse(
+            github_app_mobile_callback_url(
+                settings,
+                state=state,
+                status_value="error",
+                message=GITHUB_APP_CALLBACK_ERROR_MESSAGE,
+            ),
+            status_code=status.HTTP_302_FOUND,
+        )
+
     try:
         installation = await auth_service.complete_app_callback(
             installation_id=installation_id,
             state=state,
         )
     except GitHubAuthError as exc:
-        raise github_app_http_error(exc) from exc
+        logger.warning(
+            "GitHub App callback status=error installation_id=%s state_id=%s error=%s",
+            installation_id,
+            github_auth_correlation_id(state),
+            _redact_error_message(str(exc)),
+        )
+        return RedirectResponse(
+            github_app_mobile_callback_url(
+                settings,
+                state=state,
+                status_value="error",
+                message=GITHUB_APP_CALLBACK_ERROR_MESSAGE,
+            ),
+            status_code=status.HTTP_302_FOUND,
+        )
 
-    return (
-        "<!doctype html><html><body>"
-        "<h1>GitHub App installed</h1>"
-        f"<p>Connected {installation.account_login}. "
-        "You can return to AisoFlow.</p>"
-        "</body></html>"
+    logger.info(
+        "GitHub App callback status=success installation_id=%s state_id=%s",
+        installation.installation_id,
+        github_auth_correlation_id(state),
+    )
+    return RedirectResponse(
+        github_app_mobile_callback_url(
+            settings,
+            state=state,
+            status_value="success",
+            installation_id=installation.installation_id,
+        ),
+        status_code=status.HTTP_302_FOUND,
     )
 
 
@@ -387,19 +461,14 @@ def list_github_app_installations(
     x_agentdock_session: str | None = Header(default=None),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> GitHubInstallationsResponse:
-    if x_agentdock_session:
-        try:
-            return GitHubInstallationsResponse(
-                installations=[
-                    auth_service.get_app_session(x_agentdock_session).installation
-                ]
-            )
-        except GitHubAuthError as exc:
-            raise github_app_http_error(exc) from exc
-
-    return GitHubInstallationsResponse(
-        installations=auth_service.list_app_installations()
-    )
+    try:
+        return GitHubInstallationsResponse(
+            installations=[
+                auth_service.get_app_session(x_agentdock_session).installation
+            ]
+        )
+    except GitHubAuthError as exc:
+        raise github_app_http_error(exc) from exc
 
 
 @app.get("/auth/github-app/repos", response_model=GitHubRepositoriesResponse)

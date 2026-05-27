@@ -1,5 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import * as Clipboard from "expo-clipboard";
+import * as ExpoLinking from "expo-linking";
+import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -97,6 +99,15 @@ const promptPlaceholder =
   "Describe the task. Examples:\n- Create project scaffold\n- Build desktop app structure\n- Implement authentication flow\n- Refactor backend architecture\n- Create REST API and models";
 
 const privacyPolicyUrl = "https://aisosu.fi/privacy-policy.html";
+const githubSessionStorageKey = "aisoflow.githubSessionId";
+const githubPendingStateStorageKey = "aisoflow.githubPendingState";
+const githubProductionCallbackUrl = "aisoflow://auth/github/callback";
+const githubExpoCallbackUrl = ExpoLinking.createURL("/auth/github/callback");
+const githubCallbackUrls = new Set([githubProductionCallbackUrl, githubExpoCallbackUrl]);
+
+function shortAuthValue(value: string | null) {
+  return value ? `${value.slice(0, 8)}...` : "missing";
+}
 
 const scopeOptions: Array<{
   value: ChangeScope;
@@ -944,7 +955,54 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (__DEV__) {
+      console.log("[AisoFlow] API_BASE_URL", API_BASE_URL);
+      console.log("[GitHub] expected callback URLs", Array.from(githubCallbackUrls));
+    }
     void loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    void Promise.all([
+      SecureStore.getItemAsync(githubSessionStorageKey),
+      SecureStore.getItemAsync(githubPendingStateStorageKey),
+    ]).then(([sessionId, pendingState]) => {
+      if (!active || !sessionId) {
+        return;
+      }
+      if (pendingState) {
+        if (__DEV__) {
+          console.log("[GitHub] GitHub pending auth found; waiting for callback");
+        }
+        return;
+      }
+      if (__DEV__) {
+        console.log("[GitHub] stored session loaded", shortAuthValue(sessionId));
+      }
+      setGithubSessionId(sessionId);
+      void handleRefreshGitHub(sessionId);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const processCallback = (url: string | null) => {
+      if (url) {
+        void handleGitHubCallbackUrl(url);
+      }
+    };
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      processCallback(url);
+    });
+
+    void Linking.getInitialURL().then(processCallback);
+
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
@@ -1458,7 +1516,14 @@ export default function App() {
     setError(null);
     try {
       const result = await startGitHubAuth();
-      setGithubSessionId(result.session_id);
+      await SecureStore.setItemAsync(githubSessionStorageKey, result.session_id);
+      await SecureStore.setItemAsync(githubPendingStateStorageKey, result.state);
+      if (__DEV__) {
+        console.log("[GitHub] auth started", {
+          session: shortAuthValue(result.session_id),
+          state: shortAuthValue(result.state),
+        });
+      }
       await Linking.openURL(result.auth_url);
     } catch (connectError) {
       setError(connectError instanceof Error ? connectError.message : "Unable to start GitHub login.");
@@ -1467,20 +1532,86 @@ export default function App() {
     }
   }
 
-  async function handleRefreshGitHub() {
-    if (!githubSessionId) {
+  async function handleGitHubCallbackUrl(url: string) {
+    let callbackUrl: URL;
+
+    try {
+      callbackUrl = new URL(url);
+    } catch {
+      return;
+    }
+
+    const callbackBaseUrl = `${callbackUrl.protocol}//${callbackUrl.host}${callbackUrl.pathname}`;
+    if (!githubCallbackUrls.has(callbackBaseUrl)) {
+      return;
+    }
+
+    const state = callbackUrl.searchParams.get("state");
+    const status = callbackUrl.searchParams.get("status");
+    const installationId = callbackUrl.searchParams.get("installation_id");
+    if (__DEV__) {
+      console.log("[GitHub] callback received", {
+        status,
+        state: shortAuthValue(state),
+        hasInstallationId: Boolean(installationId),
+      });
+    }
+    const [expectedState, sessionId] = await Promise.all([
+      SecureStore.getItemAsync(githubPendingStateStorageKey),
+      SecureStore.getItemAsync(githubSessionStorageKey),
+    ]);
+
+    if (!state || !expectedState || state !== expectedState || !sessionId) {
+      await clearGitHubSession("GitHub connection could not be verified. Please connect again.");
+      return;
+    }
+
+    await SecureStore.deleteItemAsync(githubPendingStateStorageKey).catch(() => undefined);
+
+    if (status !== "success" || !installationId || !/^\d+$/.test(installationId)) {
+      await clearGitHubSession("Unable to connect GitHub. Please try again.");
+      return;
+    }
+
+    setGithubSessionId(sessionId);
+    await handleRefreshGitHub(sessionId);
+  }
+
+  async function clearGitHubSession(reason?: string) {
+    await SecureStore.deleteItemAsync(githubSessionStorageKey).catch(() => undefined);
+    await SecureStore.deleteItemAsync(githubPendingStateStorageKey).catch(() => undefined);
+    setGithubSessionId(null);
+    setGithubAccount(null);
+    setGithubInstallation(null);
+    setGithubRepos([]);
+    if (__DEV__) {
+      console.log("[GitHub] session cleared", reason ?? "user disconnected");
+    }
+    if (reason) {
+      setError(reason);
+    }
+  }
+
+  async function handleRefreshGitHub(sessionId = githubSessionId) {
+    if (!sessionId) {
       return;
     }
 
     setIsLoadingGithubRepos(true);
     setError(null);
     try {
-      const installations = await getGitHubInstallations(githubSessionId);
-      const repos = await getGitHubRepos(githubSessionId);
+      const installations = await getGitHubInstallations(sessionId);
+      const repos = await getGitHubRepos(sessionId);
       setGithubInstallation(installations.installations[0] ?? null);
       setGithubRepos(repos.repositories);
     } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : "Unable to load GitHub account.");
+      const message =
+        refreshError instanceof Error ? refreshError.message : "Unable to load GitHub account.";
+      if (message.includes("401") || message.toLowerCase().includes("unauthorized")) {
+        await clearGitHubSession("GitHub session expired. Please connect again.");
+        return;
+      }
+      setError(message);
     } finally {
       setIsLoadingGithubRepos(false);
     }
@@ -1488,10 +1619,7 @@ export default function App() {
 
   async function handleLogoutGitHub() {
     await logout(githubSessionId).catch(() => undefined);
-    setGithubSessionId(null);
-    setGithubAccount(null);
-    setGithubInstallation(null);
-    setGithubRepos([]);
+    await clearGitHubSession();
   }
 
   function handleSelectGitHubRepo(repo: GitHubRepository) {
@@ -1743,11 +1871,29 @@ export default function App() {
                 </>
               ) : (
                 <Pressable
-                  disabled={!canConnectCodex || connectingProviderId === "codex"}
-                  onPress={() => void handleConnectAgentProvider("codex", "chatgpt")}
+                  disabled={
+                    codexReadiness === "not_configured" ||
+                    codexReadiness === "unavailable" ||
+                    !canConnectCodex ||
+                    connectingProviderId === "codex"
+                  }
+                  onPress={() => {
+                    if (
+                      codexReadiness === "not_configured" ||
+                      codexReadiness === "unavailable" ||
+                      !canConnectCodex
+                    ) {
+                      return;
+                    }
+                    void handleConnectAgentProvider("codex", "chatgpt");
+                  }}
                   style={({ pressed }) => [
                     styles.smallButton,
-                    (!canConnectCodex || connectingProviderId === "codex") && styles.disabledButton,
+                    (codexReadiness === "not_configured" ||
+                      codexReadiness === "unavailable" ||
+                      !canConnectCodex ||
+                      connectingProviderId === "codex") &&
+                      styles.disabledButton,
                     pressed && styles.pressed,
                   ]}
                 >

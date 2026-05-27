@@ -151,8 +151,52 @@ GITHUB_APP_CLIENT_ID=
 GITHUB_APP_CLIENT_SECRET=
 GITHUB_APP_INSTALL_URL=
 GITHUB_APP_CALLBACK_URL=http://127.0.0.1:8000/auth/github-app/callback
+GITHUB_APP_MOBILE_CALLBACK_URL=aisoflow://auth/github/callback
 GITHUB_PR_MERGE_METHOD=squash
 DELETE_BRANCH_AFTER_MERGE=false
+```
+
+Configure the post-install return URL in the GitHub App dashboard:
+
+1. Open **Settings > Developer settings > GitHub Apps > your app**.
+2. If **Request user authorization (OAuth) during installation** is disabled,
+   set **Post installation > Setup URL** exactly to `GITHUB_APP_CALLBACK_URL`.
+3. If **Request user authorization (OAuth) during installation** is enabled,
+   GitHub disables the Setup URL; set **Callback URL** exactly to
+   `GITHUB_APP_CALLBACK_URL` instead.
+4. For local mobile testing, set `GITHUB_APP_CALLBACK_URL` to the backend URL
+   reachable from the device, for example
+   `http://<LAN-IP>:8010/auth/github-app/callback`.
+5. For production, use
+   `https://api.aisosu.fi/auth/github-app/callback`.
+
+GitHub must return to `/auth/github-app/callback` with `installation_id` and
+`state`; if the browser returns to `/`, the app dashboard return URL is not
+pointing at the backend callback and AisoFlow cannot bind the installation to
+the pending mobile session.
+
+The backend redirects from that GitHub callback back into the mobile app. For
+Expo Go on a physical device, configure both reachable LAN URLs:
+
+```env
+# backend/.env
+GITHUB_APP_CALLBACK_URL=http://<MAC_LAN_IP>:8010/auth/github-app/callback
+GITHUB_APP_MOBILE_CALLBACK_URL=exp://<MAC_LAN_IP>:8081/--/auth/github/callback
+
+# mobile/.env
+EXPO_PUBLIC_AISOFLOW_API_URL=http://<MAC_LAN_IP>:8010
+```
+
+For a production build, use the registered `aisoflow` scheme and production
+API endpoint:
+
+```env
+# backend/.env
+GITHUB_APP_CALLBACK_URL=https://api.aisosu.fi/auth/github-app/callback
+GITHUB_APP_MOBILE_CALLBACK_URL=aisoflow://auth/github/callback
+
+# mobile/.env
+EXPO_PUBLIC_AISOFLOW_API_URL=https://api.aisosu.fi
 ```
 
 For local development, the backend also supports fallback token or OAuth configuration:

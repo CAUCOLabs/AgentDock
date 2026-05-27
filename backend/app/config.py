@@ -62,6 +62,10 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8000/auth/github-app/callback",
         alias="GITHUB_APP_CALLBACK_URL",
     )
+    github_app_mobile_callback_url: str = Field(
+        default="aisoflow://auth/github/callback",
+        alias="GITHUB_APP_MOBILE_CALLBACK_URL",
+    )
     github_pr_merge_method: str = Field(default="squash", alias="GITHUB_PR_MERGE_METHOD")
     delete_branch_after_merge: bool = Field(
         default=False,
