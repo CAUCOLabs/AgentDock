@@ -1751,7 +1751,13 @@ export default function App() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.smallButtonText}>Sign in with ChatGPT</Text>
+                  <Text style={styles.smallButtonText}>
+                    {connectingProviderId === "codex"
+                      ? "Connecting..."
+                      : canConnectCodex
+                        ? "Connect Codex"
+                        : "Codex not configured"}
+                  </Text>
                 </Pressable>
               )}
             </View>
@@ -1798,7 +1804,11 @@ export default function App() {
               </View>
             ) : null}
             {!hasConnectedProvider ? (
-              <Text style={styles.providerModeNote}>Connect Codex before launching tasks.</Text>
+              <Text style={styles.providerModeNote}>
+                {canConnectCodex
+                  ? "Connect Codex before launching tasks."
+                  : "Codex runtime is not configured on the backend."}
+              </Text>
             ) : null}
           </View>
         </Section>
