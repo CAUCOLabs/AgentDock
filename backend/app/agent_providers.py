@@ -49,6 +49,7 @@ _SECRET_REDACTION_PATTERNS = [
     re.compile(r"(?i)((?:id_token|access_token|refresh_token)=)[^&\s]+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,;]+"),
 ]
+_ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 _DEVICE_AUTH_PROCESSES: dict[str, subprocess.Popen[str]] = {}
 _DEVICE_AUTH_STARTED_AT: dict[str, float] = {}
@@ -595,14 +596,15 @@ def start_codex_account_flow(settings: Settings) -> AgentProviderAuthFlowRespons
         raise AgentProviderError(error)
 
     flow = _start_codex_device_auth(settings)
+    verification_url = _strip_ansi_escape_sequences(flow.get("verification_url", ""))
     metadata = next(provider for provider in provider_metadata(settings) if provider.id == "codex")
 
     return AgentProviderAuthFlowResponse(
         provider_id="codex",
         status="waiting_for_auth",
         message="Waiting for authorization.",
-        auth_url=flow.get("verification_url"),
-        verification_url=flow.get("verification_url"),
+        auth_url=verification_url,
+        verification_url=verification_url,
         device_code=flow.get("device_code"),
         user_code=flow.get("user_code"),
         instructions=[
@@ -924,16 +926,17 @@ def _start_codex_device_auth(settings: Settings) -> dict[str, str]:
     _DEVICE_AUTH_PROCESSES["codex"] = process
     _DEVICE_AUTH_STARTED_AT["codex"] = time.monotonic()
     lines = _read_initial_process_output(process, timeout_seconds=8)
-    parsed = parse_codex_device_auth_output("\n".join(lines))
+    output = _strip_ansi_escape_sequences("\n".join(lines))
+    parsed = parse_codex_device_auth_output(output)
 
     if process.poll() is not None and process.returncode not in (0, None):
-        output = _redact_secret_text("\n".join(lines)).strip()
+        output = _redact_secret_text(output).strip()
         raise AgentProviderError(
             f"Codex authentication failed to start. {output}".strip()
         )
 
     if not parsed.get("verification_url"):
-        output = _redact_secret_text("\n".join(lines)).strip() or "<no output>"
+        output = _redact_secret_text(output).strip() or "<no output>"
         logger.warning("Unable to parse Codex device authentication output: %s", output)
         raise AgentProviderError(
             "Codex did not return a device authentication URL. "
@@ -975,7 +978,7 @@ def _read_initial_process_output(
         if item is None:
             break
 
-        lines.append(item)
+        lines.append(_strip_ansi_escape_sequences(item))
         parsed = parse_codex_device_auth_output("\n".join(lines))
         if parsed.get("verification_url") and (
             parsed.get("user_code") or parsed.get("device_code")
@@ -986,6 +989,7 @@ def _read_initial_process_output(
 
 
 def parse_codex_device_auth_output(output: str) -> dict[str, str]:
+    output = _strip_ansi_escape_sequences(output)
     verification_url = _first_match(
         output,
         [
@@ -1019,6 +1023,10 @@ def parse_codex_device_auth_output(output: str) -> dict[str, str]:
         parsed["device_code"] = device_code
 
     return parsed
+
+
+def _strip_ansi_escape_sequences(output: str) -> str:
+    return _ANSI_ESCAPE_SEQUENCE_PATTERN.sub("", output)
 
 
 def _first_match(output: str, patterns: list[str]) -> str | None:

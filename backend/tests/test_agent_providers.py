@@ -232,6 +232,21 @@ class AgentProviderStatusTests(unittest.TestCase):
         self.assertEqual(fallback["user_code"], "EFGH-9012")
         self.assertNotIn("verification_url", localhost)
 
+    def test_codex_device_auth_parser_strips_ansi_escape_sequences(self) -> None:
+        parsed = parse_codex_device_auth_output(
+            "\x1b[32mVisit: https://auth.openai.com/codex/device\x1b[0m\n"
+            "\x1b[?25hEnter code: ABCD-1234\n"
+            "device code: device-secret\x1b[0m"
+        )
+
+        self.assertEqual(
+            parsed["verification_url"],
+            "https://auth.openai.com/codex/device",
+        )
+        self.assertEqual(parsed["user_code"], "ABCD-1234")
+        self.assertEqual(parsed["device_code"], "device-secret")
+        self.assertNotRegex(parsed["verification_url"], r"\x1b\[[0-?]*[ -/]*[@-~]")
+
     def test_codex_account_flow_starts_device_auth_login_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir), codex_enabled=True)
@@ -245,14 +260,17 @@ class AgentProviderStatusTests(unittest.TestCase):
                 patch(
                     "app.agent_providers._read_initial_process_output",
                     return_value=[
-                        "Visit: https://auth.openai.com/device",
+                        "Visit: https://auth.openai.com/codex/device\x1b[0m",
                         "Enter code: ABCD-1234",
                     ],
                 ),
             ):
                 flow = agent_providers._start_codex_device_auth(settings)
 
-            self.assertEqual(flow["verification_url"], "https://auth.openai.com/device")
+            self.assertEqual(
+                flow["verification_url"],
+                "https://auth.openai.com/codex/device",
+            )
             self.assertEqual(flow["user_code"], "ABCD-1234")
             self.assertEqual(popen.call_args.args[0], ["codex", "login", "--device-auth"])
 
@@ -646,7 +664,7 @@ class AgentProviderStatusTests(unittest.TestCase):
                     patch(
                         "app.agent_providers._start_codex_device_auth",
                         return_value={
-                            "verification_url": "https://auth.openai.com/device",
+                            "verification_url": "https://auth.openai.com/codex/device\x1b[0m",
                             "user_code": "ABCD-EFGH",
                         },
                     ),
@@ -662,7 +680,19 @@ class AgentProviderStatusTests(unittest.TestCase):
             payload = response.json()
             self.assertEqual(payload["status"], "waiting_for_auth")
             self.assertIsNone(payload["command"])
-            self.assertEqual(payload["verification_url"], "https://auth.openai.com/device")
+            self.assertEqual(
+                payload["auth_url"],
+                "https://auth.openai.com/codex/device",
+            )
+            self.assertEqual(
+                payload["verification_url"],
+                "https://auth.openai.com/codex/device",
+            )
+            self.assertNotRegex(payload["auth_url"], r"\x1b\[[0-?]*[ -/]*[@-~]")
+            self.assertNotRegex(
+                payload["verification_url"],
+                r"\x1b\[[0-?]*[ -/]*[@-~]",
+            )
             self.assertEqual(payload["user_code"], "ABCD-EFGH")
             self.assertEqual(payload["metadata"]["connection"], "disconnected")
             self.assertNotIn(
