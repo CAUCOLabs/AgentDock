@@ -109,6 +109,11 @@ function shortAuthValue(value: string | null) {
   return value ? `${value.slice(0, 8)}...` : "missing";
 }
 
+function isUnauthorizedError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("401") || message.toLowerCase().includes("unauthorized");
+}
+
 const scopeOptions: Array<{
   value: ChangeScope;
   label: string;
@@ -687,6 +692,8 @@ export default function App() {
   const [targetFile, setTargetFile] = useState("");
   const [changeScope, setChangeScope] = useState<ChangeScope>("only_selected_file");
   const [githubSessionId, setGithubSessionId] = useState<string | null>(null);
+  const [githubPendingAuth, setGithubPendingAuth] = useState(false);
+  const [githubPendingState, setGithubPendingState] = useState<string | null>(null);
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
   const [githubInstallation, setGithubInstallation] = useState<GitHubInstallation | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
@@ -751,7 +758,7 @@ export default function App() {
   );
   const connectedGithubLogin = githubInstallation?.account_login ?? githubAccount?.login ?? null;
   const isGithubConnected = Boolean(
-    connectedGithubLogin || githubSessionId || githubInstallation || githubAccount
+    !githubPendingAuth && (connectedGithubLogin || githubSessionId || githubInstallation || githubAccount)
   );
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
@@ -973,8 +980,14 @@ export default function App() {
         return;
       }
       if (pendingState) {
+        setGithubSessionId(sessionId);
+        setGithubPendingAuth(true);
+        setGithubPendingState(pendingState);
         if (__DEV__) {
-          console.log("[GitHub] GitHub pending auth found; waiting for callback");
+          console.log("[GitHub] GitHub pending auth found; waiting for callback", {
+            session: shortAuthValue(sessionId),
+            state: shortAuthValue(pendingState),
+          });
         }
         return;
       }
@@ -1518,6 +1531,9 @@ export default function App() {
       const result = await startGitHubAuth();
       await SecureStore.setItemAsync(githubSessionStorageKey, result.session_id);
       await SecureStore.setItemAsync(githubPendingStateStorageKey, result.state);
+      setGithubSessionId(result.session_id);
+      setGithubPendingAuth(true);
+      setGithubPendingState(result.state);
       if (__DEV__) {
         console.log("[GitHub] auth started", {
           session: shortAuthValue(result.session_id),
@@ -1567,6 +1583,8 @@ export default function App() {
     }
 
     await SecureStore.deleteItemAsync(githubPendingStateStorageKey).catch(() => undefined);
+    setGithubPendingAuth(false);
+    setGithubPendingState(null);
 
     if (status !== "success" || !installationId || !/^\d+$/.test(installationId)) {
       await clearGitHubSession("Unable to connect GitHub. Please try again.");
@@ -1581,6 +1599,8 @@ export default function App() {
     await SecureStore.deleteItemAsync(githubSessionStorageKey).catch(() => undefined);
     await SecureStore.deleteItemAsync(githubPendingStateStorageKey).catch(() => undefined);
     setGithubSessionId(null);
+    setGithubPendingAuth(false);
+    setGithubPendingState(null);
     setGithubAccount(null);
     setGithubInstallation(null);
     setGithubRepos([]);
@@ -1607,11 +1627,87 @@ export default function App() {
     } catch (refreshError) {
       const message =
         refreshError instanceof Error ? refreshError.message : "Unable to load GitHub account.";
-      if (message.includes("401") || message.toLowerCase().includes("unauthorized")) {
+      if (isUnauthorizedError(refreshError)) {
         await clearGitHubSession("GitHub session expired. Please connect again.");
         return;
       }
       setError(message);
+    } finally {
+      setIsLoadingGithubRepos(false);
+    }
+  }
+
+  async function handleCheckGitHubConnection() {
+    const [storedSessionId, storedPendingState] = await Promise.all([
+      SecureStore.getItemAsync(githubSessionStorageKey),
+      SecureStore.getItemAsync(githubPendingStateStorageKey),
+    ]);
+    const sessionId = githubSessionId ?? storedSessionId;
+    const pendingState = githubPendingState ?? storedPendingState;
+
+    if (!sessionId) {
+      setError("GitHub is not linked yet. Complete the installation in GitHub, then tap Check connection.");
+      return;
+    }
+
+    if (__DEV__) {
+      console.log("[GitHub] fallback check start", {
+        session: shortAuthValue(sessionId),
+        state: shortAuthValue(pendingState),
+      });
+    }
+
+    setIsLoadingGithubRepos(true);
+    setError(null);
+    try {
+      const installations = await getGitHubInstallations(sessionId);
+      if (installations.installations.length === 0) {
+        if (__DEV__) {
+          console.log("[GitHub] fallback check failure", {
+            session: shortAuthValue(sessionId),
+            state: shortAuthValue(pendingState),
+            reason: "no_installations",
+          });
+        }
+        setGithubSessionId(sessionId);
+        setGithubPendingAuth(true);
+        setGithubPendingState(pendingState);
+        setError("GitHub is not linked yet. Complete the installation in GitHub, then tap Check connection.");
+        return;
+      }
+
+      const repos = await getGitHubRepos(sessionId);
+      await SecureStore.setItemAsync(githubSessionStorageKey, sessionId);
+      await SecureStore.deleteItemAsync(githubPendingStateStorageKey).catch(() => undefined);
+      setGithubSessionId(sessionId);
+      setGithubPendingAuth(false);
+      setGithubPendingState(null);
+      setGithubInstallation(installations.installations[0] ?? null);
+      setGithubRepos(repos.repositories);
+      if (__DEV__) {
+        console.log("[GitHub] fallback check success", {
+          session: shortAuthValue(sessionId),
+          state: shortAuthValue(pendingState),
+          installations: installations.installations.length,
+          repos: repos.repositories.length,
+        });
+      }
+    } catch (fallbackError) {
+      if (__DEV__) {
+        console.log("[GitHub] fallback check failure", {
+          session: shortAuthValue(sessionId),
+          state: shortAuthValue(pendingState),
+          reason: isUnauthorizedError(fallbackError) ? "unauthorized" : "request_failed",
+        });
+      }
+      if (isUnauthorizedError(fallbackError)) {
+        setGithubSessionId(sessionId);
+        setGithubPendingAuth(true);
+        setGithubPendingState(pendingState);
+        setError("GitHub is not linked yet. Complete the installation in GitHub, then tap Check connection.");
+        return;
+      }
+      setError(fallbackError instanceof Error ? fallbackError.message : "Unable to check GitHub connection.");
     } finally {
       setIsLoadingGithubRepos(false);
     }
@@ -1750,7 +1846,9 @@ export default function App() {
                 <Text style={styles.githubTitle}>GitHub</Text>
               </View>
               <Text style={styles.githubSubtitle}>
-                {isGithubConnected
+                {githubPendingAuth
+                  ? "Waiting for GitHub installation. If GitHub left you on the installation page, return here and tap Check connection."
+                  : isGithubConnected
                   ? connectedGithubLogin
                     ? `Connected as ${connectedGithubLogin}`
                     : "Connected. Load repositories to continue."
@@ -1759,12 +1857,22 @@ export default function App() {
             </View>
             <View style={styles.githubButtonRow}>
               <Pressable
-                onPress={() => isGithubConnected ? void handleRefreshGitHub() : void handleConnectGitHub()}
+                onPress={() =>
+                  githubPendingAuth
+                    ? void handleCheckGitHubConnection()
+                    : isGithubConnected
+                      ? void handleRefreshGitHub()
+                      : void handleConnectGitHub()
+                }
                 disabled={isConnectingGithub || isLoadingGithubRepos}
                 style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
               >
                 <Text style={styles.smallButtonText}>
-                  {isGithubConnected
+                  {githubPendingAuth
+                    ? isLoadingGithubRepos
+                      ? "Checking GitHub"
+                      : "Check GitHub connection"
+                    : isGithubConnected
                     ? isLoadingGithubRepos
                       ? "Loading repos"
                       : githubRepos.length > 0
