@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     github_default_branch: str = Field(default="main", alias="GITHUB_DEFAULT_BRANCH")
     github_app_id: str | None = Field(default=None, alias="GITHUB_APP_ID")
     github_app_slug: str | None = Field(default=None, alias="GITHUB_APP_SLUG")
+    github_app_private_key: str | None = Field(
+        default=None,
+        alias="GITHUB_APP_PRIVATE_KEY",
+    )
     github_app_private_key_path: Path | None = Field(
         default=None,
         alias="GITHUB_APP_PRIVATE_KEY_PATH",

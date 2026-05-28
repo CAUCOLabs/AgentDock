@@ -876,15 +876,6 @@ class GitHubAuthService:
                 "PyJWT[crypto] is required for GitHub App authentication."
             ) from exc
 
-        try:
-            private_key = self.settings.github_app_private_key_path.read_text(
-                encoding="utf-8"
-            )
-        except OSError as exc:
-            raise GitHubAuthError(
-                "Failed to read GITHUB_APP_PRIVATE_KEY_PATH."
-            ) from exc
-
         now = int(time())
         return str(
             jwt.encode(
@@ -893,7 +884,7 @@ class GitHubAuthService:
                     "exp": now + 540,
                     "iss": self.settings.github_app_id,
                 },
-                private_key,
+                self._github_app_private_key(),
                 algorithm="RS256",
             )
         )
@@ -911,8 +902,33 @@ class GitHubAuthService:
         if not self.settings.github_app_id:
             raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
 
-        if not self.settings.github_app_private_key_path:
+        private_key = self.settings.github_app_private_key
+        private_key_path = self.settings.github_app_private_key_path
+        if private_key and private_key.strip():
+            return
+
+        if private_key_path and str(private_key_path).strip():
+            return
+
+        raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
+
+    def _github_app_private_key(self) -> str:
+        private_key = self.settings.github_app_private_key
+        if private_key and private_key.strip():
+            if "\\n" in private_key and "\n" not in private_key:
+                return private_key.replace("\\n", "\n")
+            return private_key
+
+        private_key_path = self.settings.github_app_private_key_path
+        if not private_key_path or not str(private_key_path).strip():
             raise GitHubAuthError(GITHUB_APP_NOT_CONFIGURED)
+
+        try:
+            return private_key_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise GitHubAuthError(
+                "Failed to read GITHUB_APP_PRIVATE_KEY_PATH."
+            ) from exc
 
     def _map_repository(self, item: dict[str, Any]) -> GitHubRepositorySummary:
         permissions = item.get("permissions") or {}

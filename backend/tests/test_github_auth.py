@@ -174,6 +174,68 @@ class GitHubAuthTests(unittest.TestCase):
             self.assertEqual(repos[0].full_name, "acme/demo")
             self.assertTrue(repos[0].can_read)
 
+    def test_github_app_direct_private_key_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_key = (
+                "-----BEGIN PRIVATE KEY-----\\n"
+                "test-private-key\\n"
+                "-----END PRIVATE KEY-----\\n"
+            )
+            service = GitHubAuthService(
+                self._settings(
+                    Path(temp_dir),
+                    github_app_id="12345",
+                    github_app_private_key=private_key,
+                )
+            )
+
+            service._require_app_token_config()
+
+            self.assertEqual(
+                service._github_app_private_key(),
+                "-----BEGIN PRIVATE KEY-----\n"
+                "test-private-key\n"
+                "-----END PRIVATE KEY-----\n",
+            )
+
+    def test_github_app_private_key_path_fallback_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_key_path = Path(temp_dir) / "github-app.pem"
+            private_key_path.write_text(
+                "-----BEGIN PRIVATE KEY-----\n"
+                "test-file-private-key\n"
+                "-----END PRIVATE KEY-----\n",
+                encoding="utf-8",
+            )
+            service = GitHubAuthService(
+                self._settings(
+                    Path(temp_dir),
+                    github_app_id="12345",
+                    github_app_private_key_path=private_key_path,
+                )
+            )
+
+            service._require_app_token_config()
+
+            self.assertEqual(
+                service._github_app_private_key(),
+                "-----BEGIN PRIVATE KEY-----\n"
+                "test-file-private-key\n"
+                "-----END PRIVATE KEY-----\n",
+            )
+
+    def test_github_app_missing_private_key_config_returns_not_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = GitHubAuthService(
+                self._settings(Path(temp_dir), github_app_id="12345")
+            )
+
+            with self.assertRaisesRegex(GitHubAuthError, "GitHub App is not configured"):
+                service._require_app_token_config()
+
+            with self.assertRaisesRegex(GitHubAuthError, "GitHub App is not configured"):
+                service._github_app_private_key()
+
     def test_pending_and_missing_app_sessions_have_distinct_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(Path(temp_dir))
@@ -516,6 +578,9 @@ class GitHubAuthTests(unittest.TestCase):
         temp_path: Path,
         github_app_install_url: str | None = None,
         github_app_slug: str | None = None,
+        github_app_id: str | None = None,
+        github_app_private_key: str | None = None,
+        github_app_private_key_path: Path | None = None,
         github_app_mobile_callback_url: str = "aisoflow://auth/github/callback",
     ) -> Settings:
         return Settings(
@@ -526,6 +591,9 @@ class GitHubAuthTests(unittest.TestCase):
             GITHUB_OAUTH_CLIENT_SECRET="client-secret",
             GITHUB_APP_INSTALL_URL=github_app_install_url,
             GITHUB_APP_SLUG=github_app_slug,
+            GITHUB_APP_ID=github_app_id,
+            GITHUB_APP_PRIVATE_KEY=github_app_private_key,
+            GITHUB_APP_PRIVATE_KEY_PATH=github_app_private_key_path,
             GITHUB_APP_MOBILE_CALLBACK_URL=github_app_mobile_callback_url,
         )
 
