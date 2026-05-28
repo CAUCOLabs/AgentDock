@@ -180,27 +180,35 @@ class AgentProviderStatusTests(unittest.TestCase):
                 patch("app.agent_providers.shutil.which", return_value="/usr/bin/codex"),
                 patch(
                     "app.agent_providers._start_codex_device_auth",
-                    return_value={
-                        "verification_url": "https://auth.openai.com/device",
-                        "user_code": "ABCD-EFGH",
-                    },
-                ),
+                ) as start_device_auth,
             ):
-                flow = connect_provider(settings, "codex")
+                flow = connect_provider(
+                    settings,
+                    "codex",
+                    auth_mode=CODEX_CHATGPT_OAUTH_AUTH_MODE,
+                )
 
             self.assertEqual(flow.provider_id, "codex")
             self.assertEqual(flow.status, "waiting_for_auth")
             self.assertIsNone(flow.command)
-            self.assertEqual(flow.verification_url, "https://auth.openai.com/device")
-            self.assertEqual(flow.user_code, "ABCD-EFGH")
+            self.assertIsNone(flow.auth_url)
+            self.assertIsNone(flow.verification_url)
+            self.assertIsNone(flow.device_code)
+            self.assertIsNone(flow.user_code)
+            self.assertEqual(
+                flow.message,
+                "Run `codex login` on the backend machine, then return to AisoFlow and tap Check connection.",
+            )
             self.assertEqual(
                 flow.instructions,
                 [
-                    "Open the verification URL on your phone.",
-                    "Enter the one-time code if prompted.",
+                    "Open a terminal on the backend machine.",
+                    "Run `codex login`.",
+                    "Complete the ChatGPT sign-in in the browser.",
                     "Return to AisoFlow and tap Check connection.",
                 ],
             )
+            start_device_auth.assert_not_called()
             self.assertNotIn("codex", AgentProviderConnectionStore(settings).connected_auth_modes())
             self.assertEqual(flow.metadata.connection.value, "disconnected")
 
@@ -649,7 +657,7 @@ class AgentProviderStatusTests(unittest.TestCase):
             self.assertEqual(disconnect_response.status_code, 200)
             self.assertEqual(disconnect_response.json()["status"], "disconnected")
 
-    def test_codex_connect_endpoint_does_not_connect_without_verification(self) -> None:
+    def test_codex_connect_endpoint_returns_local_login_auth_flow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(
                 Path(temp_dir),
@@ -663,15 +671,14 @@ class AgentProviderStatusTests(unittest.TestCase):
                     patch("app.agent_providers.shutil.which", return_value="/usr/bin/codex"),
                     patch(
                         "app.agent_providers._start_codex_device_auth",
-                        return_value={
-                            "verification_url": "https://auth.openai.com/codex/device\x1b[0m",
-                            "user_code": "ABCD-EFGH",
-                        },
-                    ),
+                    ) as start_device_auth,
                 ):
                     response = client.post(
                         "/agent-providers/connect",
-                        json={"provider_id": "codex"},
+                        json={
+                            "provider_id": "codex",
+                            "auth_mode": CODEX_CHATGPT_OAUTH_AUTH_MODE,
+                        },
                     )
             finally:
                 app.dependency_overrides.clear()
@@ -681,20 +688,24 @@ class AgentProviderStatusTests(unittest.TestCase):
             self.assertEqual(payload["status"], "waiting_for_auth")
             self.assertIsNone(payload["command"])
             self.assertEqual(
-                payload["auth_url"],
-                "https://auth.openai.com/codex/device",
+                payload["message"],
+                "Run `codex login` on the backend machine, then return to AisoFlow and tap Check connection.",
             )
+            self.assertIsNone(payload["auth_url"])
+            self.assertIsNone(payload["verification_url"])
+            self.assertIsNone(payload["device_code"])
+            self.assertIsNone(payload["user_code"])
             self.assertEqual(
-                payload["verification_url"],
-                "https://auth.openai.com/codex/device",
+                payload["instructions"],
+                [
+                    "Open a terminal on the backend machine.",
+                    "Run `codex login`.",
+                    "Complete the ChatGPT sign-in in the browser.",
+                    "Return to AisoFlow and tap Check connection.",
+                ],
             )
-            self.assertNotRegex(payload["auth_url"], r"\x1b\[[0-?]*[ -/]*[@-~]")
-            self.assertNotRegex(
-                payload["verification_url"],
-                r"\x1b\[[0-?]*[ -/]*[@-~]",
-            )
-            self.assertEqual(payload["user_code"], "ABCD-EFGH")
             self.assertEqual(payload["metadata"]["connection"], "disconnected")
+            start_device_auth.assert_not_called()
             self.assertNotIn(
                 "codex",
                 AgentProviderConnectionStore(settings).connected_auth_modes(),

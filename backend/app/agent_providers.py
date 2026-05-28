@@ -53,6 +53,12 @@ _ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 _DEVICE_AUTH_PROCESSES: dict[str, subprocess.Popen[str]] = {}
 _DEVICE_AUTH_STARTED_AT: dict[str, float] = {}
+_CODEX_LOCAL_LOGIN_INSTRUCTIONS = [
+    "Open a terminal on the backend machine.",
+    "Run `codex login`.",
+    "Complete the ChatGPT sign-in in the browser.",
+    "Return to AisoFlow and tap Check connection.",
+]
 
 
 class AgentRunResult:
@@ -595,23 +601,20 @@ def start_codex_account_flow(settings: Settings) -> AgentProviderAuthFlowRespons
     if error:
         raise AgentProviderError(error)
 
-    flow = _start_codex_device_auth(settings)
-    verification_url = _strip_ansi_escape_sequences(flow.get("verification_url", ""))
     metadata = next(provider for provider in provider_metadata(settings) if provider.id == "codex")
 
     return AgentProviderAuthFlowResponse(
         provider_id="codex",
         status="waiting_for_auth",
-        message="Waiting for authorization.",
-        auth_url=verification_url,
-        verification_url=verification_url,
-        device_code=flow.get("device_code"),
-        user_code=flow.get("user_code"),
-        instructions=[
-            "Open the verification URL on your phone.",
-            "Enter the one-time code if prompted.",
-            "Return to AisoFlow and tap Check connection.",
-        ],
+        message=(
+            "Run `codex login` on the backend machine, then return to AisoFlow "
+            "and tap Check connection."
+        ),
+        auth_url=None,
+        verification_url=None,
+        device_code=None,
+        user_code=None,
+        instructions=_CODEX_LOCAL_LOGIN_INSTRUCTIONS,
         metadata=metadata,
     )
 
