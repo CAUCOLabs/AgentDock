@@ -9,7 +9,9 @@ from git import Repo
 
 from app.config import Settings, get_settings
 from app.github_auth import (
+    GITHUB_APP_INSTALLATION_NOT_COMPLETED,
     GITHUB_APP_INSTALLATION_REQUIRED,
+    GITHUB_APP_MULTIPLE_INSTALLATIONS_REQUIRE_CALLBACK,
     GITHUB_APP_SESSION_MISSING,
     GitHubAuthError,
     GitHubAuthService,
@@ -372,6 +374,87 @@ class GitHubAuthTests(unittest.TestCase):
                 123,
             )
 
+    def test_pending_app_installations_endpoint_auto_links_single_github_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            service = StubGitHubAppService(settings)
+            service.github_app_installations = [
+                {
+                    "id": 136232598,
+                    "account": {"login": "CAUCORASEKO", "type": "Organization"},
+                }
+            ]
+            session_id, _state = service.store.create_pending_session()
+            app.dependency_overrides[get_settings] = lambda: settings
+            app.dependency_overrides[get_github_auth_service] = lambda: service
+            try:
+                client = TestClient(app)
+                response = client.get(
+                    "/auth/github-app/installations",
+                    headers={"X-AgentDock-Session": session_id},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.json()["installations"][0]["installation_id"],
+                136232598,
+            )
+            self.assertEqual(service.token_installation_id, 136232598)
+            self.assertIsNotNone(service.store.get_app_session(session_id))
+            self.assertFalse(service.store.has_pending_session(session_id))
+
+    def test_pending_app_installations_endpoint_keeps_session_pending_without_installations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            service = StubGitHubAppService(settings)
+            service.github_app_installations = []
+            session_id, _state = service.store.create_pending_session()
+            app.dependency_overrides[get_settings] = lambda: settings
+            app.dependency_overrides[get_github_auth_service] = lambda: service
+            try:
+                client = TestClient(app)
+                response = client.get(
+                    "/auth/github-app/installations",
+                    headers={"X-AgentDock-Session": session_id},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.json()["detail"], GITHUB_APP_INSTALLATION_NOT_COMPLETED)
+            self.assertTrue(service.store.has_pending_session(session_id))
+            self.assertIsNone(service.store.get_app_session(session_id))
+
+    def test_pending_app_installations_endpoint_does_not_guess_multiple_installations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            service = StubGitHubAppService(settings)
+            service.github_app_installations = [
+                {"id": 123, "account": {"login": "acme", "type": "Organization"}},
+                {"id": 456, "account": {"login": "octo", "type": "Organization"}},
+            ]
+            session_id, _state = service.store.create_pending_session()
+            app.dependency_overrides[get_settings] = lambda: settings
+            app.dependency_overrides[get_github_auth_service] = lambda: service
+            try:
+                client = TestClient(app)
+                response = client.get(
+                    "/auth/github-app/installations",
+                    headers={"X-AgentDock-Session": session_id},
+                )
+            finally:
+                app.dependency_overrides.clear()
+
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(
+                response.json()["detail"],
+                GITHUB_APP_MULTIPLE_INSTALLATIONS_REQUIRE_CALLBACK,
+            )
+            self.assertTrue(service.store.has_pending_session(session_id))
+            self.assertIsNone(service.store.get_app_session(session_id))
+
     def test_app_callback_redirect_uses_configured_expo_go_mobile_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(
@@ -664,6 +747,7 @@ class StubGitHubAppService(GitHubAuthService):
         super().__init__(settings)
         self.token_installation_id: int | None = None
         self.repository_token: str | None = None
+        self.github_app_installations: list[dict[str, object]] = []
 
     async def create_installation_token(self, installation_id: int) -> str:
         self.token_installation_id = installation_id
@@ -677,6 +761,9 @@ class StubGitHubAppService(GitHubAuthService):
             "account": {"login": "acme", "type": "Organization"},
             "permissions": {"contents": "read"},
         }
+
+    async def list_github_app_installation_data(self) -> list[dict[str, object]]:
+        return self.github_app_installations
 
     async def _list_installation_repository_data(
         self,

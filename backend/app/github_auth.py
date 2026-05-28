@@ -36,6 +36,14 @@ GITHUB_APP_INSTALLATION_REQUIRED = (
     "GitHub App installation is required. Complete the installation in GitHub, "
     "then return to AisoFlow."
 )
+GITHUB_APP_INSTALLATION_NOT_COMPLETED = (
+    "GitHub is not linked yet. Complete the installation in GitHub, "
+    "then tap Check connection."
+)
+GITHUB_APP_MULTIPLE_INSTALLATIONS_REQUIRE_CALLBACK = (
+    "Multiple GitHub App installations exist. Complete the GitHub callback "
+    "before checking the connection."
+)
 
 
 def github_auth_correlation_id(value: str | None) -> str:
@@ -248,6 +256,23 @@ class GitHubAuthStore:
             ).fetchone()
 
         return row is not None
+
+    def consume_pending_session(self, session_id: str) -> None:
+        now = self._datetime_to_text(datetime.now(timezone.utc))
+
+        with self._connect() as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE github_oauth_states
+                    SET consumed_at = ?
+                    WHERE session_id = ? AND consumed_at IS NULL
+                    """,
+                    (now, session_id),
+                )
+
+        if cursor.rowcount < 1:
+            raise GitHubAuthError("Invalid or expired GitHub auth state.")
 
     def save_authenticated_session(
         self,
@@ -578,27 +603,16 @@ class GitHubAuthService:
         installation_data = await self.get_app_installation_metadata(installation_id)
         installation_token = await self.create_installation_token(installation_id)
         repositories = await self._list_installation_repository_data(installation_token)
-        selected_repositories = [
-            str(item["full_name"])
-            for item in repositories
-            if item.get("full_name")
-        ]
-        account = installation_data.get("account") or {}
         consumed_session_id = self.store.consume_state(state)
 
         if consumed_session_id != session_id:
             raise GitHubAuthError("Invalid or expired GitHub auth state.")
 
-        installation = self.store.save_app_installation(
+        installation = self._save_app_installation_from_github_data(
             session_id=session_id,
             installation_id=installation_id,
-            account_login=str(account.get("login") or "unknown"),
-            account_type=str(account.get("type") or "unknown"),
-            selected_repositories=selected_repositories,
-            permissions={
-                str(key): str(value)
-                for key, value in (installation_data.get("permissions") or {}).items()
-            },
+            installation_data=installation_data,
+            repositories=repositories,
         )
         logger.info(
             "GitHub App installation linked: installation_id=%s state_id=%s session_id=%s",
@@ -627,6 +641,66 @@ class GitHubAuthService:
 
     def list_app_installations(self) -> list[GitHubInstallationResponse]:
         return self.store.list_app_installations()
+
+    async def list_app_installations_for_session(
+        self,
+        session_id: str | None,
+    ) -> list[GitHubInstallationResponse]:
+        if not session_id:
+            raise GitHubAuthError(GITHUB_APP_SESSION_MISSING)
+
+        session = self.store.get_app_session(session_id)
+        if session is not None:
+            return [session.installation]
+
+        if not self.store.has_pending_session(session_id):
+            raise GitHubAuthError(GITHUB_APP_SESSION_MISSING)
+
+        github_installations = await self.list_github_app_installation_data()
+        safe_session_id = github_auth_correlation_id(session_id)
+
+        if len(github_installations) == 0:
+            logger.info(
+                "GitHub App fallback pending: session_id=%s no_installations",
+                safe_session_id,
+            )
+            raise GitHubAuthError(GITHUB_APP_INSTALLATION_NOT_COMPLETED)
+
+        if len(github_installations) > 1:
+            logger.info(
+                "GitHub App fallback skipped: session_id=%s installation_count=%s",
+                safe_session_id,
+                len(github_installations),
+            )
+            raise GitHubAuthError(GITHUB_APP_MULTIPLE_INSTALLATIONS_REQUIRE_CALLBACK)
+
+        github_installation = github_installations[0]
+        installation_id = int(github_installation["id"])
+        account = github_installation.get("account") or {}
+        account_login = str(account.get("login") or "unknown")
+        logger.info(
+            "GitHub App fallback linking: session_id=%s installation_id=%s account_login=%s",
+            safe_session_id,
+            installation_id,
+            account_login,
+        )
+        installation_data = await self.get_app_installation_metadata(installation_id)
+        installation_token = await self.create_installation_token(installation_id)
+        repositories = await self._list_installation_repository_data(installation_token)
+        self.store.consume_pending_session(session_id)
+        installation = self._save_app_installation_from_github_data(
+            session_id=session_id,
+            installation_id=installation_id,
+            installation_data=installation_data,
+            repositories=repositories,
+        )
+        logger.info(
+            "GitHub App fallback linked: session_id=%s installation_id=%s account_login=%s",
+            safe_session_id,
+            installation.installation_id,
+            installation.account_login,
+        )
+        return [installation]
 
     async def list_app_repositories(
         self,
@@ -714,6 +788,57 @@ class GitHubAuthService:
             )
 
         return dict(response.json())
+
+    async def list_github_app_installation_data(self) -> list[dict[str, Any]]:
+        self._require_app_token_config()
+        app_jwt = self._create_app_jwt()
+        installations: list[dict[str, Any]] = []
+        url: str | None = "https://api.github.com/app/installations?per_page=100"
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            while url:
+                response = await client.get(url, headers=self._headers(app_jwt))
+
+                if response.status_code >= 400:
+                    raise GitHubAuthError(
+                        redact_token(
+                            f"GitHub App installation list failed: "
+                            f"{response.status_code} {response.text}",
+                            app_jwt,
+                        )
+                    )
+
+                installations.extend(dict(item) for item in response.json())
+                url = self._next_page_url(response.headers.get("Link"))
+
+        return installations
+
+    def _save_app_installation_from_github_data(
+        self,
+        *,
+        session_id: str,
+        installation_id: int,
+        installation_data: dict[str, Any],
+        repositories: list[dict[str, Any]],
+    ) -> GitHubInstallationResponse:
+        selected_repositories = [
+            str(item["full_name"])
+            for item in repositories
+            if item.get("full_name")
+        ]
+        account = installation_data.get("account") or {}
+
+        return self.store.save_app_installation(
+            session_id=session_id,
+            installation_id=installation_id,
+            account_login=str(account.get("login") or "unknown"),
+            account_type=str(account.get("type") or "unknown"),
+            selected_repositories=selected_repositories,
+            permissions={
+                str(key): str(value)
+                for key, value in (installation_data.get("permissions") or {}).items()
+            },
+        )
 
     def start_login(self) -> tuple[str, str, str]:
         if not self.settings.github_oauth_client_id:

@@ -457,15 +457,15 @@ def get_github_app_me(
     "/auth/github-app/installations",
     response_model=GitHubInstallationsResponse,
 )
-def list_github_app_installations(
+async def list_github_app_installations(
     x_agentdock_session: str | None = Header(default=None),
     auth_service: GitHubAuthService = Depends(get_github_auth_service),
 ) -> GitHubInstallationsResponse:
     try:
         return GitHubInstallationsResponse(
-            installations=[
-                auth_service.get_app_session(x_agentdock_session).installation
-            ]
+            installations=await auth_service.list_app_installations_for_session(
+                x_agentdock_session
+            )
         )
     except GitHubAuthError as exc:
         raise github_app_http_error(exc) from exc
