@@ -660,6 +660,16 @@ function fallbackCodexAuthFlow(metadata: AgentProviderMetadata): AgentProviderAu
   };
 }
 
+function isExpectedCodexUnavailableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Codex is unavailable") ||
+    message.includes("Codex CLI is not available") ||
+    message.includes("CODEX_ENABLED") ||
+    message.includes("not configured")
+  );
+}
+
 function statusTone(status: TaskStatus) {
   switch (status) {
     case "completed":
@@ -804,8 +814,10 @@ export default function App() {
       ? "connecting"
       : selectedAgentMetadata?.primary_status ?? providerPrimaryStatus(codexConnection, codexReadiness);
   const isCodexActive = codexPrimaryStatus === "active" || codexConnection === "connected";
+  const isCodexUnavailable = codexReadiness === "not_configured" || codexReadiness === "unavailable";
   const canConnectCodex =
     codexConnection === "disconnected" && (codexReadiness === "auth_required" || codexReadiness === "ready");
+  const canCheckPendingCodexConnection = Boolean(codexAuthFlow) && !isCodexUnavailable;
   const codexConnectionLabel =
     codexConnection === "connecting" ? "Connecting" : isCodexActive ? "Connected" : "Disconnected";
   const diffSummaryFiles = useMemo(
@@ -1083,6 +1095,27 @@ export default function App() {
 
       setAgentProviders(await getAgentProviders());
     } catch (connectError) {
+      if (providerId === "codex") {
+        setCodexPendingAuth(false);
+        setCodexAuthFlow(null);
+
+        if (isExpectedCodexUnavailableError(connectError)) {
+          setCodexCloudNotice(
+            "Codex is not configured on the backend yet. You can still browse repositories and prepare tasks."
+          );
+          try {
+            setAgentProviders(await getAgentProviders());
+          } catch {
+            // Keep the local notice even if provider status refresh is unavailable.
+          }
+          return;
+        }
+
+        setCodexCloudNotice(
+          connectError instanceof Error ? connectError.message : "Unable to connect Codex provider."
+        );
+      }
+
       setCodexPendingAuth(false);
       setError(connectError instanceof Error ? connectError.message : "Unable to connect provider.");
     } finally {
@@ -2054,27 +2087,17 @@ export default function App() {
               ) : (
                 <Pressable
                   disabled={
-                    codexReadiness === "not_configured" ||
-                    codexReadiness === "unavailable" ||
-                    !canConnectCodex ||
-                    connectingProviderId === "codex"
+                    isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex"
                   }
                   onPress={() => {
-                    if (
-                      codexReadiness === "not_configured" ||
-                      codexReadiness === "unavailable" ||
-                      !canConnectCodex
-                    ) {
+                    if (isCodexUnavailable || !canConnectCodex) {
                       return;
                     }
                     void handleConnectAgentProvider("codex", "chatgpt");
                   }}
                   style={({ pressed }) => [
                     styles.smallButton,
-                    (codexReadiness === "not_configured" ||
-                      codexReadiness === "unavailable" ||
-                      !canConnectCodex ||
-                      connectingProviderId === "codex") &&
+                    (isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex") &&
                       styles.disabledButton,
                     pressed && styles.pressed,
                   ]}
@@ -2118,17 +2141,19 @@ export default function App() {
                     </Pressable>
                   </>
                 ) : null}
-                <Pressable
-                  disabled={connectingProviderId === "codex"}
-                  onPress={() => void handleVerifyCodexConnection("chatgpt")}
-                  style={({ pressed }) => [
-                    styles.providerActionButton,
-                    connectingProviderId === "codex" && styles.disabledButton,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.providerActionText}>Check connection</Text>
-                </Pressable>
+                {canCheckPendingCodexConnection ? (
+                  <Pressable
+                    disabled={connectingProviderId === "codex"}
+                    onPress={() => void handleVerifyCodexConnection("chatgpt")}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      connectingProviderId === "codex" && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>Check connection</Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null}
             {!hasConnectedProvider ? (
