@@ -173,6 +173,56 @@ class GitHubAuthTests(unittest.TestCase):
             self.assertEqual(service.repository_token, "installation-token")
             self.assertEqual(repos[0].full_name, "acme/demo")
             self.assertTrue(repos[0].can_read)
+            self.assertFalse(repos[0].can_push)
+
+    def test_app_repo_listing_uses_write_installation_permissions_for_push(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+            store.save_app_installation(
+                session_id=session_id,
+                installation_id=123,
+                account_login="acme",
+                account_type="Organization",
+                selected_repositories=["acme/demo"],
+                permissions={
+                    "contents": "write",
+                    "metadata": "read",
+                    "pull_requests": "write",
+                    "statuses": "read",
+                },
+            )
+            service = StubGitHubAppService(settings)
+
+            repos = service.run_list_app_repositories(session_id)
+
+            self.assertTrue(repos[0].can_read)
+            self.assertTrue(repos[0].can_push)
+
+    def test_app_repo_listing_keeps_read_installation_permissions_non_pushable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = self._settings(Path(temp_dir))
+            store = GitHubAuthStore(settings)
+            session_id, _state = store.create_pending_session()
+            store.save_app_installation(
+                session_id=session_id,
+                installation_id=123,
+                account_login="acme",
+                account_type="Organization",
+                selected_repositories=["acme/demo"],
+                permissions={
+                    "contents": "read",
+                    "metadata": "read",
+                    "pull_requests": "read",
+                },
+            )
+            service = StubGitHubAppService(settings)
+
+            repos = service.run_list_app_repositories(session_id)
+
+            self.assertTrue(repos[0].can_read)
+            self.assertFalse(repos[0].can_push)
 
     def test_github_app_direct_private_key_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -510,7 +560,7 @@ class GitHubAuthTests(unittest.TestCase):
         self.assertNotIn("ghp_secret", messages)
         self.assertIn("[REDACTED]", messages)
 
-    def test_repo_list_mapping_sets_permissions_and_visibility(self) -> None:
+    def test_oauth_repo_list_mapping_sets_permissions_and_visibility(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = GitHubAuthService(self._settings(Path(temp_dir)))
 

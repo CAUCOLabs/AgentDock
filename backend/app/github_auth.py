@@ -639,7 +639,13 @@ class GitHubAuthService:
         repository_data = await self._list_installation_repository_data(
             installation_token
         )
-        return [self._map_repository(item) for item in repository_data]
+        return [
+            self._map_app_installation_repository(
+                item,
+                session.installation.permissions,
+            )
+            for item in repository_data
+        ]
 
     async def token_for_session(self, session_id: str | None) -> str | None:
         if not session_id:
@@ -934,6 +940,35 @@ class GitHubAuthService:
         permissions = item.get("permissions") or {}
         can_read = bool(permissions.get("pull", True))
         can_push = bool(permissions.get("push", False) or permissions.get("admin", False))
+
+        return self._repository_summary(
+            item=item,
+            can_read=can_read,
+            can_push=can_push,
+        )
+
+    def _map_app_installation_repository(
+        self,
+        item: dict[str, Any],
+        installation_permissions: dict[str, str],
+    ) -> GitHubRepositorySummary:
+        can_push = (
+            installation_permissions.get("contents") == "write"
+            or installation_permissions.get("pull_requests") == "write"
+        )
+
+        return self._repository_summary(
+            item=item,
+            can_read=True,
+            can_push=can_push,
+        )
+
+    def _repository_summary(
+        self,
+        item: dict[str, Any],
+        can_read: bool,
+        can_push: bool,
+    ) -> GitHubRepositorySummary:
         private = bool(item.get("private", False))
 
         return GitHubRepositorySummary(
