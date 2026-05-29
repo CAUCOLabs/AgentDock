@@ -33,6 +33,7 @@ import {
 import {
   approveTask,
   connectAgentProvider,
+  connectAgentProviderApiKey,
   connectPromptAssistantProvider as connectPromptAssistantProviderApi,
   createPullRequest,
   createTask,
@@ -760,6 +761,10 @@ export default function App() {
   const [codexPendingAuth, setCodexPendingAuth] = useState(false);
   const [codexAuthFlow, setCodexAuthFlow] = useState<AgentProviderAuthFlowResponse | null>(null);
   const [codexCopyStatus, setCodexCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const [codexApiKey, setCodexApiKey] = useState("");
+  const [codexApiKeyMode, setCodexApiKeyMode] = useState(false);
+  const [codexApiKeySubmitting, setCodexApiKeySubmitting] = useState(false);
+  const [codexApiKeyError, setCodexApiKeyError] = useState<string | null>(null);
   const [connectingProviderId, setConnectingProviderId] = useState<AgentProvider | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
@@ -1093,6 +1098,7 @@ export default function App() {
         setCodexCloudNotice(flow.message);
         setCodexAuthFlow(flow);
         setCodexPendingAuth(true);
+        setCodexApiKeyError(null);
       } else {
         setCodexCloudNotice(null);
         setCodexAuthFlow(null);
@@ -1136,10 +1142,38 @@ export default function App() {
         setCodexCloudNotice(null);
         setCodexAuthFlow(null);
         setCodexPendingAuth(false);
+        setCodexApiKey("");
+        setCodexApiKeyMode(false);
+        setCodexApiKeyError(null);
       }
       setAgentProviders(await getAgentProviders());
     } catch (disconnectError) {
       setError(disconnectError instanceof Error ? disconnectError.message : "Unable to disconnect provider.");
+    }
+  }
+
+  async function handleConnectCodexApiKey() {
+    const trimmedApiKey = codexApiKey.trim();
+    if (!trimmedApiKey) return;
+
+    setCodexApiKeySubmitting(true);
+    setCodexApiKeyError(null);
+    setError(null);
+
+    try {
+      await connectAgentProviderApiKey("codex", trimmedApiKey);
+      setAgentProviders(await getAgentProviders());
+      setCodexApiKey("");
+      setCodexApiKeyMode(false);
+      setCodexPendingAuth(false);
+      setCodexAuthFlow(null);
+      setCodexCloudNotice("Codex connected with API key.");
+    } catch (connectError) {
+      const message = connectError instanceof Error ? connectError.message : "Unable to connect Codex with API key.";
+      setCodexApiKeyError(message);
+      setCodexCloudNotice(message);
+    } finally {
+      setCodexApiKeySubmitting(false);
     }
   }
 
@@ -2131,36 +2165,108 @@ export default function App() {
                   </Pressable>
                 </>
               ) : (
-                <Pressable
-                  disabled={
-                    isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex"
-                  }
-                  onPress={() => {
-                    if (isCodexUnavailable || !canConnectCodex) {
-                      return;
+                <>
+                  <Pressable
+                    disabled={
+                      isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex"
                     }
-                    void handleConnectAgentProvider("codex", "chatgpt");
-                  }}
-                  style={({ pressed }) => [
-                    styles.smallButton,
-                    (isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex") &&
-                      styles.disabledButton,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.smallButtonText}>
-                    {connectingProviderId === "codex"
-                      ? "Connecting..."
-                      : canConnectCodex
-                        ? "Connect Codex"
-                        : "Codex not configured"}
-                  </Text>
-                </Pressable>
+                    onPress={() => {
+                      if (isCodexUnavailable || !canConnectCodex) {
+                        return;
+                      }
+                      setCodexApiKeyMode(false);
+                      void handleConnectAgentProvider("codex", "chatgpt");
+                    }}
+                    style={({ pressed }) => [
+                      styles.smallButton,
+                      (isCodexUnavailable || !canConnectCodex || connectingProviderId === "codex") &&
+                        styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.smallButtonText}>
+                      {connectingProviderId === "codex"
+                        ? "Connecting..."
+                        : canConnectCodex
+                          ? "Connect Codex"
+                          : "Codex not configured"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={codexApiKeySubmitting}
+                    onPress={() => {
+                      setCodexApiKeyMode(true);
+                      setCodexApiKey("");
+                      setCodexApiKeyError(null);
+                      setCodexCloudNotice(null);
+                      setCodexAuthFlow(null);
+                      setCodexPendingAuth(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.smallButton,
+                      codexApiKeySubmitting && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.smallButtonText}>Use API key</Text>
+                  </Pressable>
+                </>
               )}
             </View>
-            {codexCloudNotice && !isCodexActive ? (
+            {codexApiKeyMode && !isCodexActive ? (
+              <View style={styles.assistantKeyPanel}>
+                <Text style={styles.label}>OpenAI API key</Text>
+                <TextInput
+                  value={codexApiKey}
+                  onChangeText={setCodexApiKey}
+                  placeholder="OpenAI API key"
+                  placeholderTextColor="#6f7f92"
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={styles.input}
+                />
+                <View style={styles.providerCardActions}>
+                  <Pressable
+                    disabled={codexApiKeySubmitting}
+                    onPress={() => {
+                      setCodexApiKey("");
+                      setCodexApiKeyMode(false);
+                      setCodexApiKeyError(null);
+                    }}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      codexApiKeySubmitting && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={!codexApiKey.trim() || codexApiKeySubmitting}
+                    onPress={() => void handleConnectCodexApiKey()}
+                    style={({ pressed }) => [
+                      styles.providerActionButton,
+                      (!codexApiKey.trim() || codexApiKeySubmitting) && styles.disabledButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.providerActionText}>
+                      {codexApiKeySubmitting ? "Connecting..." : "Connect with API key"}
+                    </Text>
+                  </Pressable>
+                </View>
+                {codexApiKeyError ? (
+                  <Text style={styles.assistantErrorText}>{codexApiKeyError}</Text>
+                ) : null}
+                <Text style={styles.fileOptionMeta}>
+                  Use this path on Android when backend shell login is unavailable.
+                </Text>
+              </View>
+            ) : null}
+            {codexCloudNotice ? (
               <View style={styles.codexAuthPanel}>
-                <Text style={styles.providerOptionText}>OpenAI account connection</Text>
+                <Text style={styles.providerOptionText}>Codex connection</Text>
                 <Text style={styles.providerDescription}>{codexCloudNotice}</Text>
                 {codexAuthFlow?.verification_url ? (
                   <Pressable
