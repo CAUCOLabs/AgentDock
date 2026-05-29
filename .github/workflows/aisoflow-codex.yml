@@ -1,0 +1,81 @@
+name: AisoFlow Codex Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "AisoFlow task id"
+        required: false
+      prompt:
+        description: "Prompt"
+        required: false
+      instruction:
+        description: "Instruction"
+        required: false
+      target_file:
+        description: "Target file"
+        required: false
+      change_scope:
+        description: "Change scope"
+        required: false
+      base_branch:
+        description: "Base branch"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch || 'main' }}
+
+      - name: Create execution report
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          PROMPT: ${{ inputs.prompt }}
+          INSTRUCTION: ${{ inputs.instruction }}
+          TARGET_FILE: ${{ inputs.target_file }}
+          CHANGE_SCOPE: ${{ inputs.change_scope }}
+          BASE_BRANCH: ${{ inputs.base_branch || 'main' }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          RAW_ID="${TASK_ID:-$RUN_ID}"
+          ID="$(printf "%s" "$RAW_ID" | tr -c "A-Za-z0-9._-" "-" | sed -E "s/^-+|-+$//g; s/-+/-/g")"
+          if [ -z "$ID" ]; then
+            ID="$RUN_ID"
+          fi
+          BRANCH_NAME="aisoflow/$ID"
+          REPORT_PATH=".aisoflow/runs/$ID.md"
+
+          git switch -c "$BRANCH_NAME"
+          mkdir -p .aisoflow/runs
+
+          {
+            echo "# AisoFlow execution report"
+            echo
+            echo "- Task id: ${TASK_ID:-$RUN_ID}"
+            echo "- Prompt: ${PROMPT:-}"
+            echo "- Instruction: ${INSTRUCTION:-}"
+            echo "- Target file: ${TARGET_FILE:-}"
+            echo "- Change scope: ${CHANGE_SCOPE:-}"
+            echo "- Base branch: $BASE_BRANCH"
+            echo "- GitHub run id: $RUN_ID"
+            echo "- Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo
+            echo "This is the first GitHub Actions executor path. Codex integration will be added later."
+          } > "$REPORT_PATH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$REPORT_PATH"
+          git commit -m "Add AisoFlow execution report $ID"
+          git push origin "$BRANCH_NAME"
