@@ -1,11 +1,33 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from git import Repo
+import httpx
 
 from app.config import Settings
-from app.github_client import GitHubClient
+from app.github_client import GitHubClient, GitHubClientError
+
+
+class StubAsyncClient:
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+        self.requests: list[tuple[str, str, dict]] = []
+
+    async def __aenter__(self) -> "StubAsyncClient":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: object) -> httpx.Response:
+        self.requests.append(("POST", url, kwargs))
+        return self.response
+
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.requests.append(("GET", url, kwargs))
+        return self.response
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -85,6 +107,115 @@ class GitHubClientTests(unittest.TestCase):
         repo.git.add(A=True)
         repo.index.commit("initial")
         return repo
+
+
+class GitHubClientWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_workflow_success_expects_204(self) -> None:
+        stub = StubAsyncClient(httpx.Response(204))
+
+        with patch("app.github_client.httpx.AsyncClient", return_value=stub):
+            result = await GitHubClient(
+                Settings(),
+                github_token="github-token",
+            ).dispatch_workflow(
+                "https://github.com/acme/demo",
+                "aisoflow-codex.yml",
+                "main",
+                {"task_id": "task_123"},
+            )
+
+        self.assertEqual(result.workflow_id, "aisoflow-codex.yml")
+        self.assertEqual(result.ref, "main")
+        self.assertEqual(result.status, "dispatched")
+        self.assertEqual(result.message, "Workflow dispatch requested.")
+        self.assertEqual(len(stub.requests), 1)
+
+        method, url, kwargs = stub.requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            url,
+            "https://api.github.com/repos/acme/demo/actions/workflows/"
+            "aisoflow-codex.yml/dispatches",
+        )
+        self.assertEqual(
+            kwargs["json"],
+            {"ref": "main", "inputs": {"task_id": "task_123"}},
+        )
+        self.assertEqual(
+            kwargs["headers"]["Authorization"],
+            "Bearer github-token",
+        )
+
+    async def test_dispatch_workflow_404_raises_useful_error(self) -> None:
+        stub = StubAsyncClient(httpx.Response(404, text="Not Found"))
+
+        with patch("app.github_client.httpx.AsyncClient", return_value=stub):
+            with self.assertRaisesRegex(
+                GitHubClientError,
+                "Workflow file was not found or GitHub Actions permission is missing",
+            ):
+                await GitHubClient(
+                    Settings(),
+                    github_token="github-token",
+                ).dispatch_workflow(
+                    "https://github.com/acme/demo",
+                    "aisoflow-codex.yml",
+                    "main",
+                )
+
+    async def test_list_workflow_runs_maps_returned_json(self) -> None:
+        stub = StubAsyncClient(
+            httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {
+                            "id": 42,
+                            "name": "AisoFlow Codex",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "html_url": "https://github.com/acme/demo/actions/runs/42",
+                            "head_branch": "main",
+                            "created_at": "2026-05-29T10:00:00Z",
+                            "updated_at": "2026-05-29T10:05:00Z",
+                        }
+                    ]
+                },
+            )
+        )
+
+        with patch("app.github_client.httpx.AsyncClient", return_value=stub):
+            runs = await GitHubClient(
+                Settings(),
+                github_token="github-token",
+            ).list_workflow_runs(
+                "https://github.com/acme/demo",
+                workflow_id="aisoflow-codex.yml",
+                branch="main",
+                per_page=5,
+            )
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].id, 42)
+        self.assertEqual(runs[0].name, "AisoFlow Codex")
+        self.assertEqual(runs[0].status, "completed")
+        self.assertEqual(runs[0].conclusion, "success")
+        self.assertEqual(
+            runs[0].html_url,
+            "https://github.com/acme/demo/actions/runs/42",
+        )
+        self.assertEqual(runs[0].head_branch, "main")
+        self.assertEqual(runs[0].created_at, "2026-05-29T10:00:00Z")
+        self.assertEqual(runs[0].updated_at, "2026-05-29T10:05:00Z")
+
+        method, url, kwargs = stub.requests[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(
+            url,
+            "https://api.github.com/repos/acme/demo/actions/workflows/"
+            "aisoflow-codex.yml/runs",
+        )
+        self.assertEqual(kwargs["params"], {"per_page": 5, "branch": "main"})
 
 
 if __name__ == "__main__":

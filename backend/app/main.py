@@ -38,6 +38,10 @@ from app.models import (
     GitHubInstallationResponse,
     GitHubInstallationsResponse,
     GitHubRepositoriesResponse,
+    GitHubWorkflowDispatchRequest,
+    GitHubWorkflowDispatchResponse,
+    GitHubWorkflowRunResponse,
+    GitHubWorkflowRunsResponse,
     LogoutResponse,
     PromptAssistantRefineRequest,
     PromptAssistantRefineResponse,
@@ -581,6 +585,92 @@ async def list_github_repositories(
         ) from exc
 
     return GitHubRepositoriesResponse(repositories=repositories)
+
+
+@app.post(
+    "/github/workflows/dispatch",
+    response_model=GitHubWorkflowDispatchResponse,
+)
+async def dispatch_github_workflow(
+    payload: GitHubWorkflowDispatchRequest,
+    settings: Settings = Depends(get_settings),
+    github_token: str | None = Depends(get_optional_github_token),
+) -> GitHubWorkflowDispatchResponse:
+    """
+    Dispatch a GitHub Actions workflow in the selected repository.
+    """
+
+    try:
+        result = await GitHubClient(
+            settings,
+            github_token=github_token,
+        ).dispatch_workflow(
+            repo_url=payload.repo_url,
+            workflow_id=payload.workflow_id,
+            ref=payload.ref,
+            inputs=payload.inputs,
+        )
+    except GitHubClientError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return GitHubWorkflowDispatchResponse(
+        workflow_id=result.workflow_id,
+        ref=result.ref,
+        status=result.status,
+        message=result.message,
+    )
+
+
+@app.get(
+    "/github/workflows/runs",
+    response_model=GitHubWorkflowRunsResponse,
+)
+async def list_github_workflow_runs(
+    repo_url: str,
+    workflow_id: str | None = None,
+    branch: str | None = None,
+    per_page: int = 10,
+    settings: Settings = Depends(get_settings),
+    github_token: str | None = Depends(get_optional_github_token),
+) -> GitHubWorkflowRunsResponse:
+    """
+    List GitHub Actions workflow runs in the selected repository.
+    """
+
+    try:
+        runs = await GitHubClient(
+            settings,
+            github_token=github_token,
+        ).list_workflow_runs(
+            repo_url=repo_url,
+            workflow_id=workflow_id,
+            branch=branch,
+            per_page=per_page,
+        )
+    except GitHubClientError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return GitHubWorkflowRunsResponse(
+        runs=[
+            GitHubWorkflowRunResponse(
+                id=run.id,
+                name=run.name,
+                status=run.status,
+                conclusion=run.conclusion,
+                html_url=run.html_url,
+                head_branch=run.head_branch,
+                created_at=run.created_at,
+                updated_at=run.updated_at,
+            )
+            for run in runs
+        ]
+    )
 
 
 @app.post("/auth/logout", response_model=LogoutResponse)

@@ -102,6 +102,34 @@ class GitPullRequestStatusResult:
     merged_by: str | None
 
 
+@dataclass(frozen=True)
+class GitWorkflowDispatchResult:
+    """
+    Result returned after requesting a GitHub Actions workflow dispatch.
+    """
+
+    workflow_id: str
+    ref: str
+    status: str
+    message: str
+
+
+@dataclass(frozen=True)
+class GitWorkflowRunSummary:
+    """
+    Summary metadata for a GitHub Actions workflow run.
+    """
+
+    id: int
+    name: str | None
+    status: str | None
+    conclusion: str | None
+    html_url: str | None
+    head_branch: str | None
+    created_at: str | None
+    updated_at: str | None
+
+
 class GitHubClient:
     """
     GitHub and Git operations used by AisoFlow.
@@ -472,6 +500,107 @@ class GitHubClient:
                 f"Failed to delete remote branch: {response.status_code} {response.text}"
             )
 
+    async def dispatch_workflow(
+        self,
+        repo_url: str,
+        workflow_id: str,
+        ref: str,
+        inputs: dict[str, str] | None = None,
+    ) -> GitWorkflowDispatchResult:
+        """
+        Dispatch a GitHub Actions workflow in the selected repository.
+        """
+
+        if not self.github_token:
+            raise GitHubClientError("GITHUB_TOKEN is required to dispatch workflows.")
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+        api_url = (
+            f"https://api.github.com/repos/{owner}/{repo_name}"
+            f"/actions/workflows/{workflow_id}/dispatches"
+        )
+        payload = {
+            "ref": ref,
+            "inputs": inputs or {},
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                api_url,
+                json=payload,
+                headers=self._api_headers(),
+            )
+
+        if response.status_code == 204:
+            return GitWorkflowDispatchResult(
+                workflow_id=workflow_id,
+                ref=ref,
+                status="dispatched",
+                message="Workflow dispatch requested.",
+            )
+
+        raise GitHubClientError(self._workflow_dispatch_error_message(response))
+
+    async def list_workflow_runs(
+        self,
+        repo_url: str,
+        workflow_id: str | None = None,
+        branch: str | None = None,
+        per_page: int = 10,
+    ) -> list[GitWorkflowRunSummary]:
+        """
+        List GitHub Actions workflow runs for a repository or workflow file.
+        """
+
+        owner, repo_name = self._parse_owner_and_repo(repo_url)
+
+        if workflow_id:
+            api_url = (
+                f"https://api.github.com/repos/{owner}/{repo_name}"
+                f"/actions/workflows/{workflow_id}/runs"
+            )
+        else:
+            api_url = f"https://api.github.com/repos/{owner}/{repo_name}/actions/runs"
+
+        params: dict[str, str | int] = {"per_page": per_page}
+
+        if branch:
+            params["branch"] = branch
+
+        headers = (
+            self._api_headers()
+            if self.github_token
+            else {
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+        )
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(api_url, params=params, headers=headers)
+
+        if response.status_code >= 400:
+            raise GitHubClientError(
+                f"Failed to list workflow runs: {response.status_code} {response.text}"
+            )
+
+        data = response.json()
+        runs = data.get("workflow_runs") or []
+
+        return [
+            GitWorkflowRunSummary(
+                id=int(run["id"]),
+                name=run.get("name"),
+                status=run.get("status"),
+                conclusion=run.get("conclusion"),
+                html_url=run.get("html_url"),
+                head_branch=run.get("head_branch"),
+                created_at=run.get("created_at"),
+                updated_at=run.get("updated_at"),
+            )
+            for run in runs
+        ]
+
     def _build_authenticated_url(self, repo_url: str) -> str:
         """
         Add token authentication to HTTPS GitHub URLs when GITHUB_TOKEN is set.
@@ -580,6 +709,20 @@ class GitHubClient:
             "GitHub merge API response: status=%s body=%s",
             response.status_code,
             body,
+        )
+
+    def _workflow_dispatch_error_message(self, response: httpx.Response) -> str:
+        if response.status_code == 404:
+            return (
+                "Workflow file was not found or GitHub Actions permission is missing."
+            )
+
+        if response.status_code == 403:
+            return "GitHub App needs Actions/workflows permission."
+
+        return (
+            "Failed to dispatch workflow: "
+            f"{response.status_code} {response.text}"
         )
 
     def _origin_url(self, repo: Repo) -> str | None:

@@ -476,6 +476,47 @@ class GitHubRepositoriesResponse(BaseModel):
     repositories: list[GitHubRepositorySummary] = Field(default_factory=list)
 
 
+class GitHubWorkflowDispatchRequest(BaseModel):
+    """
+    Request body for dispatching a GitHub Actions workflow.
+    """
+
+    repo_url: str = Field(..., min_length=1)
+    workflow_id: str = "aisoflow-codex.yml"
+    ref: str = "main"
+    inputs: dict[str, str] = Field(default_factory=dict)
+
+
+class GitHubWorkflowDispatchResponse(BaseModel):
+    """
+    Response returned after requesting a GitHub Actions workflow dispatch.
+    """
+
+    workflow_id: str
+    ref: str
+    status: str
+    message: str
+
+
+class GitHubWorkflowRunResponse(BaseModel):
+    """
+    Public summary of a GitHub Actions workflow run.
+    """
+
+    id: int
+    name: str | None = None
+    status: str | None = None
+    conclusion: str | None = None
+    html_url: str | None = None
+    head_branch: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class GitHubWorkflowRunsResponse(BaseModel):
+    runs: list[GitHubWorkflowRunResponse] = Field(default_factory=list)
+
+
 class GitHubInstallationsResponse(BaseModel):
     installations: list[GitHubInstallationResponse] = Field(default_factory=list)
 
