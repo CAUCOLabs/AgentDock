@@ -19,6 +19,8 @@ import type {
   GitHubInstallation,
   GitHubInstallationsResponse,
   GitHubRepositoriesResponse,
+  GitHubWorkflowDispatchResponse,
+  GitHubWorkflowRunsResponse,
   TaskLogsResponse,
   TaskSummary,
   RepositoryFilePreviewResponse,
@@ -164,6 +166,44 @@ export function createTask(payload: TaskCreateRequest, sessionId?: string | null
     method: "POST",
     sessionId,
     body: JSON.stringify(payload),
+  });
+}
+
+export function dispatchGitHubWorkflow(
+  payload: {
+    repo_url: string;
+    workflow_id: string;
+    ref: string;
+    inputs?: Record<string, string>;
+  },
+  sessionId?: string | null
+) {
+  return request<GitHubWorkflowDispatchResponse>("/github/workflows/dispatch", {
+    method: "POST",
+    sessionId,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getGitHubWorkflowRuns(
+  payload: {
+    repo_url: string;
+    workflow_id?: string;
+    branch?: string;
+    per_page?: number;
+  },
+  sessionId?: string | null
+) {
+  const params = new URLSearchParams({
+    repo_url: payload.repo_url,
+  });
+
+  if (payload.workflow_id) params.set("workflow_id", payload.workflow_id);
+  if (payload.branch) params.set("branch", payload.branch);
+  if (payload.per_page) params.set("per_page", String(payload.per_page));
+
+  return request<GitHubWorkflowRunsResponse>(`/github/workflows/runs?${params.toString()}`, {
+    sessionId,
   });
 }
 

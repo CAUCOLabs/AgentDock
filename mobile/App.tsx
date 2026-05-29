@@ -37,6 +37,7 @@ import {
   createPullRequest,
   createTask,
   deleteTask,
+  dispatchGitHubWorkflow,
   disconnectAgentProvider,
   disconnectPromptAssistantProvider as disconnectPromptAssistantProviderApi,
   getAgentProviders,
@@ -722,6 +723,8 @@ export default function App() {
   const [githubAccount, setGithubAccount] = useState<GitHubAccount | null>(null);
   const [githubInstallation, setGithubInstallation] = useState<GitHubInstallation | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
+  const [workflowDispatchMessage, setWorkflowDispatchMessage] = useState<string | null>(null);
+  const [isDispatchingWorkflow, setIsDispatchingWorkflow] = useState(false);
   const [agentProviders, setAgentProviders] = useState<AgentProviderMetadata[]>([]);
   const [githubRepoFilter, setGithubRepoFilter] = useState("");
   const [fileFilter, setFileFilter] = useState("");
@@ -788,6 +791,9 @@ export default function App() {
   const selectedGithubRepo = useMemo(
     () => githubRepos.find((repo) => repo.clone_url === repoUrl) ?? null,
     [githubRepos, repoUrl]
+  );
+  const canDispatchWorkflowTest = Boolean(
+    githubSessionId && selectedGithubRepo && !isDispatchingWorkflow
   );
   const assistantPreview = useMemo(
     () => splitPromptForPreview(assistantRefinedPrompt),
@@ -1318,6 +1324,44 @@ export default function App() {
     }
   }
 
+  async function handleDispatchWorkflowTest() {
+    if (!githubSessionId) {
+      setError("GitHub session is required. Reconnect GitHub and try again.");
+      return;
+    }
+
+    if (!selectedGithubRepo) {
+      setWorkflowDispatchMessage("Select a GitHub repository first.");
+      return;
+    }
+
+    setIsDispatchingWorkflow(true);
+    setWorkflowDispatchMessage(null);
+    try {
+      const response = await dispatchGitHubWorkflow(
+        {
+          repo_url: repoUrl.trim(),
+          workflow_id: "aisoflow-test-dispatch.yml",
+          ref: selectedGithubRepo.default_branch || baseBranch.trim() || "main",
+          inputs: {
+            task_id: "mobile-dispatch-test",
+            prompt: "Testing AisoFlow workflow dispatch from mobile",
+          },
+        },
+        githubSessionId
+      );
+      setWorkflowDispatchMessage(response.message || "Workflow dispatch requested.");
+    } catch (dispatchError) {
+      setWorkflowDispatchMessage(
+        dispatchError instanceof Error
+          ? stripHttpStatus(dispatchError.message)
+          : "Unable to dispatch workflow."
+      );
+    } finally {
+      setIsDispatchingWorkflow(false);
+    }
+  }
+
   async function handleLoadFiles() {
     if (!repoUrl.trim()) {
       setError("Enter a repository URL before loading files.");
@@ -1820,6 +1864,7 @@ export default function App() {
     filePreviewRequestId.current += 1;
     setRepoUrl(repo.clone_url);
     setBaseBranch(repo.default_branch);
+    setWorkflowDispatchMessage(null);
     setIsManualRepoModeOpen(false);
     setTargetFile("");
     setRepoFiles([]);
@@ -2182,6 +2227,31 @@ export default function App() {
               <Text style={styles.filePath}>{selectedGithubRepo.clone_url}</Text>
             </View>
           ) : null}
+
+          <View style={styles.workflowDispatchTestBox}>
+            <View style={styles.flex}>
+              <Text style={styles.label}>Temporary Actions dispatch test</Text>
+              <Text style={styles.fileOptionMeta}>
+                Dispatches .github/workflows/aisoflow-test-dispatch.yml in the selected repository.
+              </Text>
+            </View>
+            <Pressable
+              disabled={!canDispatchWorkflowTest}
+              onPress={() => void handleDispatchWorkflowTest()}
+              style={({ pressed }) => [
+                styles.smallButton,
+                !canDispatchWorkflowTest && styles.disabledButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.smallButtonText}>
+                {isDispatchingWorkflow ? "Dispatching" : "Dispatch Actions Test"}
+              </Text>
+            </Pressable>
+            {workflowDispatchMessage ? (
+              <Text style={styles.fileOptionMeta}>{workflowDispatchMessage}</Text>
+            ) : null}
+          </View>
 
           <View style={styles.manualRepoBox}>
             <Pressable
@@ -4485,6 +4555,14 @@ const styles = StyleSheet.create({
     color: "#edf8ff",
     fontSize: 15,
     fontWeight: "800",
+  },
+  workflowDispatchTestBox: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(8, 18, 30, 0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.12)",
   },
   repoBadgeRow: {
     flexDirection: "row",

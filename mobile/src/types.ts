@@ -300,6 +300,28 @@ export type GitHubRepositoriesResponse = {
   repositories: GitHubRepository[];
 };
 
+export type GitHubWorkflowDispatchResponse = {
+  workflow_id: string;
+  ref: string;
+  status: string;
+  message: string;
+};
+
+export type GitHubWorkflowRunResponse = {
+  id: number;
+  name?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+  html_url?: string | null;
+  head_branch?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type GitHubWorkflowRunsResponse = {
+  runs: GitHubWorkflowRunResponse[];
+};
+
 export type GitHubInstallationsResponse = {
   installations: GitHubInstallation[];
 };
