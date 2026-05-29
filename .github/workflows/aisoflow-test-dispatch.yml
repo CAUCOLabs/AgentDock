@@ -1,0 +1,19 @@
+name: AisoFlow Test Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "AisoFlow task id"
+        required: false
+      prompt:
+        description: "Prompt"
+        required: false
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "AisoFlow dispatch works"
+      - run: echo "Task ${{ inputs.task_id }}"
+      - run: echo "Prompt ${{ inputs.prompt }}"
