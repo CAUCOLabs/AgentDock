@@ -244,6 +244,40 @@ class AgentProviderStatusTests(unittest.TestCase):
         self.assertEqual(fallback["user_code"], "EFGH-9012")
         self.assertNotIn("verification_url", localhost)
 
+    def test_codex_device_auth_parser_supports_code_variants(self) -> None:
+        cases = [
+            ("Continue at https://auth.openai.com/codex/device\ncode: ABCD-1234", "ABCD-1234"),
+            (
+                "Continue at https://auth.openai.com/codex/device\nEnter this code: WXYZ-7890",
+                "WXYZ-7890",
+            ),
+            ("Continue at https://auth.openai.com/codex/device\nABCD-1234", "ABCD-1234"),
+        ]
+
+        for output, expected_code in cases:
+            with self.subTest(output=output):
+                parsed = parse_codex_device_auth_output(output)
+                self.assertEqual(
+                    parsed["verification_url"],
+                    "https://auth.openai.com/codex/device",
+                )
+                self.assertEqual(parsed["user_code"], expected_code)
+
+        url_only = parse_codex_device_auth_output(
+            "Continue at https://auth.openai.com/codex/device"
+        )
+        self.assertEqual(
+            url_only["verification_url"],
+            "https://auth.openai.com/codex/device",
+        )
+        self.assertNotIn("user_code", url_only)
+
+        token_only = parse_codex_device_auth_output(
+            "Continue at https://auth.openai.com/codex/device\n"
+            "access token: ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        self.assertNotIn("user_code", token_only)
+
     def test_codex_device_auth_parser_strips_ansi_escape_sequences(self) -> None:
         parsed = parse_codex_device_auth_output(
             "\x1b[32mVisit: https://auth.openai.com/codex/device\x1b[0m\n"

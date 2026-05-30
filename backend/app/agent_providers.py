@@ -1010,9 +1010,9 @@ def parse_codex_device_auth_output(output: str) -> dict[str, str]:
     user_code = _first_match(
         output,
         [
-            r"(?i)\buser\s+code\s*[:=]\s*([A-Z0-9][A-Z0-9\-]{3,})",
-            r"(?i)\benter\s+(?:the\s+)?code\s*[:=]?\s*([A-Z0-9][A-Z0-9\-]{3,})",
-            r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b",
+            r"(?i:\b(?:user\s+code|code|device\s+code)\s*[:=]\s*)([A-Z0-9]{4}-[A-Z0-9]{4,5}|[A-Z0-9]{5}-[A-Z0-9]{4}|[A-Z0-9]{8,9})\b",
+            r"(?i:\benter\s+(?:the\s+|this\s+)?code\s*[:=]?\s*)([A-Z0-9]{4}-[A-Z0-9]{4,5}|[A-Z0-9]{5}-[A-Z0-9]{4}|[A-Z0-9]{8,9})\b",
+            r"(?<![A-Z0-9])([A-Z0-9]{4}-[A-Z0-9]{4,5}|[A-Z0-9]{5}-[A-Z0-9]{4}|[A-Z0-9]{8,9})(?![A-Z0-9])",
         ],
     )
     device_code = _first_match(
