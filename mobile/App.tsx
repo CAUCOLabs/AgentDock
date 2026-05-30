@@ -1339,8 +1339,7 @@ export default function App() {
         repo_url: repoUrl.trim(),
         base_branch: baseBranch.trim() || "main",
         instruction: instruction.trim(),
-        // Temporary for internal beta testing while Codex cloud execution is not configured.
-        agent: "mock",
+        agent: "codex",
         target_file: targetFile || null,
         change_scope: changeScope,
       }, githubSessionId);
