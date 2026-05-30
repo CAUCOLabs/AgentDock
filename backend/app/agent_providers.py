@@ -59,6 +59,11 @@ _CODEX_LOCAL_LOGIN_INSTRUCTIONS = [
     "Complete the ChatGPT sign-in in the browser.",
     "Return to AisoFlow and tap Check connection.",
 ]
+_CODEX_DEVICE_AUTH_INSTRUCTIONS = [
+    "Open the verification link on this device or another browser.",
+    "Sign in with your ChatGPT account and enter the displayed code if prompted.",
+    "Return to AisoFlow and tap Check connection.",
+]
 
 
 class AgentRunResult:
@@ -601,20 +606,22 @@ def start_codex_account_flow(settings: Settings) -> AgentProviderAuthFlowRespons
     if error:
         raise AgentProviderError(error)
 
+    parsed = _start_codex_device_auth(settings)
     metadata = next(provider for provider in provider_metadata(settings) if provider.id == "codex")
+    verification_url = parsed.get("verification_url")
 
     return AgentProviderAuthFlowResponse(
         provider_id="codex",
         status="waiting_for_auth",
         message=(
-            "Run `codex login` on the backend machine, then return to AisoFlow "
-            "and tap Check connection."
+            "Open the Codex verification link, sign in with your ChatGPT account, "
+            "then return to AisoFlow and tap Check connection."
         ),
-        auth_url=None,
-        verification_url=None,
-        device_code=None,
-        user_code=None,
-        instructions=_CODEX_LOCAL_LOGIN_INSTRUCTIONS,
+        auth_url=verification_url,
+        verification_url=verification_url,
+        device_code=parsed.get("device_code"),
+        user_code=parsed.get("user_code"),
+        instructions=_CODEX_DEVICE_AUTH_INSTRUCTIONS,
         metadata=metadata,
     )
 
