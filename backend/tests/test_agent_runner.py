@@ -267,6 +267,32 @@ class LocalAgentRunnerTests(unittest.TestCase):
             self.assertNotIn("--ask-for-approval", args)
             self.assertNotIn("never", args)
 
+    def test_codex_exec_command_uses_configured_sandbox_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            settings = self._settings(
+                workspace_root,
+                codex_sandbox_mode="danger-full-access",
+            )
+
+            args = CodexCliProvider(settings)._command_args("Do real work.")
+
+            self.assertEqual(args[:4], ["codex", "exec", "--sandbox", "danger-full-access"])
+
+    def test_codex_exec_command_rejects_invalid_sandbox_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspaces"
+            settings = self._settings(
+                workspace_root,
+                codex_sandbox_mode="invalid-mode",
+            )
+
+            with self.assertRaisesRegex(
+                AgentRunnerError,
+                "Invalid CODEX_SANDBOX_MODE",
+            ):
+                CodexCliProvider(settings)._command_args("Do real work.")
+
     def test_codex_cli_provider_is_selected_for_local_fallback_auth(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = self._settings(
@@ -303,6 +329,7 @@ class LocalAgentRunnerTests(unittest.TestCase):
         timeout: int | None = None,
         codex_enabled: bool = False,
         codex_timeout: int = 900,
+        codex_sandbox_mode: str = "workspace-write",
         openai_api_key: str | None = None,
     ) -> Settings:
         return Settings(
@@ -311,6 +338,7 @@ class LocalAgentRunnerTests(unittest.TestCase):
             LOCAL_RUNNER_COMMAND=command,
             LOCAL_RUNNER_TIMEOUT_SECONDS=timeout,
             CODEX_ENABLED=codex_enabled,
+            CODEX_SANDBOX_MODE=codex_sandbox_mode,
             CODEX_TIMEOUT_SECONDS=codex_timeout,
             OPENAI_API_KEY=openai_api_key,
             AGENTDOCK_DB_PATH=workspace_root.parent / "data" / "agentdock.sqlite3",

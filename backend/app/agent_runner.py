@@ -175,6 +175,12 @@ class CodexCliProvider(AgentProviderBase):
     Runs the Codex CLI runtime inside an isolated task repository.
     """
 
+    _ALLOWED_SANDBOX_MODES = {
+        "read-only",
+        "workspace-write",
+        "danger-full-access",
+    }
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
@@ -273,11 +279,19 @@ class CodexCliProvider(AgentProviderBase):
         if not command:
             raise AgentRunnerError("CODEX_CLI_COMMAND cannot be empty.")
 
+        sandbox_mode = self.settings.codex_sandbox_mode
+        if sandbox_mode not in self._ALLOWED_SANDBOX_MODES:
+            allowed = ", ".join(sorted(self._ALLOWED_SANDBOX_MODES))
+            raise AgentRunnerError(
+                f"Invalid CODEX_SANDBOX_MODE: {sandbox_mode}. "
+                f"Allowed values are: {allowed}."
+            )
+
         return [
             *command,
             "exec",
             "--sandbox",
-            "workspace-write",
+            sandbox_mode,
             prompt,
         ]
 
