@@ -253,9 +253,30 @@ type MergeAttemptState = {
   message: string;
 };
 
+type ApplyProgressState = "pending" | "running" | "done" | "error";
+type ApplyStepId = "commit" | "push" | "pull_request" | "merge";
+
+type ApplyStep = {
+  id: ApplyStepId;
+  label: string;
+  state: ApplyProgressState;
+};
+
+type ApplyAttemptState = {
+  taskId: string;
+  status: "idle" | "running" | "succeeded" | "failed";
+};
+
 type TimelineLogEvent = TaskLogEvent & {
   label: string;
 };
+
+const applyStepDefinitions: Array<{ id: ApplyStepId; label: string }> = [
+  { id: "commit", label: "Creating commit" },
+  { id: "push", label: "Pushing branch" },
+  { id: "pull_request", label: "Creating pull request" },
+  { id: "merge", label: "Merging to main" },
+];
 
 const promptAssistantModes: Array<{
   value: PromptAssistantMode;
@@ -318,6 +339,10 @@ function stripHttpStatus(message: string) {
   return message.replace(/^\d{3}\s+/, "");
 }
 
+function humanizeError(error: unknown, fallback: string) {
+  return stripHttpStatus(error instanceof Error ? error.message : fallback);
+}
+
 function formatDate(value: string) {
   return new Date(value).toLocaleString(undefined, {
     month: "short",
@@ -352,6 +377,65 @@ function isLiveActivityStatus(status: TaskStatus) {
     "pushed",
     "pull_request_opened",
   ].includes(status);
+}
+
+function isTaskMerged(task: TaskSummary | null) {
+  return Boolean(
+    task &&
+      (task.status === "merged" ||
+        task.pr_state === "merged" ||
+        task.merged_at ||
+        task.merge_commit_sha)
+  );
+}
+
+function isPullRequestOpen(task: TaskSummary | null) {
+  return Boolean(
+    task &&
+      task.status === "pull_request_opened" &&
+      (!task.pr_state || task.pr_state === "open")
+  );
+}
+
+function buildApplyProgress(task: TaskSummary | null, activeStep?: ApplyStepId): ApplyStep[] {
+  const done = new Set<ApplyStepId>();
+  if (task) {
+    if (
+      task.status === "committed" ||
+      task.status === "pushed" ||
+      task.status === "pull_request_opened" ||
+      isTaskMerged(task) ||
+      task.commit_sha
+    ) {
+      done.add("commit");
+    }
+    if (
+      task.status === "pushed" ||
+      task.status === "pull_request_opened" ||
+      isTaskMerged(task) ||
+      task.pushed ||
+      task.pushed_at ||
+      task.remote_branch
+    ) {
+      done.add("push");
+    }
+    if (
+      task.status === "pull_request_opened" ||
+      isTaskMerged(task) ||
+      task.pr_url ||
+      task.pr_number
+    ) {
+      done.add("pull_request");
+    }
+    if (isTaskMerged(task)) {
+      done.add("merge");
+    }
+  }
+
+  return applyStepDefinitions.map((step) => ({
+    ...step,
+    state: activeStep === step.id ? "running" : done.has(step.id) ? "done" : "pending",
+  }));
 }
 
 function redactLogMessage(message: string) {
@@ -748,6 +832,9 @@ export default function App() {
   const [logsCopyStatus, setLogsCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [applyAttempt, setApplyAttempt] = useState<ApplyAttemptState | null>(null);
+  const [applyProgress, setApplyProgress] = useState<ApplyStep[]>(() => buildApplyProgress(null));
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
   const [isLoadingTask, setIsLoadingTask] = useState(false);
@@ -767,6 +854,7 @@ export default function App() {
   const [codexApiKeyError, setCodexApiKeyError] = useState<string | null>(null);
   const [connectingProviderId, setConnectingProviderId] = useState<AgentProvider | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [isAdvancedGitActionsOpen, setIsAdvancedGitActionsOpen] = useState(false);
   const [previewCopyStatus, setPreviewCopyStatus] = useState<"copied" | "failed" | null>(null);
   const [diffCopyStatus, setDiffCopyStatus] = useState<"copied" | "failed" | null>(null);
 
@@ -883,6 +971,50 @@ export default function App() {
   const activeMergeAttempt =
     mergeAttempt && selectedTask?.task_id === mergeAttempt.taskId ? mergeAttempt : null;
   const isMergingPullRequest = activeMergeAttempt?.status === "loading";
+  const activeApplyAttempt =
+    applyAttempt && selectedTask?.task_id === applyAttempt.taskId ? applyAttempt : null;
+  const isApplyingToGitHub = activeApplyAttempt?.status === "running";
+  const isSelectedTaskMerged = isTaskMerged(selectedTask);
+  const canShowApplyToGitHub = Boolean(
+    selectedTask &&
+      [
+        "waiting_for_approval",
+        "committed",
+        "pushed",
+        "pull_request_opened",
+        "merged",
+      ].includes(selectedTask.status)
+  );
+  const applyDisabledReason = (() => {
+    if (!selectedTask) return "Select a task with changes first.";
+    if (isApplyingToGitHub) return null;
+    if (isSelectedTaskMerged) return null;
+    if (
+      (selectedTask.status === "waiting_for_approval" || selectedTask.status === "committed") &&
+      workspace?.push_enabled === false
+    ) {
+      return "Push is disabled because ALLOW_PUSH=false.";
+    }
+    if (
+      (selectedTask.status === "waiting_for_approval" || selectedTask.status === "committed") &&
+      workspace?.has_valid_origin === false
+    ) {
+      return "This workspace does not have a valid GitHub origin remote.";
+    }
+    if (
+      ["waiting_for_approval", "committed", "pushed"].includes(selectedTask.status) &&
+      workspace?.pr_creation_enabled === false
+    ) {
+      return "Pull request creation is disabled because ALLOW_PR_CREATION=false.";
+    }
+    if (selectedTask.status === "pull_request_opened" && !isPullRequestOpen(selectedTask)) {
+      return selectedTask.pr_state
+        ? `Pull request is ${selectedTask.pr_state}; it cannot be merged from here.`
+        : "Pull request is not open.";
+    }
+    return null;
+  })();
+  const canApplyToGitHub = canShowApplyToGitHub && !isApplyingToGitHub && !applyDisabledReason && !isActing;
   const showPrOpenPanel =
     selectedTask?.status === "pull_request_opened" &&
     activeMergeAttempt?.status !== "loading" &&
@@ -1073,6 +1205,16 @@ export default function App() {
       setIsPollingLogs(false);
     };
   }, [loadTaskLogs, selectedTask?.task_id, selectedTask?.status]);
+
+  useEffect(() => {
+    if (applyAttempt?.status === "running" && applyAttempt.taskId === selectedTask?.task_id) {
+      return;
+    }
+    setApplyProgress(buildApplyProgress(selectedTask));
+    if (applyAttempt?.taskId !== selectedTask?.task_id) {
+      setApplyError(null);
+    }
+  }, [applyAttempt, selectedTask]);
 
   useEffect(() => {
     void (async () => {
@@ -1505,6 +1647,127 @@ export default function App() {
     );
   }
 
+  async function handleApplyToGitHub() {
+    if (!selectedTask || isApplyingToGitHub || applyDisabledReason) {
+      return;
+    }
+
+    const taskId = selectedTask.task_id;
+    let currentTask: TaskSummary | null = selectedTask;
+
+    const markStep = (stepId: ApplyStepId, state: ApplyProgressState) => {
+      setApplyProgress((steps) =>
+        steps.map((step) => (step.id === stepId ? { ...step, state } : step))
+      );
+    };
+
+    const refreshCurrentTask = async () => {
+      await refreshTasks();
+      currentTask = await loadTaskDetail(taskId);
+      setApplyProgress(buildApplyProgress(currentTask));
+      return currentTask;
+    };
+
+    setIsActing(true);
+    setApplyError(null);
+    setError(null);
+    setApplyAttempt({ taskId, status: "running" });
+    setApplyProgress(buildApplyProgress(currentTask));
+
+    try {
+      if (isTaskMerged(currentTask)) {
+        setApplyProgress(buildApplyProgress(currentTask));
+        setApplyAttempt({ taskId, status: "succeeded" });
+        return;
+      }
+
+      if (currentTask.status === "waiting_for_approval") {
+        markStep("commit", "running");
+        await approveTask(taskId, {
+          approve: true,
+          message: "Committed from AisoFlow mobile.",
+        });
+        markStep("commit", "done");
+        currentTask = await refreshCurrentTask();
+      }
+
+      if (!currentTask) {
+        throw new Error("Task could not be refreshed after commit.");
+      }
+
+      if (
+        currentTask.status === "committed" ||
+        (Boolean(currentTask.commit_sha) &&
+          !currentTask.pushed &&
+          !currentTask.pr_url &&
+          currentTask.status !== "pull_request_opened")
+      ) {
+        if (workspace?.push_enabled === false) {
+          throw new Error("Push is disabled because ALLOW_PUSH=false.");
+        }
+        if (workspace?.has_valid_origin === false) {
+          throw new Error("This workspace does not have a valid GitHub origin remote.");
+        }
+        markStep("push", "running");
+        await pushTask(taskId);
+        markStep("push", "done");
+        currentTask = await refreshCurrentTask();
+      }
+
+      if (!currentTask) {
+        throw new Error("Task could not be refreshed after push.");
+      }
+
+      if (!currentTask.pr_url && (currentTask.status === "pushed" || currentTask.pushed)) {
+        if (workspace?.pr_creation_enabled === false) {
+          throw new Error("Pull request creation is disabled because ALLOW_PR_CREATION=false.");
+        }
+        markStep("pull_request", "running");
+        await createPullRequest(taskId);
+        markStep("pull_request", "done");
+        currentTask = await refreshCurrentTask();
+      }
+
+      if (!currentTask) {
+        throw new Error("Task could not be refreshed after pull request creation.");
+      }
+
+      if (isTaskMerged(currentTask)) {
+        setApplyProgress(buildApplyProgress(currentTask));
+        setApplyAttempt({ taskId, status: "succeeded" });
+        return;
+      }
+
+      if (isPullRequestOpen(currentTask)) {
+        markStep("merge", "running");
+        await mergePullRequest(taskId);
+        markStep("merge", "done");
+        currentTask = await refreshCurrentTask();
+      }
+
+      if (!isTaskMerged(currentTask)) {
+        throw new Error("Apply stopped before merge completed. Review the pull request state and try again.");
+      }
+
+      setApplyProgress(buildApplyProgress(currentTask));
+      setApplyAttempt({ taskId, status: "succeeded" });
+    } catch (applyFlowError) {
+      const message = humanizeError(applyFlowError, "Unable to apply changes to GitHub.");
+      setApplyProgress((steps) =>
+        steps.map((step) =>
+          step.state === "running" ? { ...step, state: "error" } : step
+        )
+      );
+      setApplyError(message);
+      setError(message);
+      setApplyAttempt({ taskId, status: "failed" });
+      await refreshTasks();
+      await loadTaskDetail(taskId);
+    } finally {
+      setIsActing(false);
+    }
+  }
+
   async function handlePush() {
     if (!selectedTask) {
       return;
@@ -1609,6 +1872,18 @@ export default function App() {
         },
       ]
     );
+  }
+
+  function handleRunAnotherTask() {
+    setSelectedTask(null);
+    setDiff(emptyDiff);
+    setLogs(emptyLogs);
+    setWorkspace(null);
+    setSelectedDiffFilePath(null);
+    setIsRawDiffExpanded(false);
+    setApplyAttempt(null);
+    setApplyError(null);
+    setApplyProgress(buildApplyProgress(null));
   }
 
   async function handleDelete() {
@@ -3017,88 +3292,29 @@ export default function App() {
               <InfoRow label="Agent" value={selectedTaskAgentLabel ?? "Unknown"} />
               {selectedTask.error ? <Text style={styles.errorText}>{selectedTask.error}</Text> : null}
               <View style={styles.actionRow}>
-                {selectedTask.status === "waiting_for_approval" ? (
-                  <>
-                    <ActionButton
-                      label="Commit"
-                      icon={<CheckCircle2 size={18} color="#031014" />}
-                      disabled={isActing}
-                      onPress={() => confirmCommitOrReject(true)}
-                      tone="approve"
-                    />
-                    <ActionButton
-                      label="Reject"
-                      icon={<XCircle size={18} color="#ffd4d8" />}
-                      disabled={isActing}
-                      onPress={() => confirmCommitOrReject(false)}
-                      tone="reject"
-                    />
-                  </>
-                ) : null}
-                {selectedTask.status === "committed" && workspace?.push_enabled && workspace.has_valid_origin ? (
+                {canShowApplyToGitHub ? (
                   <ActionButton
-                    label="Push"
-                    icon={<UploadCloud size={18} color="#031014" />}
-                    disabled={isActing}
-                    onPress={handlePush}
-                    tone="approve"
-                  />
-                ) : null}
-                {selectedTask.status === "pushed" && pushedBranchUrl ? (
-                  <ActionButton
-                    label="Open Branch"
-                    icon={<ExternalLink size={18} color="#031014" />}
-                    disabled={false}
-                    onPress={() => void Linking.openURL(pushedBranchUrl)}
-                    tone="approve"
-                  />
-                ) : null}
-                {canCreatePullRequest ? (
-                  <ActionButton
-                    label="Create Pull Request"
+                    label={
+                      isSelectedTaskMerged
+                        ? "Applied to GitHub"
+                        : isApplyingToGitHub
+                          ? "Applying to GitHub..."
+                          : "Apply to GitHub"
+                    }
                     icon={<GitPullRequest size={18} color="#031014" />}
-                    disabled={isActing}
-                    onPress={handleCreatePullRequest}
+                    disabled={!canApplyToGitHub || isSelectedTaskMerged}
+                    onPress={() => void handleApplyToGitHub()}
                     tone="approve"
                   />
                 ) : null}
-                {selectedTask.status === "pull_request_opened" && selectedTask.pr_url ? (
-                  <>
-                    <ActionButton
-                      label="Open Pull Request"
-                      icon={<ExternalLink size={18} color="#031014" />}
-                      disabled={false}
-                      onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
-                      tone="approve"
-                    />
-                    <ActionButton
-                      label={isMergingPullRequest ? "Merging pull request..." : "Merge Pull Request"}
-                      icon={<GitPullRequest size={18} color="#031014" />}
-                      disabled={isActing || isMergingPullRequest}
-                      onPress={handleMergePullRequest}
-                      tone="approve"
-                    />
-                  </>
-                ) : null}
-                {selectedTask.status === "merged" ? (
-                  <>
-                    {selectedTask.pr_url ? (
-                      <ActionButton
-                        label="Open Pull Request"
-                        icon={<ExternalLink size={18} color="#031014" />}
-                        disabled={false}
-                        onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
-                        tone="approve"
-                      />
-                    ) : null}
-                    <ActionButton
-                      label="Open Repository"
-                      icon={<ExternalLink size={18} color="#031014" />}
-                      disabled={false}
-                      onPress={() => void Linking.openURL(selectedTask.repo_url)}
-                      tone="approve"
-                    />
-                  </>
+                {selectedTask.status === "waiting_for_approval" ? (
+                  <ActionButton
+                    label="Reject"
+                    icon={<XCircle size={18} color="#ffd4d8" />}
+                    disabled={isActing}
+                    onPress={() => confirmCommitOrReject(false)}
+                    tone="reject"
+                  />
                 ) : null}
                 <ActionButton
                   label="Delete"
@@ -3108,6 +3324,138 @@ export default function App() {
                   tone="delete"
                 />
               </View>
+              {canShowApplyToGitHub ? (
+                <View style={styles.applyPanel}>
+                  {isSelectedTaskMerged ? (
+                    <Text style={styles.applyDoneTitle}>Done — changes merged to main</Text>
+                  ) : (
+                    <Text style={styles.applyPanelTitle}>
+                      Review the diff, then apply the approved changes to GitHub.
+                    </Text>
+                  )}
+                  {applyDisabledReason ? (
+                    <Text style={styles.errorText}>{applyDisabledReason}</Text>
+                  ) : null}
+                  {applyError ? <Text style={styles.errorText}>{applyError}</Text> : null}
+                  <ApplyProgressChecklist steps={applyProgress} />
+                  {isSelectedTaskMerged ? (
+                    <View style={styles.actionRow}>
+                      {selectedTask.pr_url ? (
+                        <ActionButton
+                          label="Open pull request"
+                          icon={<ExternalLink size={18} color="#031014" />}
+                          disabled={false}
+                          onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                          tone="approve"
+                        />
+                      ) : null}
+                      <ActionButton
+                        label="Open repository"
+                        icon={<ExternalLink size={18} color="#031014" />}
+                        disabled={false}
+                        onPress={() => void Linking.openURL(selectedTask.repo_url)}
+                        tone="approve"
+                      />
+                      <ActionButton
+                        label="Run another task"
+                        icon={<Send size={18} color="#031014" />}
+                        disabled={false}
+                        onPress={handleRunAnotherTask}
+                        tone="approve"
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+              <Pressable
+                onPress={() => setIsAdvancedGitActionsOpen((current) => !current)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: isAdvancedGitActionsOpen }}
+                style={({ pressed }) => [styles.advancedToggle, pressed && styles.pressed]}
+              >
+                <Text style={styles.advancedToggleText}>
+                  {isAdvancedGitActionsOpen ? "Hide Advanced Git actions" : "Advanced Git actions"}
+                </Text>
+                <Text style={styles.fileOptionMeta}>Commit, push, pull request, and merge controls</Text>
+              </Pressable>
+              {isAdvancedGitActionsOpen ? (
+                <View style={styles.actionRow}>
+                  {selectedTask.status === "waiting_for_approval" ? (
+                    <ActionButton
+                      label="Commit changes"
+                      icon={<CheckCircle2 size={18} color="#031014" />}
+                      disabled={isActing}
+                      onPress={() => confirmCommitOrReject(true)}
+                      tone="approve"
+                    />
+                  ) : null}
+                  {selectedTask.status === "committed" && workspace?.push_enabled && workspace.has_valid_origin ? (
+                    <ActionButton
+                      label="Push branch"
+                      icon={<UploadCloud size={18} color="#031014" />}
+                      disabled={isActing}
+                      onPress={handlePush}
+                      tone="approve"
+                    />
+                  ) : null}
+                  {selectedTask.status === "pushed" && pushedBranchUrl ? (
+                    <ActionButton
+                      label="Open branch"
+                      icon={<ExternalLink size={18} color="#031014" />}
+                      disabled={false}
+                      onPress={() => void Linking.openURL(pushedBranchUrl)}
+                      tone="approve"
+                    />
+                  ) : null}
+                  {canCreatePullRequest ? (
+                    <ActionButton
+                      label="Create Pull Request"
+                      icon={<GitPullRequest size={18} color="#031014" />}
+                      disabled={isActing}
+                      onPress={handleCreatePullRequest}
+                      tone="approve"
+                    />
+                  ) : null}
+                  {selectedTask.status === "pull_request_opened" && selectedTask.pr_url ? (
+                    <>
+                      <ActionButton
+                        label="Open Pull Request"
+                        icon={<ExternalLink size={18} color="#031014" />}
+                        disabled={false}
+                        onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                        tone="approve"
+                      />
+                      <ActionButton
+                        label={isMergingPullRequest ? "Merging pull request..." : "Merge Pull Request"}
+                        icon={<GitPullRequest size={18} color="#031014" />}
+                        disabled={isActing || isMergingPullRequest}
+                        onPress={handleMergePullRequest}
+                        tone="approve"
+                      />
+                    </>
+                  ) : null}
+                  {selectedTask.status === "merged" ? (
+                    <>
+                      {selectedTask.pr_url ? (
+                        <ActionButton
+                          label="Open Pull Request"
+                          icon={<ExternalLink size={18} color="#031014" />}
+                          disabled={false}
+                          onPress={() => void Linking.openURL(selectedTask.pr_url ?? "")}
+                          tone="approve"
+                        />
+                      ) : null}
+                      <ActionButton
+                        label="Open Repository"
+                        icon={<ExternalLink size={18} color="#031014" />}
+                        disabled={false}
+                        onPress={() => void Linking.openURL(selectedTask.repo_url)}
+                        tone="approve"
+                      />
+                    </>
+                  ) : null}
+                </View>
+              ) : null}
               {selectedTask.status === "committed" ? (
                 <Text style={styles.emptyText}>
                   {workspace?.push_enabled
@@ -3533,6 +3881,53 @@ function ChangedFiles({
         </Pressable>
       ))}
       {files.length > 8 ? <Text style={styles.emptyText}>+{files.length - 8} more files</Text> : null}
+    </View>
+  );
+}
+
+function ApplyProgressChecklist({ steps }: { steps: ApplyStep[] }) {
+  return (
+    <View style={styles.applyChecklist}>
+      {steps.map((step) => (
+        <View key={step.id} style={styles.applyStep}>
+          <View
+            style={[
+              styles.applyStepMarker,
+              step.state === "done" && styles.applyStepMarkerDone,
+              step.state === "running" && styles.applyStepMarkerRunning,
+              step.state === "error" && styles.applyStepMarkerError,
+            ]}
+          >
+            {step.state === "done" ? (
+              <CheckCircle2 size={14} color="#031014" />
+            ) : step.state === "error" ? (
+              <XCircle size={14} color="#ffd4d8" />
+            ) : step.state === "running" ? (
+              <ActivityIndicator color="#031014" size="small" />
+            ) : (
+              <View style={styles.applyStepDot} />
+            )}
+          </View>
+          <View style={styles.flex}>
+            <Text
+              style={[
+                styles.applyStepLabel,
+                step.state === "pending" && styles.applyStepLabelPending,
+              ]}
+            >
+              {step.label}
+            </Text>
+            <Text
+              style={[
+                styles.applyStepState,
+                step.state === "error" && styles.applyStepStateError,
+              ]}
+            >
+              {step.state}
+            </Text>
+          </View>
+        </View>
+      ))}
     </View>
   );
 }
@@ -3965,6 +4360,81 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 92, 118, 0.35)",
   },
   mergeStateErrorTitle: {
+    color: "#ffb8c0",
+  },
+  applyPanel: {
+    gap: 12,
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: "rgba(3, 18, 28, 0.68)",
+    borderWidth: 1,
+    borderColor: "rgba(65, 230, 189, 0.26)",
+  },
+  applyPanelTitle: {
+    color: "#d8f9ff",
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  applyDoneTitle: {
+    color: "#baf7d0",
+    fontSize: 18,
+    fontWeight: "800",
+    lineHeight: 24,
+  },
+  applyChecklist: {
+    gap: 10,
+  },
+  applyStep: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 4,
+  },
+  applyStepMarker: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(124, 157, 188, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 157, 188, 0.24)",
+  },
+  applyStepMarkerDone: {
+    backgroundColor: "#41e6bd",
+    borderColor: "#41e6bd",
+  },
+  applyStepMarkerRunning: {
+    backgroundColor: "#38d9ff",
+    borderColor: "#38d9ff",
+  },
+  applyStepMarkerError: {
+    backgroundColor: "rgba(255, 92, 118, 0.14)",
+    borderColor: "rgba(255, 92, 118, 0.42)",
+  },
+  applyStepDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "#6f8298",
+  },
+  applyStepLabel: {
+    color: "#edf8ff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  applyStepLabelPending: {
+    color: "#8ea7bd",
+  },
+  applyStepState: {
+    color: "#8095aa",
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  applyStepStateError: {
     color: "#ffb8c0",
   },
   taskList: {
